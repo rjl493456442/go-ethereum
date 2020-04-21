@@ -178,7 +178,7 @@ type Tree struct {
 // store, on a background thread. If the memory layers from the journal is not
 // continuous with disk layer or the journal is missing, all diffs will be discarded
 // iff it's in "recovery" mode, otherwise rebuild is mandatory.
-func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, cache int, root common.Hash, async bool, recovery bool) *Tree {
+func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, cache int, root common.Hash, async bool, rebuild bool, recovery bool) (*Tree, error) {
 	// Create a new, empty snapshot tree
 	snap := &Tree{
 		diskdb: diskdb,
@@ -192,16 +192,19 @@ func New(diskdb ethdb.KeyValueStore, triedb *trie.Database, cache int, root comm
 	// Attempt to load a previously persisted snapshot and rebuild one if failed
 	head, err := loadSnapshot(diskdb, triedb, cache, root, recovery)
 	if err != nil {
-		log.Warn("Failed to load snapshot, regenerating", "err", err)
-		snap.Rebuild(root)
-		return snap
+		if rebuild {
+			log.Warn("Failed to load snapshot, regenerating", "err", err)
+			snap.Rebuild(root)
+			return snap, nil
+		}
+		return nil, err // Bail out the error, not rebuild automatically.
 	}
 	// Existing snapshot loaded, seed all the layers
 	for head != nil {
 		snap.layers[head.Root()] = head
 		head = head.Parent()
 	}
-	return snap
+	return snap, nil
 }
 
 // waitBuild blocks until the snapshot finishes rebuilding. This method is meant
