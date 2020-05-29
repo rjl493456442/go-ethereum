@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/event"
@@ -209,6 +210,22 @@ Use "ethereum dump 0" to dump the genesis block.`,
 			utils.RinkebyFlag,
 			utils.GoerliFlag,
 			utils.LegacyTestnetFlag,
+			utils.SyncModeFlag,
+		},
+		Category: "BLOCKCHAIN COMMANDS",
+	}
+	generateTrieCommand = cli.Command{
+		Action:    utils.MigrateFlags(snapToHash),
+		Name:      "snaphash",
+		Usage:     "Calculate the trie root hash from the snapshot db",
+		ArgsUsage: " ",
+		Flags: []cli.Flag{
+			utils.DataDirFlag,
+			utils.AncientFlag,
+			utils.CacheFlag,
+			utils.LegacyTestnetFlag,
+			utils.RinkebyFlag,
+			utils.GoerliFlag,
 			utils.SyncModeFlag,
 		},
 		Category: "BLOCKCHAIN COMMANDS",
@@ -590,6 +607,33 @@ func inspect(ctx *cli.Context) error {
 	defer chainDb.Close()
 
 	return rawdb.InspectDatabase(chainDb)
+}
+
+func snapToHash(ctx *cli.Context) error {
+	node, _ := makeConfigNode(ctx)
+	chain, chainDb := utils.MakeChain(ctx, node)
+
+	defer func() {
+		node.Close()
+		chain.Stop()
+		chainDb.Close()
+	}()
+
+	snapTree := chain.Snapshot()
+	if snapTree == nil {
+		return fmt.Errorf("No snapshot tree available")
+	}
+	block := chain.CurrentBlock()
+	if block == nil {
+		return fmt.Errorf("no blocks present")
+	}
+	root := block.Root()
+	err := snapshot.VerifyState(snapTree, root)
+	if err != nil {
+		log.Error("error verifying the state", "error", err)
+		return err
+	}
+	return nil
 }
 
 // hashish returns true for strings that look like hashes.

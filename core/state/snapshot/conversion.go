@@ -63,15 +63,25 @@ func VerifyState(snaptree *Tree, root common.Hash) error {
 	if err != nil {
 		return err
 	}
-	got, err := generateTrieRoot(acctIt, common.Hash{}, stdGenerate, func(account common.Hash, stat *generateStats) common.Hash {
+	got, err := generateTrieRoot(acctIt, common.Hash{}, ReStackGenerate, func(account common.Hash, stat *generateStats) common.Hash {
 		storageIt, err := snaptree.StorageIterator(root, account, common.Hash{})
 		if err != nil {
 			return common.Hash{}
 		}
-		hash, err := generateTrieRoot(storageIt, account, stdGenerate, nil, stat, false)
+		hash, err := generateTrieRoot(storageIt, account, ReStackGenerate, nil, stat, false)
 		if err != nil {
 			return common.Hash{}
 		}
+		storageIt, err = snaptree.StorageIterator(root, account, common.Hash{})
+		hash2, err := generateTrieRoot(storageIt, account, stdGenerate, nil, stat, false)
+		if err != nil {
+			return common.Hash{}
+		}
+
+		if hash2 != hash {
+			return common.Hash{}
+		}
+
 		return hash
 	}, &generateStats{start: time.Now()}, true)
 
@@ -82,6 +92,17 @@ func VerifyState(snaptree *Tree, root common.Hash) error {
 		return fmt.Errorf("State root hash mismatch, got %x, want %x", got, root)
 	}
 	return nil
+}
+
+// ReStackGenerate is a hexary trie builder which is built from the
+// bottom-up as keys are added. It attempts to save memory by doing
+// the RLP encoding on the fly during hashing.
+func ReStackGenerate(in chan (trieKV), out chan (common.Hash)) {
+	t := trie.NewReStackTrie()
+	for leaf := range in {
+		t.TryUpdate(leaf.key[:], leaf.value)
+	}
+	out <- t.Hash()
 }
 
 // generateStats is a collection of statistics gathered by the trie generator
