@@ -38,16 +38,16 @@ type ReStackTrie struct {
 // NewReStackTrie allocates and initializes an empty trie.
 func NewReStackTrie() *ReStackTrie {
 	return &ReStackTrie{
-		nodeType: 3,
+		nodeType: emptyNode,
 	}
 }
 
 // List all values that ReStackTrie#nodeType can hold
 const (
-	branchNode = iota
+	emptyNode = iota
+	branchNode
 	extNode
 	leafNode
-	emptyNode
 	hashedNode
 )
 
@@ -228,98 +228,84 @@ func (st *ReStackTrie) insert(key, value []byte) {
 	}
 }
 
+// rawExtHPRLP is called when the length of the RLP of
+// an extension is less than 32. It will return the
+// un-hashed payload.
 func rawExtHPRLP(key, val []byte) []byte {
 	rlp := [32]byte{}
 	nkeybytes := len(key) / 2
 	oddkeylength := len(key) % 2
 
+	// This is the position at which RLP data is written.
+	// The first byte is initially skipped because its final
+	// value will be fully known by the end of the process.
 	pos := 1
+
+	// Write key size if it should be present
 	if nkeybytes > 0 || key[0] > 128 {
 		rlp[pos] = byte(128 + 1 + nkeybytes)
 		pos++
 	}
 
-	// Copy key data, including hex prefix
-	if oddkeylength == 1 {
-		rlp[pos] = 16
-	} else {
-		pos++
-	}
+	// Copy key data, including hex prefix. If the key length
+	// is odd, write the oddness marker, and otherwise skip the
+	// HP byte altogether since the leaf marker isn't set (i.e.
+	// this is an ext) and no odd-nibble needs to be stored.
+	rlp[pos] = byte(16 * oddkeylength)
+	pos += 1 - oddkeylength
+
 	for i := 0; i < len(key); i++ {
 		rlp[pos+(i+oddkeylength)/2] |= key[i] << uint(4*((i+1+len(key))%2))
 	}
+	// `+oddkeylength` adds the accounting for the HP byte, since
+	// in that case `pos` wasn't incremented.
 	pos += (len(key) + oddkeylength) / 2
 
+	// Copy the value, no need for a header because the child is
+	// already RLP and directly embedded.
 	copy(rlp[pos:], val)
+	pos += len(val)
 
 	// RLP header
-	rlp[0] = byte(192 + pos + len(val) - 1)
+	rlp[0] = byte(192 + pos - 1)
 
-	return rlp[:pos+len(val)]
+	return rlp[:pos]
 }
 
-// rawLeafHPRLP is called when the length of the RLP of a node is
+// rawLeafHPRLP is called when the length of the RLP of a leaf is
 // less than 32. It will return the un-hashed payload.
 func rawLeafHPRLP(key, val []byte, leaf bool) []byte {
-	payload := [32]byte{}
-
 	// payload size - none of the components are larger
 	// than 56 since the whole size is smaller than 32
-	val_header_len := 1
-	if len(val) == 1 && val[0] < 128 {
-		val_header_len = 0
-	}
-	var key_header_len int // Length taken by the size header
-	var hplen int          // Length taken by the hex prefix (0 or 1)
-	switch len(key) {
-	case 0:
-		// Key is 0 byte long, so the whole byte will
-		// be less than 128, no header needed. No HP
-		// will be present either.
-		key_header_len = 0
-		hplen = 0
-	case 1:
-		// Key is 1 byte long, so the whole byte will
-		// be less than 128, no header needed. The HP
-		// will be present, however.
-		key_header_len = 0
-		hplen = 1
-	default:
-		// Key is longer than 1 byte, and including
-		// the hex prefix that's more than 2 bytes.
-		// And of course it's less than 56 bytes.
-		key_header_len = 1
-		hplen = 1
-	}
-	payload[0] = 192 + byte(hplen+key_header_len+len(key)/2+val_header_len+len(val))
+	rlp := [32]byte{}
+	oddkeylength := len(key) % 2
 
+	// This is the position at which RLP data is written.
+	// The first byte is initially skipped because its final
+	// value will be fully known by the end of the process.
 	pos := 1
+
 	// Add key, if present
 	if len(key) > 0 {
-		// add length prefix if needed
-		if key_header_len == 1 {
-			payload[1] = byte(1 + len(key)/2)
-			if len(key) > 1 || key[0] > 128 {
-				payload[1] += 128
-			}
+		// add length prefix if needed. If len(key) == 1,
+		// then no size prefix is needed as 1 < 128.
+		if len(key) > 1 {
+			rlp[1] = 128 + byte(1+len(key)/2)
 			pos++
 		}
 
 		// hex prefix
-		payload[pos] = byte(16 * (len(key) % 2))
+		rlp[pos] = byte(16 * (len(key) % 2))
 		if leaf {
-			payload[pos] |= 32
+			rlp[pos] |= 32
 		}
-		if len(key)%2 == 0 {
-			// Advance to next byte iff the key has an odd length
-			// of nibbles.
-			pos++
-		}
+		// Advance to next byte iff the key has an even nibble length
+		pos += 1 - oddkeylength
 
 		// copy key data
 		for i, nibble := range key {
 			offset := 1 - uint((len(key)+i)%2)
-			payload[pos] |= byte(int(nibble) << (4 * offset))
+			rlp[pos] |= byte(int(nibble) << (4 * offset))
 			if offset == 0 {
 				pos++
 			}
@@ -329,31 +315,32 @@ func rawLeafHPRLP(key, val []byte, leaf bool) []byte {
 	// copy value data. If the payload isn't a single byte
 	// lower than 128, also add the header.
 	if len(val) > 1 || val[0] >= 128 {
-		payload[pos] = byte(len(val))
-		if len(val) > 1 {
-			payload[pos] += 128
+		rlp[pos] = byte(len(val))
+		if len(val) > 1 || val[0] > 128 {
+			rlp[pos] += 128
 		}
 		pos += 1
 
 	}
-	copy(payload[pos:], val)
+	copy(rlp[pos:], val)
 	pos += len(val)
 
 	// In case the payload is only one byte,
 	// no header is needed.
 	if pos == 2 {
-		return payload[1:pos]
+		return rlp[1:pos]
 	}
+	rlp[0] = 192 + byte(pos) - 1
 
 	// If the payload reaches exactly 32 bytes, then
 	// it needs to be hashed.
 	if pos == 32 {
 		d := sha3.NewLegacyKeccak256()
-		d.Write(payload[:pos])
+		d.Write(rlp[:pos])
 		return d.Sum(nil)
 	}
 
-	return payload[:pos]
+	return rlp[:pos]
 }
 
 // writeEvenHP writes a key with its hex prefix into a writer (presumably, the
