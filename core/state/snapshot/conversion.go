@@ -49,7 +49,7 @@ type (
 
 // GenerateAccountTrieRoot takes an account iterator and reproduces the root hash.
 func GenerateAccountTrieRoot(it AccountIterator) (common.Hash, error) {
-	return generateTrieRoot(nil, it, common.Hash{}, stdGenerate, nil, &generateStats{start: time.Now()}, true)
+	return generateTrieRoot(nil, it, common.Hash{}, stackTrieGenerate, nil, &generateStats{start: time.Now()}, true)
 }
 
 // GenerateStorageTrieRoot takes a storage iterator and reproduces the root hash.
@@ -67,14 +67,14 @@ func VerifyState(snaptree *Tree, root common.Hash) error {
 	}
 	defer acctIt.Release()
 
-	got, err := generateTrieRoot(nil, acctIt, common.Hash{}, stdGenerate, func(db ethdb.Database, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
+	got, err := generateTrieRoot(nil, acctIt, common.Hash{}, stackTrieGenerate, func(db ethdb.Database, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
 		storageIt, err := snaptree.StorageIterator(root, accountHash, common.Hash{})
 		if err != nil {
 			return common.Hash{}, err
 		}
 		defer storageIt.Release()
 
-		hash, err := generateTrieRoot(nil, storageIt, accountHash, stdGenerate, nil, stat, false)
+		hash, err := generateTrieRoot(nil, storageIt, accountHash, stackTrieGenerate, nil, stat, false)
 		if err != nil {
 			return common.Hash{}, err
 		}
@@ -106,7 +106,7 @@ func CommitAndVerifyState(snaptree *Tree, root common.Hash, db, commitdb ethdb.D
 	}
 	defer acctIt.Release()
 
-	got, err := generateTrieRoot(commitdb, acctIt, common.Hash{}, stdGenerate, func(commitdb ethdb.Database, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
+	got, err := generateTrieRoot(commitdb, acctIt, common.Hash{}, stackTrieGenerate, func(commitdb ethdb.Database, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
 		// Migrate the code first, commit the contract code into the tmp db.
 		if codeHash != emptyCode {
 			// todo the notion of contract code should be integrated into snapshot.
@@ -128,7 +128,7 @@ func CommitAndVerifyState(snaptree *Tree, root common.Hash, db, commitdb ethdb.D
 		}
 		defer storageIt.Release()
 
-		hash, err := generateTrieRoot(commitdb, storageIt, accountHash, stdGenerate, nil, stat, false)
+		hash, err := generateTrieRoot(commitdb, storageIt, accountHash, stackTrieGenerate, nil, stat, false)
 		if err != nil {
 			return common.Hash{}, err
 		}
@@ -352,6 +352,25 @@ func stdGenerate(db ethdb.Database, in chan trieKV, out chan common.Hash) {
 		if err := triedb.Commit(root, false); err != nil {
 			panic(err)
 		}
+	}
+	out <- root
+}
+
+func stackTrieGenerate(db ethdb.Database, in chan trieKV, out chan common.Hash) {
+	commit := db != nil
+	if db == nil {
+		db = rawdb.NewMemoryDatabase()
+	}
+	triedb := trie.NewDatabase(db)
+	t := trie.NewStackTrie()
+	for leaf := range in {
+		t.TryUpdate(leaf.key[:], leaf.value)
+	}
+	var root common.Hash
+	if !commit {
+		root = t.Hash()
+	} else {
+		root = t.Commit(triedb)
 	}
 	out <- root
 }
