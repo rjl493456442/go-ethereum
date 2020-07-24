@@ -546,7 +546,7 @@ func (st *StackTrie) hash() []byte {
 	ret := d.Sum(nil)
 
 	if st.db != nil {
-		st.db.insertPreimage(common.BytesToHash(ret), preimage.Bytes())
+		st.db.InsertBlob(common.BytesToHash(ret), preimage.Bytes())
 	}
 	return ret
 }
@@ -556,4 +556,14 @@ func (st *StackTrie) Hash() (h common.Hash) {
 	st.val = st.hash()
 	st.nodeType = hashedNode
 	return common.BytesToHash(st.val)
+}
+
+// Commit will commit the current node to database db
+func (st *StackTrie) Commit(db *Database) common.Hash {
+	oldDb := st.db
+	st.db = db
+	defer func() {
+		st.db = oldDb
+	}()
+	return common.BytesToHash(st.hash())
 }
