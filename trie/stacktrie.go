@@ -19,8 +19,10 @@ package trie
 import (
 	"io"
 	"bytes"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -34,13 +36,14 @@ type StackTrie struct {
 	keyOffset int            // offset of the key chunk inside a full key
 	children  [16]*StackTrie // list of children (for fullnodes and exts)
 
-	db *Database // Pointer to the commit db, can be nil
+	db ethdb.Database // Pointer to the commit db, can be nil
 }
 
 // NewStackTrie allocates and initializes an empty trie.
-func NewStackTrie() *StackTrie {
+func NewStackTrie(db ethdb.Database) *StackTrie {
 	return &StackTrie{
 		nodeType: emptyNode,
+		db: db,
 	}
 }
 
@@ -106,7 +109,7 @@ func (st *StackTrie) insert(key, value []byte) {
 	case branchNode: /* Branch */
 		idx := int(key[st.keyOffset])
 		if st.children[idx] == nil {
-			st.children[idx] = NewStackTrie()
+			st.children[idx] = NewStackTrie(st.db)
 			st.children[idx].keyOffset = st.keyOffset + 1
 		}
 		for i := idx - 1; i >= 0; i-- {
@@ -162,7 +165,7 @@ func (st *StackTrie) insert(key, value []byte) {
 			// the common prefix is at least one byte
 			// long, insert a new intermediate branch
 			// node.
-			st.children[0] = NewStackTrie()
+			st.children[0] = NewStackTrie(st.db)
 			st.children[0].nodeType = branchNode
 			st.children[0].keyOffset = st.keyOffset + diffidx
 			p = st.children[0]
@@ -209,7 +212,7 @@ func (st *StackTrie) insert(key, value []byte) {
 			// Convert current node into an ext,
 			// and insert a child branch node.
 			st.nodeType = extNode
-			st.children[0] = NewStackTrie()
+			st.children[0] = NewStackTrie(st.db)
 			st.children[0].nodeType = branchNode
 			st.children[0].keyOffset = st.keyOffset + diffidx
 			p = st.children[0]
@@ -546,7 +549,9 @@ func (st *StackTrie) hash() []byte {
 	ret := d.Sum(nil)
 
 	if st.db != nil {
-		st.db.InsertBlob(common.BytesToHash(ret), preimage.Bytes())
+		if err := st.db.Put(ret, preimage.Bytes()); err != nil {
+			panic(fmt.Sprintf("error writing value to db: %v", err))
+		}
 	}
 	return ret
 }
@@ -559,11 +564,12 @@ func (st *StackTrie) Hash() (h common.Hash) {
 }
 
 // Commit will commit the current node to database db
-func (st *StackTrie) Commit(db *Database) common.Hash {
+func (st *StackTrie) Commit(db ethdb.Database) common.Hash {
 	oldDb := st.db
 	st.db = db
 	defer func() {
 		st.db = oldDb
 	}()
-	return common.BytesToHash(st.hash())
+	h := common.BytesToHash(st.hash())
+	return h
 }
