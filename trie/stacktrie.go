@@ -399,7 +399,7 @@ func writeHPRLP(writer io.Writer, key, val []byte, leaf bool) {
 	// Add the key byte header, the key is 32 bytes max so it's always
 	// under 56 bytes - no extra byte needed.
 	keyByteSize := byte(len(key) / 2)
-	if len(key) > 1 || header[len(header)-1] > 128 {
+	if len(key) > 1 {
 		header[headerPos] = 0x80 + keyByteSize + 1 /* HP */
 		headerPos--
 	}
@@ -413,7 +413,7 @@ func writeHPRLP(writer io.Writer, key, val []byte, leaf bool) {
 		// is an integer < 128
 		valHeaderLen = 0
 	}
-	if len(val) > 56 {
+	if len(val) >= 56 {
 		valHeaderLen = 2
 	}
 
@@ -450,7 +450,7 @@ func writeHPRLP(writer io.Writer, key, val []byte, leaf bool) {
 	}
 
 	// Write the RLP prefix to the value if needed
-	if len(val) > 56 {
+	if len(val) >= 56 {
 		writer.Write([]byte{0xb8, byte(len(val))})
 	} else if len(val) != 1 || val[0] >= 128 {
 		writer.Write([]byte{0x80 + byte(len(val))})
