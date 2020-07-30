@@ -54,7 +54,7 @@ func GenerateAccountTrieRoot(it AccountIterator) (common.Hash, error) {
 
 // GenerateStorageTrieRoot takes a storage iterator and reproduces the root hash.
 func GenerateStorageTrieRoot(account common.Hash, it StorageIterator) (common.Hash, error) {
-	return generateTrieRoot(nil, it, account, stdGenerate, nil, &generateStats{start: time.Now()}, true)
+	return generateTrieRoot(nil, it, account, stackTrieGenerate, nil, &generateStats{start: time.Now()}, true)
 }
 
 // VerifyState takes the whole snapshot tree as the input, traverses all the accounts
@@ -366,7 +366,7 @@ func stackTrieGenerate(db ethdb.Database, in chan trieKV, out chan common.Hash) 
 	if !commit {
 		root = t.Hash()
 	} else {
-		root = t.Commit(db )
+		root = t.Commit(db)
 	}
 	out <- root
 }
