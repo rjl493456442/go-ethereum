@@ -22,7 +22,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/ethdb"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -36,23 +35,24 @@ type StackTrie struct {
 	keyOffset int            // offset of the key chunk inside a full key
 	children  [16]*StackTrie // list of children (for fullnodes and exts)
 
-	db ethdb.Database // Pointer to the commit db, can be nil
+	db *Database // Pointer to the commit db, can be nil
 }
 
 // NewStackTrie allocates and initializes an empty trie.
-func NewStackTrie(db ethdb.Database) *StackTrie {
+func NewStackTrie(db *Database) *StackTrie {
 	return &StackTrie{
 		nodeType: emptyNode,
-		db: db,
+		db:       db,
 	}
 }
 
-func newLeaf(ko int, key, val []byte) *StackTrie {
+func newLeaf(ko int, key, val []byte, db *Database) *StackTrie {
 	return &StackTrie{
 		nodeType:  leafNode,
 		keyOffset: ko,
 		key:       key[ko:],
 		val:       val,
+		db:        db,
 	}
 }
 
@@ -63,11 +63,12 @@ func (st *StackTrie) convertToHash(ko int) {
 	st.key = nil
 }
 
-func newExt(ko int, key []byte, child *StackTrie) *StackTrie {
+func newExt(ko int, key []byte, child *StackTrie, db *Database) *StackTrie {
 	st := &StackTrie{
 		nodeType:  extNode,
 		keyOffset: ko,
 		key:       key[ko:],
+		db:        db,
 	}
 	st.children[0] = child
 	return st
@@ -146,7 +147,7 @@ func (st *StackTrie) insert(key, value []byte) {
 		// node directly.
 		var n *StackTrie
 		if diffidx < len(st.key)-1 {
-			n = newExt(diffidx+1, st.key, st.children[0])
+			n = newExt(diffidx+1, st.key, st.children[0], st.db)
 		} else {
 			// Break on the last byte, no need to insert
 			// an extension node: reuse the current node
@@ -176,7 +177,7 @@ func (st *StackTrie) insert(key, value []byte) {
 		n.key = nil
 
 		// Create a leaf for the inserted part
-		o := newLeaf(st.keyOffset+diffidx+1, key, value)
+		o := newLeaf(st.keyOffset+diffidx+1, key, value, st.db)
 
 		// Insert both child leaves where they belong:
 		origIdx := st.key[diffidx]
@@ -223,11 +224,11 @@ func (st *StackTrie) insert(key, value []byte) {
 		// The child leave will be hashed directly in order to
 		// free up some memory.
 		origIdx := st.key[diffidx]
-		p.children[origIdx] = newLeaf(diffidx+1, st.key, st.val)
+		p.children[origIdx] = newLeaf(diffidx+1, st.key, st.val, st.db)
 		p.children[origIdx].convertToHash(p.keyOffset + 1)
 
 		newIdx := key[diffidx+st.keyOffset]
-		p.children[newIdx] = newLeaf(p.keyOffset+1, key, value)
+		p.children[newIdx] = newLeaf(p.keyOffset+1, key, value, st.db)
 
 		// Finally, cut off the key part that has been passed
 		// over to the children.
@@ -252,9 +253,11 @@ func (st *StackTrie) hash() []byte {
 	}
 
 	var preimage bytes.Buffer
+	var n node
 	d := sha3.NewLegacyKeccak256()
 	switch st.nodeType {
 	case branchNode:
+		n = &fullNode{}
 		payload := [544]byte{}
 		pos := 3 // maximum header length given what we know
 		for i, v := range st.children {
@@ -267,6 +270,7 @@ func (st *StackTrie) hash() []byte {
 				}
 				copy(payload[pos:pos+len(childhash)], childhash)
 				pos += len(childhash)
+				n.(*fullNode).Children[i] = hashNode(childhash)
 				st.children[i] = nil // Reclaim mem from subtree
 			} else {
 				// Write an empty list to the sponge
@@ -305,7 +309,7 @@ func (st *StackTrie) hash() []byte {
 		preimage.Write(payload[start:pos])
 	case extNode:
 		ch := st.children[0].hash()
-		n := shortNode{
+		n = &shortNode{
 			Key: hexToCompact(st.key),
 			Val: hashNode(ch),
 		}
@@ -318,7 +322,7 @@ func (st *StackTrie) hash() []byte {
 			return preimage.Bytes()
 		}
 	case leafNode:
-		n := shortNode{
+		n = &shortNode{
 			Key: hexToCompact(append(st.key, byte(16))),
 			Val: valueNode(st.val),
 		}
@@ -334,12 +338,13 @@ func (st *StackTrie) hash() []byte {
 	default:
 		panic("Invalid node type")
 	}
+	rlpSize := preimage.Len()
 	d.Write(preimage.Bytes())
 	ret := d.Sum(nil)
 
 	if st.db != nil {
-		if err := st.db.Put(ret, preimage.Bytes()); err != nil {
-			panic(fmt.Sprintf("error writing value to db: %v", err))
+		if n != nil {
+			st.db.insert(common.BytesToHash(ret), rlpSize, n)
 		}
 	}
 	return ret
@@ -353,7 +358,7 @@ func (st *StackTrie) Hash() (h common.Hash) {
 }
 
 // Commit will commit the current node to database db
-func (st *StackTrie) Commit(db ethdb.Database) common.Hash {
+func (st *StackTrie) Commit(db *Database) common.Hash {
 	oldDb := st.db
 	st.db = db
 	defer func() {
