@@ -374,7 +374,7 @@ func stackTrieGenerate(db ethdb.Database, in chan trieKV, out chan common.Hash) 
 	} else {
 		root = t.Commit(triedb)
 		if err := triedb.Commit(root, false); err != nil {
-		panic(err)
+			panic(err)
 		}
 	}
 	out <- root

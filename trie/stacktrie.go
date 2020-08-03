@@ -245,7 +245,6 @@ func (st *StackTrie) insert(key, value []byte) {
 	}
 }
 
-
 func (st *StackTrie) hash() []byte {
 	/* Shortcut if node is already hashed */
 	if st.nodeType == hashedNode {
@@ -257,7 +256,7 @@ func (st *StackTrie) hash() []byte {
 	d := sha3.NewLegacyKeccak256()
 	switch st.nodeType {
 	case branchNode:
-		n = &fullNode{}
+		fn := &fullNode{}
 		payload := [544]byte{}
 		pos := 3 // maximum header length given what we know
 		for i, v := range st.children {
@@ -270,7 +269,12 @@ func (st *StackTrie) hash() []byte {
 				}
 				copy(payload[pos:pos+len(childhash)], childhash)
 				pos += len(childhash)
-				n.(*fullNode).Children[i] = hashNode(childhash)
+				if len(childhash) < 32 {
+					fn.Children[i] = rawNode(childhash)
+
+				} else {
+					fn.Children[i] = hashNode(childhash)
+				}
 				st.children[i] = nil // Reclaim mem from subtree
 			} else {
 				// Write an empty list to the sponge
@@ -306,6 +310,7 @@ func (st *StackTrie) hash() []byte {
 			// into its parent.
 			return payload[start:pos]
 		}
+		n = fn
 		preimage.Write(payload[start:pos])
 	case extNode:
 		ch := st.children[0].hash()
@@ -345,6 +350,12 @@ func (st *StackTrie) hash() []byte {
 	if st.db != nil {
 		if n != nil {
 			st.db.insert(common.BytesToHash(ret), rlpSize, n)
+			// Commit if the size is above 1G
+			if st.db.dirtiesSize > 1073741824 {
+				if err := st.db.Commit(common.BytesToHash(ret), false); err != nil {
+					panic(err)
+				}
+			}
 		}
 	}
 	return ret
