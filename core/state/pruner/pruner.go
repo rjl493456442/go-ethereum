@@ -19,7 +19,6 @@ package pruner
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -35,8 +34,8 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-// temporaryStateDatabase is the directory name of temporary database for pruning usage.
-const temporaryStateDatabase = "pruning.tmp"
+// stateBloomFileName is the filename of state bloom filter.
+const stateBloomFileName = "statebloom.bf.gz"
 
 var (
 	// emptyRoot is the known root hash of an empty trie.
@@ -47,9 +46,10 @@ var (
 )
 
 type Pruner struct {
-	db, statedb ethdb.Database
-	homedir     string
-	snaptree    *snapshot.Tree
+	db             ethdb.Database
+	stateBloom     *StateBloom
+	stateBloomPath string
+	snaptree       *snapshot.Tree
 }
 
 // NewPruner creates the pruner instance.
@@ -58,19 +58,20 @@ func NewPruner(db ethdb.Database, root common.Hash, homedir string) (*Pruner, er
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
-	statedb, err := openTemporaryDatabase(homedir)
+	// TODO @rjl493456442 don't hardcode here.
+	stateBloom, err := NewStateBloom(600*1024*1024 /* 600M */, 0.0005 /* 0.05% */)
 	if err != nil {
 		return nil, err
 	}
 	return &Pruner{
-		db:       db,
-		statedb:  statedb,
-		homedir:  homedir,
-		snaptree: snaptree,
+		db:             db,
+		stateBloom:     stateBloom,
+		stateBloomPath: filepath.Join(homedir, stateBloomFileName),
+		snaptree:       snaptree,
 	}, nil
 }
 
-func prune(maindb ethdb.Database, statedb ethdb.Database, start time.Time) error {
+func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error {
 	// Extract all node refs belong to the genesis. We have to keep the
 	// genesis all the time.
 	marker, err := extractGenesis(maindb)
@@ -101,9 +102,23 @@ func prune(maindb ethdb.Database, statedb ethdb.Database, start time.Time) error
 				if _, ok := marker[common.BytesToHash(codeKey)]; ok {
 					continue // Genesis contract code
 				}
+				ok, err := stateBloom.Contain(codeKey)
+				if err != nil {
+					return err // Something very wrong
+				}
+				if ok {
+					continue
+				}
 			} else {
 				if _, ok := marker[common.BytesToHash(key)]; ok {
 					continue // Genesis state trie node or legacy contract code
+				}
+				ok, err := stateBloom.Contain(key)
+				if err != nil {
+					return err // Something very wrong
+				}
+				if ok {
+					continue
 				}
 			}
 			size += common.StorageSize(len(key) + len(iter.Value()))
@@ -146,10 +161,7 @@ func prune(maindb ethdb.Database, statedb ethdb.Database, start time.Time) error
 		log.Error("Failed to compact the whole database", "error", err)
 	}
 	log.Info("Compacted the whole database", "elapsed", common.PrettyDuration(time.Since(cstart)))
-
-	// Migrate the state from the state db to main one.
-	committed := migrateState(maindb, statedb)
-	log.Info("Successfully prune the state", "committed", committed, "pruned", size, "released", size-committed, "elasped", common.PrettyDuration(time.Since(start)))
+	log.Info("Successfully prune the state", "pruned", size, "elasped", common.PrettyDuration(time.Since(start)))
 	return nil
 }
 
@@ -169,86 +181,20 @@ func (p *Pruner) Prune(root common.Hash) error {
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
 	// commit to the given temporary database.
-	if err := snapshot.CommitAndVerifyState(p.snaptree, root, p.db, p.statedb); err != nil {
+	if err := snapshot.CommitAndVerifyState(p.snaptree, root, p.db, p.stateBloom); err != nil {
 		return err
 	}
 	type commiter interface {
-		Commit() error
+		Commit(string) error
 	}
-	if err := p.statedb.(commiter).Commit(); err != nil {
+	if err := p.stateBloom.Commit(p.stateBloomPath); err != nil {
 		return err
 	}
-	if err := prune(p.db, p.statedb, start); err != nil {
+	if err := prune(p.db, p.stateBloom, start); err != nil {
 		return err
 	}
-	wipeTemporaryDatabase(p.homedir, p.statedb)
+	os.RemoveAll(p.stateBloomPath)
 	return nil
-}
-
-// openTemporaryDatabase opens the temporary state database under the given
-// instance directory.
-func openTemporaryDatabase(homedir string) (ethdb.Database, error) {
-	// Firstly try to open the db in read-only mode. If no error
-	// returned, it means there already exists one complete statedb.
-	// In this case, abort the entire procedure.
-	dir := filepath.Join(homedir, temporaryStateDatabase)
-	db, err := rawdb.NewFlatDatabase(dir, true)
-	if err == nil {
-		db.Close()
-		return nil, fmt.Errorf("backup state database<%s> is existent, don't run `prune-state` again", dir)
-	}
-	// Then open as the write-only mode. It will automatically truncate
-	// all existent content which is regarded as "incomplete".
-	return rawdb.NewFlatDatabase(dir, false)
-}
-
-// wipeTemporaryDatabase closes the db handler and wipes the data from the disk.
-func wipeTemporaryDatabase(homedir string, db ethdb.Database) {
-	db.Close()
-	os.RemoveAll(filepath.Join(homedir, temporaryStateDatabase))
-}
-
-// migrateState moves all states in state database to main db.
-func migrateState(maindb, statedb ethdb.Database) common.StorageSize {
-	var (
-		count  int
-		size   common.StorageSize
-		start  = time.Now()
-		logged = time.Now()
-		batch  = maindb.NewBatch()
-		iter   = statedb.NewIterator(nil, nil)
-	)
-	defer iter.Release()
-
-	for iter.Next() {
-		key := iter.Key()
-		// Note all entries with 32byte length key(trie nodes,
-		// contract codes are migrated here).
-		if len(key) != common.HashLength {
-			iscode, _ := rawdb.IsCodeKey(key)
-			if !iscode {
-				panic("invalid entry in database")
-			}
-		}
-		size += common.StorageSize(len(key) + len(iter.Value()))
-		batch.Put(key, iter.Value())
-
-		if batch.ValueSize() >= ethdb.IdealBatchSize {
-			batch.Write()
-			batch.Reset()
-		}
-		count += 1
-		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
-			log.Info("Migrating state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(start)))
-			logged = time.Now()
-		}
-	}
-	if batch.ValueSize() > 0 {
-		batch.Write()
-		batch.Reset()
-	}
-	log.Info("Migrated state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(start)))
-	return size
 }
 
 // RecoverTemporaryDatabase migrates all state data from external state database
@@ -262,20 +208,18 @@ func migrateState(maindb, statedb ethdb.Database) common.StorageSize {
 // creating the backup for specific version, the system exits(maually or crashed).
 // In the next restart, the paused pruning should be continued.
 func RecoverTemporaryDatabase(homedir string, db ethdb.Database) error {
-	dir := filepath.Join(homedir, temporaryStateDatabase)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	stateBloomPath := filepath.Join(homedir, stateBloomFileName)
+	if _, err := os.Stat(stateBloomPath); os.IsNotExist(err) {
 		return nil // nothing to recover
 	}
-	// Open the flatdb in read-only mode. Error will be returned if it's
-	// an incomplete database. TODO in this case, please drop it.
-	statedb, err := rawdb.NewFlatDatabase(dir, true)
+	stateBloom, err := NewStateBloomFromDisk(stateBloomPath)
 	if err != nil {
 		return err
 	}
-	if err := prune(db, statedb, time.Now()); err != nil {
+	if err := prune(db, stateBloom, time.Now()); err != nil {
 		return err
 	}
-	wipeTemporaryDatabase(homedir, statedb)
+	os.RemoveAll(stateBloomPath)
 	return nil
 }
 
