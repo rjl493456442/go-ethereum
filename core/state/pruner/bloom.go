@@ -19,6 +19,7 @@ package pruner
 import (
 	"encoding/binary"
 	"errors"
+	"path/filepath"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -65,7 +66,7 @@ type StateBloom struct {
 
 // NewStateBloom creates a brand new state bloom for state generation.
 // The optimal bloom filter will be created by the passing "max entries"
-// and the maximum collision rate.
+// and the "estimated" maximum collision rate.
 func NewStateBloom(entries uint64, collision float64) (*StateBloom, error) {
 	bloom, err := bloomfilter.NewOptimal(entries, collision)
 	if err != nil {
@@ -95,8 +96,27 @@ func NewStateBloomFromDisk(filename string) (*StateBloom, error) {
 // as complete.
 func (bloom *StateBloom) Commit(filename string) error {
 	if atomic.CompareAndSwapUint32(&bloom.done, 0, 1) {
-		_, err := bloom.bloom.WriteFile(filename)
-		return err
+		// Firstly, flush the bloom filter to the temporary file
+		_, err := bloom.bloom.WriteFile(filename + ".tmp")
+		if err != nil {
+			return err
+		}
+		// Secondly, rename the file.
+		if err := rename(filename+".tmp", filename); err != nil {
+			return err
+		}
+		// Thirdly, fsync the directory to ensure all pending
+		// rename operations are transferred to disk
+		if err := syncDir(filepath.Dir(filename)); err != nil {
+			return err
+		}
+		// Lastly, reload the content back. TODO can we get rid of it?
+		b, _, err := bloomfilter.ReadFile(filename)
+		if err != nil {
+			return err
+		}
+		bloom.bloom = b
+		return nil
 	}
 	return errors.New("bloom filter is committed")
 }
@@ -115,8 +135,5 @@ func (bloom *StateBloom) Delete(key []byte) error { panic("not supported") }
 // - If it says yes, the key may be contained
 // - If it says no, the key is definitely not contained.
 func (bloom *StateBloom) Contain(key []byte) (bool, error) {
-	if atomic.LoadUint32(&bloom.done) != 1 {
-		return false, errors.New("bloom filter is not committed")
-	}
 	return bloom.bloom.Contains(stateBloomHasher(key)), nil
 }

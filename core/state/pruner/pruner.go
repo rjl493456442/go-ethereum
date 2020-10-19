@@ -39,7 +39,7 @@ const (
 	stateBloomFileName = "statebloom.bf.gz"
 
 	// bloomFilterEntries is the estimated value of the number of trie nodes
-	// and codes contained in the state. It's designed for mainnet for also
+	// and codes contained in the state. It's designed for mainnet but also
 	// suitable for other small testnets.
 	bloomFilterEntries = 600 * 1024 * 1024
 
@@ -49,7 +49,7 @@ const (
 
 	// rangeCompactionThreshold is the minimal deleted entry number for
 	// triggering range compaction. It's a quite arbitrary number but just
-	// avoiding trigger range compaction because of small deletion.
+	// to avoid triggering range compaction because of small deletion.
 	rangeCompactionThreshold = 100000
 )
 
@@ -199,12 +199,9 @@ func (p *Pruner) Prune(root common.Hash) error {
 	}
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
-	// commit to the given temporary database.
+	// commit to the given bloom filter.
 	if err := snapshot.CommitAndVerifyState(p.snaptree, root, p.db, p.stateBloom); err != nil {
 		return err
-	}
-	type commiter interface {
-		Commit(string) error
 	}
 	if err := p.stateBloom.Commit(p.stateBloomPath); err != nil {
 		return err
@@ -219,7 +216,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 // RecoverPruning will resume the pruning procedure during the system restart.
 // This function is used in this case: user tries to prune state data, but the
 // system was interrupted midway because of crash or manual-kill. In this case
-// if the bloom filter for filtering active nodes is already constructed, the
+// if the bloom filter for filtering active state is already constructed, the
 // pruning can be resumed. What's more if the bloom filter is constructed, the
 // pruning **has to be resumed**. Otherwise a lot of dangling nodes may be left
 // in the disk.
