@@ -34,8 +34,24 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-// stateBloomFileName is the filename of state bloom filter.
-const stateBloomFileName = "statebloom.bf.gz"
+const (
+	// stateBloomFileName is the filename of state bloom filter.
+	stateBloomFileName = "statebloom.bf.gz"
+
+	// bloomFilterEntries is the estimated value of the number of trie nodes
+	// and codes contained in the state. It's designed for mainnet for also
+	// suitable for other small testnets.
+	bloomFilterEntries = 600 * 1024 * 1024
+
+	// bloomFalsePositiveRate is the acceptable probability of bloom filter
+	// false-positive. It's around 0.05%.
+	bloomFalsePositiveRate = 0.0005
+
+	// rangeCompactionThreshold is the minimal deleted entry number for
+	// triggering range compaction. It's a quite arbitrary number but just
+	// avoiding trigger range compaction because of small deletion.
+	rangeCompactionThreshold = 100000
+)
 
 var (
 	// emptyRoot is the known root hash of an empty trie.
@@ -58,8 +74,11 @@ func NewPruner(db ethdb.Database, root common.Hash, homedir string) (*Pruner, er
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
-	// TODO @rjl493456442 don't hardcode here.
-	stateBloom, err := NewStateBloom(600*1024*1024 /* 600M */, 0.0005 /* 0.05% */)
+	// The passed parameters for constructing the bloom filter
+	// is quite arbitrary. The trie nodes on mainnet is around
+	// 600M nowsday. So the parameters are designed for mainnet
+	// but it's also suitable for smaller networks.
+	stateBloom, err := NewStateBloom(bloomFilterEntries, bloomFalsePositiveRate)
 	if err != nil {
 		return nil, err
 	}
@@ -78,9 +97,13 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 	if err != nil {
 		return err
 	}
-	// Delete all old trie nodes in the disk(it's safe since we already commit
-	// a complete trie to the temporary db, any crash happens we can recover
-	// a complete state from it).
+	// Delete all stale trie nodes in the disk. With the help of state bloom
+	// the trie nodes(and codes) belong to the active state will be filtered
+	// out. A very small part of stale tries will also be filtered because of
+	// the false-positive rate of bloom filter. But the assumption is held here
+	// that the false-positive is low enough(~0.05%). The probablity of the
+	// dangling node is the state root is super low. So the dangling nodes in
+	// theory will never ever be visited again.
 	var (
 		count  int
 		size   common.StorageSize
@@ -94,32 +117,25 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 	for iter.Next() {
 		key := iter.Key()
 
-		// Note all entries with 32byte length key(trie nodes,
-		// contract codes) are deleted here.
+		// All state entries don't belong to specific state and genesis are deleted here
+		// - trie node
+		// - legacy contract code
+		// - new-scheme contract code
 		isCode, codeKey := rawdb.IsCodeKey(key)
 		if len(key) == common.HashLength || isCode {
+			checkKey := key
 			if isCode {
-				if _, ok := marker[common.BytesToHash(codeKey)]; ok {
-					continue // Genesis contract code
-				}
-				ok, err := stateBloom.Contain(codeKey)
-				if err != nil {
-					return err // Something very wrong
-				}
-				if ok {
-					continue
-				}
-			} else {
-				if _, ok := marker[common.BytesToHash(key)]; ok {
-					continue // Genesis state trie node or legacy contract code
-				}
-				ok, err := stateBloom.Contain(key)
-				if err != nil {
-					return err // Something very wrong
-				}
-				if ok {
-					continue
-				}
+				checkKey = codeKey
+			}
+			if _, ok := marker[common.BytesToHash(checkKey)]; ok {
+				continue // State belongs to genesis
+			}
+			ok, err := stateBloom.Contain(checkKey)
+			if err != nil {
+				return err // Something very wrong
+			}
+			if ok {
+				continue // State belongs to specific state
 			}
 			size += common.StorageSize(len(key) + len(iter.Value()))
 			batch.Delete(key)
@@ -155,12 +171,15 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 	log.Info("Pruned state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
 
 	// Start compactions, will remove the deleted data from the disk immediately.
-	cstart := time.Now()
-	log.Info("Start compacting the database")
-	if err := maindb.Compact(rangestart, rangelimit); err != nil {
-		log.Error("Failed to compact the whole database", "error", err)
+	// Note for small pruning, the compaction is skipped.
+	if count >= rangeCompactionThreshold {
+		cstart := time.Now()
+		log.Info("Start compacting the database")
+		if err := maindb.Compact(rangestart, rangelimit); err != nil {
+			log.Error("Failed to compact the whole database", "error", err)
+		}
+		log.Info("Compacted the whole database", "elapsed", common.PrettyDuration(time.Since(cstart)))
 	}
-	log.Info("Compacted the whole database", "elapsed", common.PrettyDuration(time.Since(cstart)))
 	log.Info("Successfully prune the state", "pruned", size, "elasped", common.PrettyDuration(time.Since(start)))
 	return nil
 }
@@ -197,17 +216,14 @@ func (p *Pruner) Prune(root common.Hash) error {
 	return nil
 }
 
-// RecoverTemporaryDatabase migrates all state data from external state database
-// to given main db. If the state database is broken(not complete), then interrupt
-// the recovery.
-//
-// Note before the migration, the main db still needs to be pruned, otherwise the
-// dangling nodes will be left.
-//
-// This function is used in this case: user tries to prune state data, but after
-// creating the backup for specific version, the system exits(maually or crashed).
-// In the next restart, the paused pruning should be continued.
-func RecoverTemporaryDatabase(homedir string, db ethdb.Database) error {
+// RecoverPruning will resume the pruning procedure during the system restart.
+// This function is used in this case: user tries to prune state data, but the
+// system was interrupted midway because of crash or manual-kill. In this case
+// if the bloom filter for filtering active nodes is already constructed, the
+// pruning can be resumed. What's more if the bloom filter is constructed, the
+// pruning **has to be resumed**. Otherwise a lot of dangling nodes may be left
+// in the disk.
+func RecoverPruning(homedir string, db ethdb.Database) error {
 	stateBloomPath := filepath.Join(homedir, stateBloomFileName)
 	if _, err := os.Stat(stateBloomPath); os.IsNotExist(err) {
 		return nil // nothing to recover
