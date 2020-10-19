@@ -21,6 +21,8 @@ import (
 	"errors"
 	"sync/atomic"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/steakknife/bloomfilter"
 )
 
@@ -69,6 +71,7 @@ func NewStateBloom(entries uint64, collision float64) (*StateBloom, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
 	return &StateBloom{
 		bloom: bloom,
 		done:  0,
