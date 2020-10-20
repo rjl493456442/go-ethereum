@@ -105,17 +105,11 @@ func (bloom *StateBloom) Commit(filename string) error {
 		if err := rename(filename+".tmp", filename); err != nil {
 			return err
 		}
-		// Thirdly, fsync the directory to ensure all pending
+		// Lastly, fsync the directory to ensure all pending
 		// rename operations are transferred to disk
 		if err := syncDir(filepath.Dir(filename)); err != nil {
 			return err
 		}
-		// Lastly, reload the content back. TODO can we get rid of it?
-		b, _, err := bloomfilter.ReadFile(filename)
-		if err != nil {
-			return err
-		}
-		bloom.bloom = b
 		return nil
 	}
 	return errors.New("bloom filter is committed")
