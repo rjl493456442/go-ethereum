@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/steakknife/bloomfilter"
 )
@@ -117,6 +118,16 @@ func (bloom *StateBloom) Commit(filename string) error {
 
 // Put implements the KeyValueWriter interface. But here only the key is needed.
 func (bloom *StateBloom) Put(key []byte, value []byte) error {
+	// If the key length is not 32bytes, ensure it's contract code
+	// entry with new scheme.
+	if len(key) != common.HashLength {
+		isCode, codeKey := rawdb.IsCodeKey(key)
+		if !isCode {
+			return errors.New("invalid entry")
+		}
+		bloom.bloom.Add(stateBloomHasher(codeKey))
+		return nil
+	}
 	bloom.bloom.Add(stateBloomHasher(key))
 	return nil
 }
