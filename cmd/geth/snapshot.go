@@ -144,7 +144,7 @@ func pruneState(ctx *cli.Context) error {
 	}
 	err = pruner.Prune(root)
 	if err != nil {
-		utils.Fatalf("Failed to prune state", "error", err)
+		utils.Fatalf("Failed to prune state %v", err)
 	}
 	return nil
 }

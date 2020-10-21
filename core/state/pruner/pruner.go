@@ -19,6 +19,7 @@ package pruner
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -201,7 +202,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// is the presence of root can indicate the presence of the
 	// entire trie.
 	if blob := rawdb.ReadTrieNode(p.db, root); len(blob) == 0 {
-		return errors.New("associated state is not present")
+		return fmt.Errorf("associated state[%x] is not present", root)
 	}
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
