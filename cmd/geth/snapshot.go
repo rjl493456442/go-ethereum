@@ -196,13 +196,22 @@ func traverseState(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	_, chaindb := utils.MakeChain(ctx, stack, true)
+	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
 	if ctx.NArg() > 1 {
 		log.Crit("Too many arguments given")
 	}
-	var root = rawdb.ReadSnapshotRoot(chaindb)
+	// Use the HEAD-127 root as the default
+	head := chain.CurrentBlock()
+	if head == nil {
+		log.Crit("Head block is missing")
+	}
+	target := chain.GetBlockByNumber(head.NumberU64() - 127)
+	if target == nil {
+		log.Crit("Target block is missing")
+	}
+	var root = target.Root()
 	if ctx.NArg() == 1 {
 		root = common.HexToHash(ctx.Args()[0])
 	}
@@ -273,13 +282,22 @@ func traverseRawState(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	_, chaindb := utils.MakeChain(ctx, stack, true)
+	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
 	if ctx.NArg() > 1 {
 		log.Crit("Too many arguments given")
 	}
-	var root = rawdb.ReadSnapshotRoot(chaindb)
+	// Use the HEAD-127 root as the default
+	head := chain.CurrentBlock()
+	if head == nil {
+		log.Crit("Head block is missing")
+	}
+	target := chain.GetBlockByNumber(head.NumberU64() - 127)
+	if target == nil {
+		log.Crit("Target block is missing")
+	}
+	var root = target.Root()
 	if ctx.NArg() == 1 {
 		root = common.HexToHash(ctx.Args()[0])
 	}
