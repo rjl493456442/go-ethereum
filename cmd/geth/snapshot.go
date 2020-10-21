@@ -131,18 +131,19 @@ func pruneState(ctx *cli.Context) error {
 	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
-	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Root(), stack.ResolvePath(""))
+	headRoot := chain.CurrentBlock().Root()
+	pruner, err := pruner.NewPruner(chaindb, headRoot, stack.ResolvePath(""))
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}
 	if ctx.NArg() > 1 {
 		utils.Fatalf("too many arguments given")
 	}
-	var root common.Hash
+	var targetRoot common.Hash
 	if ctx.NArg() == 1 {
-		root = common.HexToHash(ctx.Args()[0])
+		targetRoot = common.HexToHash(ctx.Args()[0])
 	}
-	err = pruner.Prune(root)
+	err = pruner.Prune(targetRoot)
 	if err != nil {
 		utils.Fatalf("Failed to prune state %v", err)
 	}

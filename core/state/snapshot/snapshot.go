@@ -237,6 +237,32 @@ func (t *Tree) Snapshot(blockRoot common.Hash) Snapshot {
 	return t.layers[blockRoot]
 }
 
+// SnapshotInDepth returns a snapshot with depth below the given root.
+// Return nil if there is no snapshot in such depth.
+func (t *Tree) SnapshotInDepth(root common.Hash, depth int) Snapshot {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	layer := t.layers[root]
+	if layer == nil {
+		return nil
+	}
+	for {
+		if depth == 0 {
+			return layer
+		}
+		parent := layer.Parent()
+		if _, ok := parent.(*diskLayer); ok {
+			if depth == 1 {
+				return parent
+			}
+			return nil
+		}
+		layer = parent
+		depth -= 1
+	}
+}
+
 // Update adds a new snapshot into the tree, if that can be linked to an existing
 // old parent. It is disallowed to insert a disk layer (the origin of all).
 func (t *Tree) Update(blockRoot common.Hash, parentRoot common.Hash, destructs map[common.Hash]struct{}, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) error {

@@ -17,6 +17,7 @@
 package snapshot
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"math/rand"
@@ -367,5 +368,70 @@ func TestPostCapBasicDataAccess(t *testing.T) {
 	// is a disk layer
 	if err := snaps.Cap(common.HexToHash("0xa3"), 0); err == nil {
 		t.Error("expected error capping the disk layer, got none")
+	}
+}
+
+// TestSnaphotInDepth tests the functionality for retrieveing the snapshot
+// with given head root and the desired depth.
+func TestSnaphotInDepth(t *testing.T) {
+	// setAccount is a helper to construct a random account entry and assign it to
+	// an account slot in a snapshot
+	setAccount := func(accKey string) map[common.Hash][]byte {
+		return map[common.Hash][]byte{
+			common.HexToHash(accKey): randomAccount(),
+		}
+	}
+	makeRoot := func(height uint64) common.Hash {
+		var buffer [8]byte
+		binary.BigEndian.PutUint64(buffer[:], height)
+		return common.BytesToHash(buffer[:])
+	}
+	// Create a starting base layer and a snapshot tree out of it
+	base := &diskLayer{
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
+	}
+	snaps := &Tree{
+		layers: map[common.Hash]snapshot{
+			base.root: base,
+		},
+	}
+	// Construct the snapshots with 128 layers
+	var (
+		last = common.HexToHash("0x01")
+		head common.Hash
+	)
+	for i := 0; i < 128; i++ {
+		head = makeRoot(uint64(i + 2))
+		snaps.Update(head, last, nil, setAccount(fmt.Sprintf("%d", i+2)), nil)
+		last = head
+	}
+	var cases = []struct {
+		headRoot common.Hash
+		depth    int
+		expect   common.Hash
+	}{
+		{common.HexToHash("0x01"), 0, common.HexToHash("0x01")}, // Disk layer
+		{head, 0, head},
+		{head, 1, makeRoot(127 + 2 - 1)},
+		{head, 127, makeRoot(127 + 2 - 127)},
+		{head, 128, common.HexToHash("0x01")},
+	}
+	for _, c := range cases {
+		snap := snaps.SnapshotInDepth(c.headRoot, c.depth)
+
+		if c.expect == (common.Hash{}) {
+			if snap != nil {
+				t.Fatal("Snapshot is expected to be nil")
+			}
+		} else {
+			if snap == nil {
+				t.Fatal("Snapshot is not available")
+			}
+			if snap.Root() != c.expect {
+				t.Fatal("Snapshot mismatch")
+			}
+		}
 	}
 }

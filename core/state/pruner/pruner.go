@@ -66,6 +66,7 @@ type Pruner struct {
 	db             ethdb.Database
 	stateBloom     *StateBloom
 	stateBloomPath string
+	headRoot       common.Hash
 	snaptree       *snapshot.Tree
 }
 
@@ -87,6 +88,7 @@ func NewPruner(db ethdb.Database, root common.Hash, homedir string) (*Pruner, er
 		db:             db,
 		stateBloom:     stateBloom,
 		stateBloomPath: filepath.Join(homedir, stateBloomFileName),
+		headRoot:       root,
 		snaptree:       snaptree,
 	}, nil
 }
@@ -189,14 +191,16 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 // specified state version. If user doesn't specify the state version, use
 // the persisted snapshot disk layer as the target.
 func (p *Pruner) Prune(root common.Hash) error {
-	// If the target state root is not specified, use the oldest layer
-	// (disk layer). Fresh new layer as the target is not recommended,
-	// since it might be non-canonical.
+	// If the target state root is not specified, use the HEAD-127 as the
+	// target. The reason for picking it is:
+	// - in most of the normal cases, the related state is available
+	// - the probability of this layer being reorg is very low
 	if root == (common.Hash{}) {
-		root = rawdb.ReadSnapshotRoot(p.db)
-		if root == (common.Hash{}) {
-			return errors.New("no target state specified")
+		layer := p.snaptree.SnapshotInDepth(p.headRoot, 127)
+		if layer == nil {
+			return errors.New("HEAD-127 layer is not available")
 		}
+		root = layer.Root()
 	}
 	// Ensure the root is really present. The weak assumption
 	// is the presence of root can indicate the presence of the
