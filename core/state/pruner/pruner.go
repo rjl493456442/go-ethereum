@@ -197,6 +197,12 @@ func (p *Pruner) Prune(root common.Hash) error {
 			return errors.New("no target state specified")
 		}
 	}
+	// Ensure the root is really present. The weak assumption
+	// is the presence of root can indicate the presence of the
+	// entire trie.
+	if blob := rawdb.ReadTrieNode(p.db, root); len(blob) == 0 {
+		return errors.New("associated state is not present")
+	}
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
 	// commit to the given bloom filter.
