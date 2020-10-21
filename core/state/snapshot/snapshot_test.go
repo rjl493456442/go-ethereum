@@ -402,21 +402,22 @@ func TestSnaphotInDepth(t *testing.T) {
 		last = common.HexToHash("0x01")
 		head common.Hash
 	)
+	// Flush another 128 layers, one diff will be flatten into the parent.
 	for i := 0; i < 128; i++ {
 		head = makeRoot(uint64(i + 2))
 		snaps.Update(head, last, nil, setAccount(fmt.Sprintf("%d", i+2)), nil)
 		last = head
+		snaps.Cap(head, 127) // 128 layers are allowed, 128th is the persistent layer
 	}
 	var cases = []struct {
 		headRoot common.Hash
 		depth    int
 		expect   common.Hash
 	}{
-		{common.HexToHash("0x01"), 0, common.HexToHash("0x01")}, // Disk layer
 		{head, 0, head},
 		{head, 1, makeRoot(127 + 2 - 1)},
-		{head, 127, makeRoot(127 + 2 - 127)},
-		{head, 128, common.HexToHash("0x01")},
+		{head, 126, makeRoot(127 + 2 - 126)},  // The bottom-most diff layer
+		{head, 127, common.HexToHash("0x01")}, // The disk layer
 	}
 	for _, c := range cases {
 		snap := snaps.SnapshotInDepth(c.headRoot, c.depth)
@@ -430,7 +431,7 @@ func TestSnaphotInDepth(t *testing.T) {
 				t.Fatal("Snapshot is not available")
 			}
 			if snap.Root() != c.expect {
-				t.Fatal("Snapshot mismatch")
+				t.Fatalf("Snapshot mismatch, want %v, get %v", c.expect, snap.Root())
 			}
 		}
 	}
