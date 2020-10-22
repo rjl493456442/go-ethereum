@@ -25,7 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/steakknife/bloomfilter"
+	"github.com/holiman/bloomfilter"
 )
 
 // stateBloomHasher is a wrapper around a byte blob to satisfy the interface API
@@ -68,8 +68,8 @@ type StateBloom struct {
 // NewStateBloom creates a brand new state bloom for state generation.
 // The optimal bloom filter will be created by the passing "max entries"
 // and the "estimated" maximum collision rate.
-func NewStateBloom(entries uint64, collision float64) (*StateBloom, error) {
-	bloom, err := bloomfilter.NewOptimal(entries, collision)
+func NewStateBloom(maxElements uint64, probCollide float64) (*StateBloom, error) {
+	bloom, err := bloomfilter.NewOptimal(maxElements, probCollide)
 	if err != nil {
 		return nil, err
 	}
