@@ -407,7 +407,7 @@ func TestSnaphotInDepth(t *testing.T) {
 		head = makeRoot(uint64(i + 2))
 		snaps.Update(head, last, nil, setAccount(fmt.Sprintf("%d", i+2)), nil)
 		last = head
-		snaps.Cap(head, 127) // 128 layers are allowed, 128th is the persistent layer
+		snaps.Cap(head, 128) // 129 layers(128 diffs + 1 disk) are allowed, 129th is the persistent layer
 	}
 	var cases = []struct {
 		headRoot common.Hash
@@ -416,8 +416,8 @@ func TestSnaphotInDepth(t *testing.T) {
 	}{
 		{head, 0, head},
 		{head, 1, makeRoot(127 + 2 - 1)},
-		{head, 126, makeRoot(127 + 2 - 126)},  // The bottom-most diff layer
-		{head, 127, common.HexToHash("0x01")}, // The disk layer
+		{head, 127, makeRoot(127 + 2 - 127)},  // The bottom-most diff layer
+		{head, 128, common.HexToHash("0x01")}, // The disk layer
 	}
 	for _, c := range cases {
 		snap := snaps.SnapshotInDepth(c.headRoot, c.depth)

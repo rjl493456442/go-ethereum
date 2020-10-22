@@ -58,8 +58,8 @@ var (
 				Description: `
 geth snapshot prune-state <state-root>
 will prune historical state data with the help of state snapshot.
-All trie nodes that do not belong to the specified version state
-will be deleted from the database.
+All trie nodes and contract codes that do not belong to the specified
+version state will be deleted from the database.
 `,
 			},
 			{
@@ -79,6 +79,7 @@ will be deleted from the database.
 geth snapshot verify-state <state-root>
 will traverse the whole accounts and storages set based on the specified
 snapshot and recalculate the root hash of state for verification.
+In other words, this command does the snapshot to trie conversion.
 `,
 			},
 			{
@@ -96,8 +97,11 @@ snapshot and recalculate the root hash of state for verification.
 				},
 				Description: `
 geth snapshot traverse-state <state-root>
-will traverse the whole trie from the given root and will abort if any referenced
-node is missing. This command can be used for trie integrity verification.
+will traverse the whole state from the given state root and will abort if any
+referenced trie node or contract code is missing. This command can be used for
+state integrity verification. The default checking target is the HEAD state.
+
+It's also usable without snapshot enabled.
 `,
 			},
 			{
@@ -115,9 +119,12 @@ node is missing. This command can be used for trie integrity verification.
 				},
 				Description: `
 geth snapshot traverse-rawstate <state-root>
-will traverse the whole trie from the given root and will abort if any referenced
-node/code is missing. This command can be used for trie integrity verification.
-It's basically identical to traverse-state, but the check granularity is smaller.
+will traverse the whole state from the given root and will abort if any referenced
+trie node or contract code is missing. This command can be used for state integrity
+verification. The default checking target is the HEAD state. It's basically identical
+to traverse-state, but the check granularity is smaller. 
+
+It's also usable without snapshot enabled.
 `,
 			},
 		},
