@@ -202,18 +202,18 @@ func traverseState(ctx *cli.Context) error {
 	if ctx.NArg() > 1 {
 		log.Crit("Too many arguments given")
 	}
-	// Use the HEAD-127 root as the default
+	// Use the HEAD root as the default
 	head := chain.CurrentBlock()
 	if head == nil {
 		log.Crit("Head block is missing")
 	}
-	target := chain.GetBlockByNumber(head.NumberU64() - 127)
-	if target == nil {
-		log.Crit("Target block is missing")
-	}
-	var root = target.Root()
+	var root common.Hash
 	if ctx.NArg() == 1 {
 		root = common.HexToHash(ctx.Args()[0])
+		log.Info("Start traversing the state", "root", root)
+	} else {
+		root = head.Root()
+		log.Info("Start traversing the state", "root", root, "number", head.NumberU64())
 	}
 	t, err := trie.NewSecure(root, trie.NewDatabase(chaindb))
 	if err != nil {
@@ -288,24 +288,23 @@ func traverseRawState(ctx *cli.Context) error {
 	if ctx.NArg() > 1 {
 		log.Crit("Too many arguments given")
 	}
-	// Use the HEAD-127 root as the default
+	// Use the HEAD root as the default
 	head := chain.CurrentBlock()
 	if head == nil {
 		log.Crit("Head block is missing")
 	}
-	target := chain.GetBlockByNumber(head.NumberU64() - 127)
-	if target == nil {
-		log.Crit("Target block is missing")
-	}
-	var root = target.Root()
+	var root common.Hash
 	if ctx.NArg() == 1 {
 		root = common.HexToHash(ctx.Args()[0])
+		log.Info("Start traversing the state", "root", root)
+	} else {
+		root = head.Root()
+		log.Info("Start traversing the state", "root", root, "number", head.NumberU64())
 	}
 	t, err := trie.NewSecure(root, trie.NewDatabase(chaindb))
 	if err != nil {
 		log.Crit("Failed to open trie", "root", root, "error", err)
 	}
-	log.Info("Opened the state trie", "root", root)
 	var (
 		nodes      int
 		accounts   int
