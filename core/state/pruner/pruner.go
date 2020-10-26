@@ -141,16 +141,21 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, blacklist map[common.H
 				return err // Something very wrong
 			}
 			if ok {
-				continue
+				// Note the bloom filter's false-positive may exists.
+				// For the most of the normal nodes, false-positive is
+				// acceptable. But if it's the state root, we need to
+				// forcibly delete it. So checking the additional blacklist
+				// for forcible deletion.
+				if blacklist == nil {
+					continue
+				}
+				if _, ok := blacklist[common.BytesToHash(checkKey)]; !ok {
+					continue
+				}
+				log.Info("Forcibly delete the nodes in blacklist", "hash", common.BytesToHash(checkKey))
 			}
 			// Filter out the state belongs to the "blacklist". Usually
 			// the root of the "useless" states are contained here.
-			if blacklist != nil {
-				if _, ok := blacklist[common.BytesToHash(checkKey)]; ok {
-					log.Info("Filter out state in blacklist", "hash", common.BytesToHash(checkKey))
-					continue
-				}
-			}
 			size += common.StorageSize(len(key) + len(iter.Value()))
 			batch.Delete(key)
 
