@@ -138,8 +138,8 @@ func pruneState(ctx *cli.Context) error {
 	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
-	headRoot := chain.CurrentBlock().Root()
-	pruner, err := pruner.NewPruner(chaindb, headRoot, stack.ResolvePath(""))
+	headHeader := chain.CurrentBlock().Header()
+	pruner, err := pruner.NewPruner(chaindb, headHeader, stack.ResolvePath(""))
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}

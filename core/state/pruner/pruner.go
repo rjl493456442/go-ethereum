@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
@@ -66,13 +67,13 @@ type Pruner struct {
 	db             ethdb.Database
 	stateBloom     *StateBloom
 	stateBloomPath string
-	headRoot       common.Hash
+	headHeader     *types.Header
 	snaptree       *snapshot.Tree
 }
 
 // NewPruner creates the pruner instance.
-func NewPruner(db ethdb.Database, root common.Hash, homedir string) (*Pruner, error) {
-	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, root, false, false, false)
+func NewPruner(db ethdb.Database, headHeader *types.Header, homedir string) (*Pruner, error) {
+	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
@@ -88,12 +89,12 @@ func NewPruner(db ethdb.Database, root common.Hash, homedir string) (*Pruner, er
 		db:             db,
 		stateBloom:     stateBloom,
 		stateBloomPath: filepath.Join(homedir, stateBloomFileName),
-		headRoot:       root,
+		headHeader:     headHeader,
 		snaptree:       snaptree,
 	}, nil
 }
 
-func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error {
+func prune(maindb ethdb.Database, stateBloom *StateBloom, blacklist map[common.Hash]struct{}, start time.Time) error {
 	// Extract all node refs belong to the genesis. We have to keep the
 	// genesis all the time.
 	marker, err := extractGenesis(maindb)
@@ -130,15 +131,25 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 			if isCode {
 				checkKey = codeKey
 			}
+			// Filter out the state belongs to the genesis
 			if _, ok := marker[common.BytesToHash(checkKey)]; ok {
-				continue // State belongs to genesis
+				continue
 			}
+			// Filter out the state belongs the pruning target
 			ok, err := stateBloom.Contain(checkKey)
 			if err != nil {
 				return err // Something very wrong
 			}
 			if ok {
-				continue // State belongs to specific state
+				continue
+			}
+			// Filter out the state belongs to the "blacklist". Usually
+			// the root of the "useless" states are contained here.
+			if blacklist != nil {
+				if _, ok := blacklist[common.BytesToHash(checkKey)]; ok {
+					log.Info("Filter out state in blacklist", "hash", common.BytesToHash(checkKey))
+					continue
+				}
 			}
 			size += common.StorageSize(len(key) + len(iter.Value()))
 			batch.Delete(key)
@@ -195,12 +206,18 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// target. The reason for picking it is:
 	// - in most of the normal cases, the related state is available
 	// - the probability of this layer being reorg is very low
+	var blacklist = make(map[common.Hash]struct{})
 	if root == (common.Hash{}) {
-		layer := p.snaptree.SnapshotInDepth(p.headRoot, 127)
+		layer := p.snaptree.SnapshotInDepth(p.headHeader.Root, 127, func(depth int, hash common.Hash) {
+			if depth != 0 {
+				blacklist[hash] = struct{}{}
+			}
+		})
 		if layer == nil {
 			return errors.New("HEAD-127 layer is not available")
 		}
 		root = layer.Root()
+		log.Info("Pick HEAD-127 as the pruning target", "root", root, "height", p.headHeader.Number.Uint64()-127)
 	}
 	// Ensure the root is really present. The weak assumption
 	// is the presence of root can indicate the presence of the
@@ -217,7 +234,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	if err := p.stateBloom.Commit(p.stateBloomPath); err != nil {
 		return err
 	}
-	if err := prune(p.db, p.stateBloom, start); err != nil {
+	if err := prune(p.db, p.stateBloom, blacklist, start); err != nil {
 		return err
 	}
 	os.RemoveAll(p.stateBloomPath)
@@ -240,7 +257,7 @@ func RecoverPruning(homedir string, db ethdb.Database) error {
 	if err != nil {
 		return err
 	}
-	if err := prune(db, stateBloom, time.Now()); err != nil {
+	if err := prune(db, stateBloom, nil, time.Now()); err != nil {
 		return err
 	}
 	os.RemoveAll(stateBloomPath)

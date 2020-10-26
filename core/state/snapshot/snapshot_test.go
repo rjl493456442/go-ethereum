@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
+	"reflect"
 	"testing"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -420,7 +421,7 @@ func TestSnaphotInDepth(t *testing.T) {
 		{head, 128, common.HexToHash("0x01")}, // The disk layer
 	}
 	for _, c := range cases {
-		snap := snaps.SnapshotInDepth(c.headRoot, c.depth)
+		snap := snaps.SnapshotInDepth(c.headRoot, c.depth, nil)
 
 		if c.expect == (common.Hash{}) {
 			if snap != nil {
@@ -434,5 +435,16 @@ func TestSnaphotInDepth(t *testing.T) {
 				t.Fatalf("Snapshot mismatch, want %v, get %v", c.expect, snap.Root())
 			}
 		}
+	}
+	var visitList []common.Hash
+	snaps.SnapshotInDepth(head, 127, func(depth int, hash common.Hash) {
+		visitList = append(visitList, hash)
+	})
+	var expected []common.Hash
+	for i := 0; i < 128; i++ {
+		expected = append(expected, makeRoot(uint64(127+2-i)))
+	}
+	if !reflect.DeepEqual(expected, visitList) {
+		t.Fatalf("Visit list is mismatched")
 	}
 }
