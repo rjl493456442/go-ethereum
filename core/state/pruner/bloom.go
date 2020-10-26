@@ -17,8 +17,8 @@
 package pruner
 
 import (
-	"encoding/binary"
 	"errors"
+	"hash/fnv"
 	"path/filepath"
 	"sync/atomic"
 
@@ -38,7 +38,11 @@ func (f stateBloomHasher) Sum(b []byte) []byte               { panic("not implem
 func (f stateBloomHasher) Reset()                            { panic("not implemented") }
 func (f stateBloomHasher) BlockSize() int                    { panic("not implemented") }
 func (f stateBloomHasher) Size() int                         { return 8 }
-func (f stateBloomHasher) Sum64() uint64                     { return binary.BigEndian.Uint64(f) }
+func (f stateBloomHasher) Sum64() uint64                     {
+	hasher := fnv.New64a()
+	hasher.Write(f)
+	return hasher.Sum64()
+}
 
 // StateBloom is a bloom filter used during fast sync to quickly decide if a trie
 // node or contract code already exists on disk or not. It self populates from the
