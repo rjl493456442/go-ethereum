@@ -188,7 +188,7 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 		}
 		log.Info("Compacted the whole database", "elapsed", common.PrettyDuration(time.Since(cstart)))
 	}
-	log.Info("Successfully prune the state", "pruned", size, "elasped", common.PrettyDuration(time.Since(start)))
+	log.Info("Successfully prune the state", "pruned", size, "elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
 }
 
@@ -277,7 +277,7 @@ func extractGenesis(db ethdb.Database) (map[common.Hash]struct{}, error) {
 	for accIter.Next(true) {
 		node := accIter.Hash()
 
-		// Embeded nodes don't have hash.
+		// Embedded nodes don't have hash.
 		if node != (common.Hash{}) {
 			marker[node] = struct{}{}
 		}

@@ -214,7 +214,7 @@ var (
 )
 
 // traverseState is a helper function used for pruning verification.
-// Basically it just iterates the trie, ensure all nodes and assoicated
+// Basically it just iterates the trie, ensure all nodes and associated
 // contract codes are present.
 func traverseState(ctx *cli.Context) error {
 	glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(true)))
@@ -299,7 +299,7 @@ func traverseState(ctx *cli.Context) error {
 }
 
 // traverseRawState is a helper function used for pruning verification.
-// Basically it just iterates the trie, ensure all nodes and assoicated
+// Basically it just iterates the trie, ensure all nodes and associated
 // contract codes are present. It's basically identical to traverseState
 // but it will check each trie node.
 func traverseRawState(ctx *cli.Context) error {
@@ -347,7 +347,7 @@ func traverseRawState(ctx *cli.Context) error {
 		node := accIter.Hash()
 
 		if node != (common.Hash{}) {
-			// Check the present for non-empty hash node(embeded node doesn't
+			// Check the present for non-empty hash node(embedded node doesn't
 			// have their own hash).
 			blob := rawdb.ReadTrieNode(chaindb, node)
 			if len(blob) == 0 {
@@ -377,7 +377,7 @@ func traverseRawState(ctx *cli.Context) error {
 					nodes += 1
 					node := storageIter.Hash()
 
-					// Check the present for non-empty hash node(embeded node doesn't
+					// Check the present for non-empty hash node(embedded node doesn't
 					// have their own hash).
 					if node != (common.Hash{}) {
 						blob := rawdb.ReadTrieNode(chaindb, node)
