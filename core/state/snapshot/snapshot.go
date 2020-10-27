@@ -239,16 +239,13 @@ func (t *Tree) Snapshot(blockRoot common.Hash) Snapshot {
 
 // SnapshotInDepth returns a snapshot with depth below the given root.
 // Return nil if there is no snapshot in such depth.
-func (t *Tree) SnapshotInDepth(root common.Hash, depth int, onvisit func(depth int, hash common.Hash)) Snapshot {
+func (t *Tree) SnapshotInDepth(root common.Hash, depth int) Snapshot {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
 	layer := t.layers[root]
 	if layer == nil {
 		return nil
-	}
-	if onvisit != nil {
-		onvisit(depth, layer.Root())
 	}
 	for {
 		if depth == 0 {
@@ -263,9 +260,6 @@ func (t *Tree) SnapshotInDepth(root common.Hash, depth int, onvisit func(depth i
 		}
 		layer = parent
 		depth -= 1
-		if onvisit != nil {
-			onvisit(depth, layer.Root())
-		}
 	}
 }
 

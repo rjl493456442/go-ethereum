@@ -94,10 +94,10 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, homedir string) (*Pr
 	}, nil
 }
 
-func prune(maindb ethdb.Database, stateBloom *StateBloom, blacklist map[common.Hash]struct{}, start time.Time) error {
+func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error {
 	// Extract all node refs belong to the genesis. We have to keep the
 	// genesis all the time.
-	marker, err := extractGenesis(maindb)
+	genesisMarker, err := extractGenesis(maindb)
 	if err != nil {
 		return err
 	}
@@ -132,27 +132,14 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, blacklist map[common.H
 				checkKey = codeKey
 			}
 			// Filter out the state belongs to the genesis
-			if _, ok := marker[common.BytesToHash(checkKey)]; ok {
+			if _, ok := genesisMarker[common.BytesToHash(checkKey)]; ok {
 				continue
 			}
 			// Filter out the state belongs the pruning target
-			ok, err := stateBloom.Contain(checkKey)
-			if err != nil {
-				return err // Something very wrong
-			}
-			if ok {
-				// Note the bloom filter's false-positive may exists.
-				// For the most of the normal nodes, false-positive is
-				// acceptable. But if it's the state root, we need to
-				// forcibly delete it. So checking the additional blacklist
-				// for forcible deletion.
-				if blacklist == nil {
-					continue
-				}
-				if _, ok := blacklist[common.BytesToHash(checkKey)]; !ok {
-					continue
-				}
-				log.Info("Forcibly delete the nodes in blacklist", "hash", common.BytesToHash(checkKey))
+			if ok, err := stateBloom.Contain(checkKey); err != nil {
+				return err
+			} else if ok {
+				continue
 			}
 			// Filter out the state belongs to the "blacklist". Usually
 			// the root of the "useless" states are contained here.
@@ -211,13 +198,8 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// target. The reason for picking it is:
 	// - in most of the normal cases, the related state is available
 	// - the probability of this layer being reorg is very low
-	var blacklist = make(map[common.Hash]struct{})
 	if root == (common.Hash{}) {
-		layer := p.snaptree.SnapshotInDepth(p.headHeader.Root, 127, func(depth int, hash common.Hash) {
-			if depth != 0 {
-				blacklist[hash] = struct{}{}
-			}
-		})
+		layer := p.snaptree.SnapshotInDepth(p.headHeader.Root, 127)
 		if layer == nil {
 			return errors.New("HEAD-127 layer is not available")
 		}
@@ -239,7 +221,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	if err := p.stateBloom.Commit(p.stateBloomPath); err != nil {
 		return err
 	}
-	if err := prune(p.db, p.stateBloom, blacklist, start); err != nil {
+	if err := prune(p.db, p.stateBloom, start); err != nil {
 		return err
 	}
 	os.RemoveAll(p.stateBloomPath)
@@ -262,7 +244,7 @@ func RecoverPruning(homedir string, db ethdb.Database) error {
 	if err != nil {
 		return err
 	}
-	if err := prune(db, stateBloom, nil, time.Now()); err != nil {
+	if err := prune(db, stateBloom, time.Now()); err != nil {
 		return err
 	}
 	os.RemoveAll(stateBloomPath)

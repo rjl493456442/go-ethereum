@@ -38,7 +38,7 @@ func (f stateBloomHasher) Sum(b []byte) []byte               { panic("not implem
 func (f stateBloomHasher) Reset()                            { panic("not implemented") }
 func (f stateBloomHasher) BlockSize() int                    { panic("not implemented") }
 func (f stateBloomHasher) Size() int                         { return 8 }
-func (f stateBloomHasher) Sum64() uint64                     {
+func (f stateBloomHasher) Sum64() uint64 {
 	hasher := fnv.New64a()
 	hasher.Write(f)
 	return hasher.Sum64()
