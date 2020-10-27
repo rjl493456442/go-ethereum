@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -54,12 +55,18 @@ var (
 					utils.RinkebyFlag,
 					utils.GoerliFlag,
 					utils.LegacyTestnetFlag,
+					utils.CacheTrieJournalFlag,
 				},
 				Description: `
 geth snapshot prune-state <state-root>
 will prune historical state data with the help of state snapshot.
 All trie nodes and contract codes that do not belong to the specified
 version state will be deleted from the database.
+
+WARNING: It's necessary to delete the trie clean cache after the pruning.
+If you specify another directory for the trie clean cache via "--cache.trie.journal"
+during the use of Geth, please also specify it here for correct deletion. Otherwise
+the trie clean cache with default directory will be deleted.
 `,
 			},
 			{
@@ -132,14 +139,24 @@ It's also usable without snapshot enabled.
 )
 
 func pruneState(ctx *cli.Context) error {
+	glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(true)))
+	glogger.Verbosity(log.LvlInfo)
+	log.Root().SetHandler(glogger)
+
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
 	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
+	cachePath := stack.ResolvePath(eth.DefaultConfig.TrieCleanCacheJournal)
+	if ctx.GlobalIsSet(utils.CacheTrieJournalFlag.Name) {
+		cachePath = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
+		cachePath = stack.ResolvePath(cachePath)
+		log.Info("Customized trie clean cache specified", "path", cachePath)
+	}
 	headHeader := chain.CurrentBlock().Header()
-	pruner, err := pruner.NewPruner(chaindb, headHeader, stack.ResolvePath(""))
+	pruner, err := pruner.NewPruner(chaindb, headHeader, stack.ResolvePath(""), cachePath)
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}
@@ -158,6 +175,10 @@ func pruneState(ctx *cli.Context) error {
 }
 
 func verifyState(ctx *cli.Context) error {
+	glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(true)))
+	glogger.Verbosity(log.LvlInfo)
+	log.Root().SetHandler(glogger)
+
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 

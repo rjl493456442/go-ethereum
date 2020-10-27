@@ -67,12 +67,13 @@ type Pruner struct {
 	db             ethdb.Database
 	stateBloom     *StateBloom
 	stateBloomPath string
+	cachePath      string
 	headHeader     *types.Header
 	snaptree       *snapshot.Tree
 }
 
 // NewPruner creates the pruner instance.
-func NewPruner(db ethdb.Database, headHeader *types.Header, homedir string) (*Pruner, error) {
+func NewPruner(db ethdb.Database, headHeader *types.Header, homedir, cachePath string) (*Pruner, error) {
 	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
@@ -89,6 +90,7 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, homedir string) (*Pr
 		db:             db,
 		stateBloom:     stateBloom,
 		stateBloomPath: filepath.Join(homedir, stateBloomFileName),
+		cachePath:      cachePath,
 		headHeader:     headHeader,
 		snaptree:       snaptree,
 	}, nil
@@ -212,6 +214,10 @@ func (p *Pruner) Prune(root common.Hash) error {
 	if blob := rawdb.ReadTrieNode(p.db, root); len(blob) == 0 {
 		return fmt.Errorf("associated state[%x] is not present", root)
 	}
+	// Before start the pruning, delete the clean trie cache first.
+	os.RemoveAll(p.cachePath)
+	log.Info("Deleted trie clean cache", "path", p.cachePath)
+
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
 	// commit to the given bloom filter.
