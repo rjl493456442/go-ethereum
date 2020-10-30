@@ -240,6 +240,9 @@ func (p *Pruner) Prune(root common.Hash) error {
 			}
 		}
 		if !found {
+			if len(layers) > 0 {
+				return errors.New("no snapshot paired state")
+			}
 			return fmt.Errorf("associated state[%x] is not present", root)
 		}
 	} else {
@@ -250,6 +253,9 @@ func (p *Pruner) Prune(root common.Hash) error {
 		}
 	}
 	// Before start the pruning, delete the clean trie cache first.
+	// It's necessary otherwise in the next restart we will hit the
+	// deleted state root in the "clean cache" so that the incomplete
+	// state is picked for usage.
 	os.RemoveAll(p.cachePath)
 	log.Info("Deleted trie clean cache", "path", p.cachePath)
 
@@ -265,6 +271,21 @@ func (p *Pruner) Prune(root common.Hash) error {
 	if err := prune(p.db, p.stateBloom, start); err != nil {
 		return err
 	}
+	// Pruning is done, now drop the "useless" layers from the snapshot.
+	// Firstly, flushing the target layer into the disk. After that all
+	// diff layers below the target will all be merged into the disk.
+	p.snaptree.Cap(root, 0)
+
+	// Secondly, flushing the snapshot journal into the disk. All diff
+	// layers upon are dropped silently. Eventually the entire snapshot
+	// tree is converted into a single disk layer with the pruning target
+	// as the root.
+	p.snaptree.Journal(root)
+
+	// Delete the state bloom, it marks the entire pruning procedure is
+	// finished. If any crashes or manual exit happens before this,
+	// `RecoverPruning` will pick it up in the next restarts to redo all
+	// the things.
 	os.RemoveAll(p.stateBloomPath)
 	return nil
 }
