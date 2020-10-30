@@ -74,7 +74,7 @@ type Pruner struct {
 
 // NewPruner creates the pruner instance.
 func NewPruner(db ethdb.Database, headHeader *types.Header, homedir, cachePath string) (*Pruner, error) {
-	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false)
+	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false, false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
