@@ -237,9 +237,42 @@ func (t *Tree) Snapshot(blockRoot common.Hash) Snapshot {
 	return t.layers[blockRoot]
 }
 
+// Snapshots returns all visited layers from the topmost layer with specific
+// root and traverses downward. The layer amount is limited by the given number.
+// If nodisk is set, then disk layer is excluded.
+func (t *Tree) Snapshots(root common.Hash, limits int, nodisk bool) []Snapshot {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	if limits == 0 {
+		return nil
+	}
+	layer := t.layers[root]
+	if layer == nil {
+		return nil
+	}
+	var ret []Snapshot
+	for {
+		if _, isdisk := layer.(*diskLayer); isdisk && nodisk {
+			break
+		}
+		ret = append(ret, layer)
+		limits -= 1
+		if limits == 0 {
+			break
+		}
+		parent := layer.Parent()
+		if parent == nil {
+			break
+		}
+		layer = parent
+	}
+	return ret
+}
+
 // SnapshotInDepth returns a snapshot with depth below the given root.
 // Return nil if there is no snapshot in such depth.
-func (t *Tree) SnapshotInDepth(root common.Hash, depth int) Snapshot {
+func (t *Tree) SnapshotInDepth(root common.Hash, depth int, onvisit func(root common.Hash)) Snapshot {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
@@ -247,19 +280,22 @@ func (t *Tree) SnapshotInDepth(root common.Hash, depth int) Snapshot {
 	if layer == nil {
 		return nil
 	}
+	if onvisit != nil {
+		onvisit(layer.Root())
+	}
 	for {
 		if depth == 0 {
 			return layer
 		}
 		parent := layer.Parent()
-		if _, ok := parent.(*diskLayer); ok {
-			if depth == 1 {
-				return parent
-			}
+		if parent == nil {
 			return nil
 		}
 		layer = parent
 		depth -= 1
+		if onvisit != nil {
+			onvisit(layer.Root())
+		}
 	}
 }
 

@@ -200,19 +200,54 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// target. The reason for picking it is:
 	// - in most of the normal cases, the related state is available
 	// - the probability of this layer being reorg is very low
+	var layers []snapshot.Snapshot
 	if root == (common.Hash{}) {
-		layer := p.snaptree.SnapshotInDepth(p.headHeader.Root, 127)
-		if layer == nil {
-			return errors.New("HEAD-127 layer is not available")
+		// Retrieve all snapshot layers from the current HEAD.
+		// In theory there are 128 difflayers + 1 disk layer present,
+		// so 128 diff layers are expected to be returned.
+		layers = p.snaptree.Snapshots(p.headHeader.Root, 128, true)
+		if len(layers) != 128 {
+			// Reject if the accumulated diff layers are less than 128. It
+			// means in most of normal cases, there is no associated state
+			// with bottom-most diff layer.
+			return errors.New("the snapshot difflayers are less than 128")
 		}
-		root = layer.Root()
-		log.Info("Pick HEAD-127 as the pruning target", "root", root, "height", p.headHeader.Number.Uint64()-127)
+		// Use the bottom-most diff layer as the target
+		root = layers[len(layers)-1].Root()
 	}
 	// Ensure the root is really present. The weak assumption
 	// is the presence of root can indicate the presence of the
 	// entire trie.
 	if blob := rawdb.ReadTrieNode(p.db, root); len(blob) == 0 {
-		return fmt.Errorf("associated state[%x] is not present", root)
+		// The special case is for clique based networks(rinkeby, goerli
+		// and some other private networks), it's possible that two
+		// consecutive blocks will have same root. In this case snapshot
+		// difflayer won't be created. So HEAD-127 may not paired with
+		// head-127 layer. Instead the paired layer is higher than the
+		// bottom-most diff layer. Try to find the bottom-most snapshot
+		// layer with state available.
+		//
+		// Note HEAD and HEAD-1 is ignored. Usually there is the associated
+		// state available, but we don't want to use the topmost state
+		// as the pruning target.
+		var found bool
+		for i := len(layers) - 2; i >= 2; i-- {
+			if blob := rawdb.ReadTrieNode(p.db, layers[i].Root()); len(blob) != 0 {
+				root = layers[i].Root()
+				found = true
+				log.Info("Pick middle-layer as the pruning target", "root", root, "depth", i)
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("associated state[%x] is not present", root)
+		}
+	} else {
+		if len(layers) > 0 {
+			log.Info("Pick bottom-most difflayer as the pruning target", "root", root, "height", p.headHeader.Number.Uint64()-127)
+		} else {
+			log.Info("Pick user-specified state as the pruning target", "root", root)
+		}
 	}
 	// Before start the pruning, delete the clean trie cache first.
 	os.RemoveAll(p.cachePath)

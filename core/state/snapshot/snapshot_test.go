@@ -371,9 +371,9 @@ func TestPostCapBasicDataAccess(t *testing.T) {
 	}
 }
 
-// TestSnaphotInDepth tests the functionality for retrieveing the snapshot
+// TestSnaphots tests the functionality for retrieveing the snapshot
 // with given head root and the desired depth.
-func TestSnaphotInDepth(t *testing.T) {
+func TestSnaphots(t *testing.T) {
 	// setAccount is a helper to construct a random account entry and assign it to
 	// an account slot in a snapshot
 	setAccount := func(accKey string) map[common.Hash][]byte {
@@ -410,29 +410,29 @@ func TestSnaphotInDepth(t *testing.T) {
 		snaps.Cap(head, 128) // 129 layers(128 diffs + 1 disk) are allowed, 129th is the persistent layer
 	}
 	var cases = []struct {
-		headRoot common.Hash
-		depth    int
-		expect   common.Hash
+		headRoot     common.Hash
+		limit        int
+		nodisk       bool
+		expected     int
+		expectBottom common.Hash
 	}{
-		{head, 0, head},
-		{head, 1, makeRoot(127 + 2 - 1)},
-		{head, 127, makeRoot(127 + 2 - 127)},  // The bottom-most diff layer
-		{head, 128, common.HexToHash("0x01")}, // The disk layer
+		{head, 0, false, 0, common.Hash{}},
+		{head, 64, false, 64, makeRoot(127 + 2 - 63)},
+		{head, 128, false, 128, makeRoot(2)},              // All diff layers
+		{head, 129, true, 128, makeRoot(2)},               // All diff layers
+		{head, 129, false, 129, common.HexToHash("0x01")}, // All diff layers + disk layer
 	}
 	for _, c := range cases {
-		snap := snaps.SnapshotInDepth(c.headRoot, c.depth)
-
-		if c.expect == (common.Hash{}) {
-			if snap != nil {
-				t.Fatal("Snapshot is expected to be nil")
-			}
-		} else {
-			if snap == nil {
-				t.Fatal("Snapshot is not available")
-			}
-			if snap.Root() != c.expect {
-				t.Fatalf("Snapshot mismatch, want %v, get %v", c.expect, snap.Root())
-			}
+		layers := snaps.Snapshots(c.headRoot, c.limit, c.nodisk)
+		if len(layers) != c.expected {
+			t.Fatalf("Returned snapshot layers are mismatched, want %v, got %v", c.expected, len(layers))
+		}
+		if len(layers) == 0 {
+			continue
+		}
+		bottommost := layers[len(layers)-1]
+		if bottommost.Root() != c.expectBottom {
+			t.Fatalf("Snapshot mismatch, want %v, get %v", c.expectBottom, bottommost.Root())
 		}
 	}
 }
