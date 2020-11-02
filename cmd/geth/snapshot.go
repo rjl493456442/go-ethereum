@@ -149,14 +149,12 @@ func pruneState(ctx *cli.Context) error {
 	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
-	cachePath := stack.ResolvePath(eth.DefaultConfig.TrieCleanCacheJournal)
+	trieCacheName := eth.DefaultConfig.TrieCleanCacheJournal
 	if ctx.GlobalIsSet(utils.CacheTrieJournalFlag.Name) {
-		cachePath = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
-		cachePath = stack.ResolvePath(cachePath)
-		log.Info("Customized trie clean cache specified", "path", cachePath)
+		trieCacheName = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
+		log.Info("Customized trie clean cache specified", "path", stack.ResolvePath(trieCacheName))
 	}
-	headHeader := chain.CurrentBlock().Header()
-	pruner, err := pruner.NewPruner(chaindb, headHeader, stack.ResolvePath(""), cachePath)
+	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), trieCacheName)
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}
