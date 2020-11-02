@@ -18,7 +18,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"math/big"
 	"os"
 	"time"
@@ -45,7 +44,7 @@ var (
 		Subcommands: []cli.Command{
 			{
 				Name:      "prune-state",
-				Usage:     "Prune stale ethereum state data based on snapshot",
+				Usage:     "Prune stale ethereum state data based on the snapshot",
 				ArgsUsage: "<root>",
 				Action:    utils.MigrateFlags(pruneState),
 				Category:  "MISCELLANEOUS COMMANDS",
@@ -61,7 +60,8 @@ var (
 geth snapshot prune-state <state-root>
 will prune historical state data with the help of state snapshot.
 All trie nodes and contract codes that do not belong to the specified
-version state will be deleted from the database.
+version state will be deleted from the database. After pruning, only
+two version states are available: genesis and the specific one.
 
 WARNING: It's necessary to delete the trie clean cache after the pruning.
 If you specify another directory for the trie clean cache via "--cache.trie.journal"
@@ -71,7 +71,7 @@ the trie clean cache with default directory will be deleted.
 			},
 			{
 				Name:      "verify-state",
-				Usage:     "Recalculate state hash based on snapshot for verification",
+				Usage:     "Recalculate state hash based on the snapshot for verification",
 				ArgsUsage: "<root>",
 				Action:    utils.MigrateFlags(verifyState),
 				Category:  "MISCELLANEOUS COMMANDS",
@@ -149,12 +149,12 @@ func pruneState(ctx *cli.Context) error {
 	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
-	trieCacheName := eth.DefaultConfig.TrieCleanCacheJournal
+	trieCache := eth.DefaultConfig.TrieCleanCacheJournal
 	if ctx.GlobalIsSet(utils.CacheTrieJournalFlag.Name) {
-		trieCacheName = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
-		log.Info("Customized trie clean cache specified", "path", stack.ResolvePath(trieCacheName))
+		trieCache = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
+		log.Info("Customized trie clean cache specified", "path", stack.ResolvePath(trieCache))
 	}
-	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), trieCacheName)
+	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), trieCache)
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}
@@ -185,20 +185,19 @@ func verifyState(ctx *cli.Context) error {
 
 	snaptree, err := snapshot.New(chaindb, trie.NewDatabase(chaindb), 256, chain.CurrentBlock().Root(), false, false, false)
 	if err != nil {
-		fmt.Println("Failed to open snapshot tree", "error", err)
-		return nil
+		log.Crit("Failed to open the snapshot tree", "error", err)
 	}
 	if ctx.NArg() > 1 {
-		utils.Fatalf("too many arguments given")
+		log.Crit("Too many arguments given")
 	}
 	var root = chain.CurrentBlock().Root()
 	if ctx.NArg() == 1 {
 		root = common.HexToHash(ctx.Args()[0])
 	}
 	if err := snapshot.VerifyState(snaptree, root); err != nil {
-		fmt.Println("Failed to verify state", "error", err)
+		log.Crit("Failed to verfiy state", "error", err)
 	} else {
-		fmt.Println("Verified the state")
+		log.Info("Verified the state")
 	}
 	return nil
 }
