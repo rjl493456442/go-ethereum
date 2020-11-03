@@ -19,6 +19,7 @@ package pruner
 import (
 	"errors"
 	"hash/fnv"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 
@@ -106,7 +107,18 @@ func (bloom *StateBloom) Commit(filename string) error {
 		if err != nil {
 			return err
 		}
-		// Secondly, rename the file.
+		// Secondly, fsync the file. In the bloomfilter library
+		// there is no guarantee the file is actually flushed
+		// into the disk
+		f, err := os.Open(filename + ".tmp")
+		if err != nil {
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		f.Close()
+		// Thirdly, rename the file.
 		if err := rename(filename+".tmp", filename); err != nil {
 			return err
 		}

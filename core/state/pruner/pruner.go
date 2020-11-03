@@ -333,7 +333,7 @@ func RecoverPruning(homedir string, db ethdb.Database, trieCachePath string) err
 	// - Users run the `prune-state` command multiple times
 	// - Neither these `prune-state` running is finished(e.g. interrupted manually)
 	// - The state bloom filter is already generated, a part of state is deleted,
-	//   so that resuming the pruning here is necessary
+	//   so that resuming the pruning here is mandatory
 	// - The state HEAD is rewound already because of multiple incomplete `prune-state`
 	// In this case, even the state HEAD is not exactly matched with snapshot, it
 	// still feasible to recover the pruning correctly.
