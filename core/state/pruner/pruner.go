@@ -47,11 +47,14 @@ const (
 	// bloomFilterEntries is the estimated value of the number of trie nodes
 	// and codes contained in the state. It's designed for mainnet but also
 	// suitable for other small testnets.
-	bloomFilterEntries = 600 * 1024 * 1024
+	bloomFilterEntries = 1000 * 1024 * 1024
 
 	// bloomFalsePositiveRate is the acceptable probability of bloom filter
-	// false-positive. It's around 0.05%.
-	bloomFalsePositiveRate = 0.0005
+	// false-positive. It's around 0.01%.
+	//
+	// Check the https://hur.st/bloomfilter/?n=1000000000&p=0.0001&m=&k= for
+	// more calculation details.
+	bloomFalsePositiveRate = 0.0001
 
 	// rangeCompactionThreshold is the minimal deleted entry number for
 	// triggering range compaction. It's a quite arbitrary number but just
