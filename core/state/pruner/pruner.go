@@ -85,6 +85,11 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheNa
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
+	// Sanitize the bloom filter size if it's too small.
+	if bloomSize < 256 {
+		log.Warn("Sanitizing bloomfilter size", "provided(MB)", bloomSize, "updated(MB)", 256)
+		bloomSize = 256
+	}
 	stateBloom, err := NewStateBloomWithSize(bloomSize)
 	if err != nil {
 		return nil, err
