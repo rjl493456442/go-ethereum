@@ -200,16 +200,16 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 // specified state version. If user doesn't specify the state version, use
 // the persisted snapshot disk layer as the target.
 func (p *Pruner) Prune(root common.Hash) error {
-	// Ensure there is no previously committed state bloom filter.
-	// If the state bloom filter is already committed, just restart
-	// the Geth normally, the recovery procedure will resume all
-	// interrupted operations based on this filter.
-	stateBloomPath, stateBloomRoot, err := findBloomFilter(p.homeDir)
+	// If the state bloom filter is already committed previously,
+	// reuse it for pruning instead of generating a new one. It's
+	// mandatory because a part of state may already be deleted,
+	// the recovery procedure is necessary.
+	_, stateBloomRoot, err := findBloomFilter(p.homeDir)
 	if err != nil {
 		return err
 	}
 	if stateBloomRoot != (common.Hash{}) {
-		return fmt.Errorf("state bloom filter exists, root: %x, path: %s", stateBloomRoot, stateBloomPath)
+		return RecoverPruning(p.homeDir, p.db, filepath.Join(p.homeDir, p.trieCacheName))
 	}
 	// If the target state root is not specified, use the HEAD-127 as the
 	// target. The reason for picking it is:
@@ -271,9 +271,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// It's necessary otherwise in the next restart we will hit the
 	// deleted state root in the "clean cache" so that the incomplete
 	// state is picked for usage.
-	cachePath := filepath.Join(p.homeDir, p.trieCacheName)
-	os.RemoveAll(cachePath)
-	log.Info("Deleted trie clean cache", "path", cachePath)
+	deleteCleanTrieCache(filepath.Join(p.homeDir, p.trieCacheName))
 
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
@@ -351,8 +349,7 @@ func RecoverPruning(homedir string, db ethdb.Database, trieCachePath string) err
 	// It's necessary otherwise in the next restart we will hit the
 	// deleted state root in the "clean cache" so that the incomplete
 	// state is picked for usage.
-	os.RemoveAll(trieCachePath)
-	log.Info("Deleted trie clean cache", "path", trieCachePath)
+	deleteCleanTrieCache(trieCachePath)
 
 	if err := prune(db, stateBloom, time.Now()); err != nil {
 		return err
@@ -487,4 +484,23 @@ func getHeadHeader(db ethdb.Database) (*types.Header, error) {
 		return nil, errors.New("empty head header")
 	}
 	return headHeader, nil
+}
+
+const warningLog = `
+WARNING!
+
+The clean trie cache is not found. Please delete it by yourself after the 
+pruning. Remember don't start the Geth without deleting the clean trie cache
+otherwise the entire database may be damaged!
+
+Check the command description "geth snapshot prune-state --help" for more details.
+`
+
+func deleteCleanTrieCache(path string) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		log.Warn(warningLog)
+		return
+	}
+	os.RemoveAll(path)
+	log.Info("Deleted trie clean cache", "path", path)
 }
