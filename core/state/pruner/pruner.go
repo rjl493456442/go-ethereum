@@ -486,6 +486,7 @@ func getHeadHeader(db ethdb.Database) (*types.Header, error) {
 }
 
 const warningLog = `
+
 WARNING!
 
 The clean trie cache is not found. Please delete it by yourself after the 
