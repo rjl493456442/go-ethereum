@@ -47,14 +47,14 @@ const (
 	// bloomFilterEntries is the estimated value of the number of trie nodes
 	// and codes contained in the state. It's designed for mainnet but also
 	// suitable for other small testnets.
-	bloomFilterEntries = 1000 * 1024 * 1024
+	bloomFilterEntries = 600 * 1024 * 1024
 
 	// bloomFalsePositiveRate is the acceptable probability of bloom filter
 	// false-positive. It's around 0.01%.
 	//
-	// Check the https://hur.st/bloomfilter/?n=1000000000&p=0.0001&m=&k= for
+	// Check the https://hur.st/bloomfilter/?n=600000000&p=0.0005&m=&k= for
 	// more calculation details.
-	bloomFalsePositiveRate = 0.0001
+	bloomFalsePositiveRate = 0.0005
 
 	// rangeCompactionThreshold is the minimal deleted entry number for
 	// triggering range compaction. It's a quite arbitrary number but just
@@ -80,16 +80,12 @@ type Pruner struct {
 }
 
 // NewPruner creates the pruner instance.
-func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheName string) (*Pruner, error) {
+func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheName string, bloomSize uint64) (*Pruner, error) {
 	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false, false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
-	// The passed parameters for constructing the bloom filter
-	// is quite arbitrary. The trie nodes on mainnet is around
-	// 600M nowsday. So the parameters are designed for mainnet
-	// but it's also suitable for smaller networks.
-	stateBloom, err := NewStateBloom(bloomFilterEntries, bloomFalsePositiveRate)
+	stateBloom, err := NewStateBloomWithSize(bloomSize)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +197,7 @@ func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error
 
 // Prune deletes all historical state nodes except the nodes belong to the
 // specified state version. If user doesn't specify the state version, use
-// the persisted snapshot disk layer as the target.
+// the bottom-most snapshot diff layer as the target.
 func (p *Pruner) Prune(root common.Hash) error {
 	// If the state bloom filter is already committed previously,
 	// reuse it for pruning instead of generating a new one. It's

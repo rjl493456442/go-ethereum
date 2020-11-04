@@ -85,6 +85,22 @@ func NewStateBloom(maxElements uint64, probCollide float64) (*StateBloom, error)
 	}, nil
 }
 
+// NewStateBloomWithSize creates a brand new state bloom for state generation.
+// The bloom filter will be created by the passing bloom filter size. According
+// to the https://hur.st/bloomfilter/?n=600000000&p=&m=4096MB&k=3, the parameters
+// are picked so that the false-positive rate for mainnet is low enough.
+func NewStateBloomWithSize(size uint64) (*StateBloom, error) {
+	bloom, err := bloomfilter.New(size*1024*1024*8, 3)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
+	return &StateBloom{
+		bloom: bloom,
+		done:  0,
+	}, nil
+}
+
 // NewStateBloomFromDisk loads the state bloom from the given file.
 // In this case the assumption is held the bloom filter is complete.
 func NewStateBloomFromDisk(filename string) (*StateBloom, error) {

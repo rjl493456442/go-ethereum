@@ -55,6 +55,7 @@ var (
 					utils.GoerliFlag,
 					utils.LegacyTestnetFlag,
 					utils.CacheTrieJournalFlag,
+					utils.BloomFilterSizeFlag,
 				},
 				Description: `
 geth snapshot prune-state <state-root>
@@ -154,7 +155,7 @@ func pruneState(ctx *cli.Context) error {
 		trieCache = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
 		log.Info("Customized trie clean cache specified", "path", stack.ResolvePath(trieCache))
 	}
-	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), trieCache)
+	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), trieCache, ctx.GlobalUint64(utils.BloomFilterSizeFlag.Name))
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}
