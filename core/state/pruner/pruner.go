@@ -73,14 +73,14 @@ var (
 type Pruner struct {
 	db            ethdb.Database
 	stateBloom    *stateBloom
-	homeDir       string
+	datadir       string
 	trieCacheName string
 	headHeader    *types.Header
 	snaptree      *snapshot.Tree
 }
 
 // NewPruner creates the pruner instance.
-func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheName string, bloomSize uint64) (*Pruner, error) {
+func NewPruner(db ethdb.Database, headHeader *types.Header, datadir, trieCacheName string, bloomSize uint64) (*Pruner, error) {
 	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false, false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
@@ -97,7 +97,7 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheNa
 	return &Pruner{
 		db:            db,
 		stateBloom:    stateBloom,
-		homeDir:       homeDir,
+		datadir:       datadir,
 		trieCacheName: trieCacheName,
 		headHeader:    headHeader,
 		snaptree:      snaptree,
@@ -208,12 +208,12 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// reuse it for pruning instead of generating a new one. It's
 	// mandatory because a part of state may already be deleted,
 	// the recovery procedure is necessary.
-	_, stateBloomRoot, err := findBloomFilter(p.homeDir)
+	_, stateBloomRoot, err := findBloomFilter(p.datadir)
 	if err != nil {
 		return err
 	}
 	if stateBloomRoot != (common.Hash{}) {
-		return RecoverPruning(p.homeDir, p.db, filepath.Join(p.homeDir, p.trieCacheName))
+		return RecoverPruning(p.datadir, p.db, filepath.Join(p.datadir, p.trieCacheName))
 	}
 	// If the target state root is not specified, use the HEAD-127 as the
 	// target. The reason for picking it is:
@@ -275,7 +275,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// It's necessary otherwise in the next restart we will hit the
 	// deleted state root in the "clean cache" so that the incomplete
 	// state is picked for usage.
-	deleteCleanTrieCache(filepath.Join(p.homeDir, p.trieCacheName))
+	deleteCleanTrieCache(filepath.Join(p.datadir, p.trieCacheName))
 
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
@@ -283,7 +283,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	if err := snapshot.CommitAndVerifyState(p.snaptree, root, p.db, p.stateBloom); err != nil {
 		return err
 	}
-	filterName := bloomFilterName(p.homeDir, root)
+	filterName := bloomFilterName(p.datadir, root)
 	if err := p.stateBloom.Commit(filterName); err != nil {
 		return err
 	}
@@ -319,8 +319,8 @@ func (p *Pruner) Prune(root common.Hash) error {
 // pruning can be resumed. What's more if the bloom filter is constructed, the
 // pruning **has to be resumed**. Otherwise a lot of dangling nodes may be left
 // in the disk.
-func RecoverPruning(homedir string, db ethdb.Database, trieCachePath string) error {
-	stateBloomPath, stateBloomRoot, err := findBloomFilter(homedir)
+func RecoverPruning(datadir string, db ethdb.Database, trieCachePath string) error {
+	stateBloomPath, stateBloomRoot, err := findBloomFilter(datadir)
 	if err != nil {
 		return err
 	}
@@ -442,8 +442,8 @@ func extractGenesis(db ethdb.Database) (map[common.Hash]struct{}, error) {
 	return marker, nil
 }
 
-func bloomFilterName(homedir string, hash common.Hash) string {
-	return filepath.Join(homedir, fmt.Sprintf("%s.%s.%s", stateBloomFilePrefix, hash.Hex(), stateBloomFileSuffix))
+func bloomFilterName(datadir string, hash common.Hash) string {
+	return filepath.Join(datadir, fmt.Sprintf("%s.%s.%s", stateBloomFilePrefix, hash.Hex(), stateBloomFileSuffix))
 }
 
 func isBloomFilter(filename string) (bool, common.Hash) {
@@ -454,12 +454,12 @@ func isBloomFilter(filename string) (bool, common.Hash) {
 	return false, common.Hash{}
 }
 
-func findBloomFilter(homedir string) (string, common.Hash, error) {
+func findBloomFilter(datadir string) (string, common.Hash, error) {
 	var (
 		stateBloomPath string
 		stateBloomRoot common.Hash
 	)
-	if err := filepath.Walk(homedir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(datadir, func(path string, info os.FileInfo, err error) error {
 		if !info.IsDir() {
 			ok, root := isBloomFilter(path)
 			if ok {
