@@ -72,7 +72,7 @@ var (
 
 type Pruner struct {
 	db            ethdb.Database
-	stateBloom    *StateBloom
+	stateBloom    *stateBloom
 	homeDir       string
 	trieCacheName string
 	headHeader    *types.Header
@@ -90,7 +90,7 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheNa
 		log.Warn("Sanitizing bloomfilter size", "provided(MB)", bloomSize, "updated(MB)", 256)
 		bloomSize = 256
 	}
-	stateBloom, err := NewStateBloomWithSize(bloomSize)
+	stateBloom, err := newStateBloomWithSize(bloomSize)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, homeDir, trieCacheNa
 	}, nil
 }
 
-func prune(maindb ethdb.Database, stateBloom *StateBloom, start time.Time) error {
+func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error {
 	// Extract all node refs belong to the genesis. We have to keep the
 	// genesis all the time.
 	genesisMarker, err := extractGenesis(maindb)

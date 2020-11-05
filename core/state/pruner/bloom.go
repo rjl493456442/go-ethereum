@@ -45,12 +45,7 @@ func (f stateBloomHasher) Sum64() uint64 {
 	return hasher.Sum64()
 }
 
-// StateBloom is a bloom filter used during fast sync to quickly decide if a trie
-// node or contract code already exists on disk or not. It self populates from the
-// provided disk database on creation in a background thread and will only start
-// returning live results once that's finished.
-
-// StateBloom is a bloom filter used during the state convesion(snapshot->state).
+// stateBloom is a bloom filter used during the state convesion(snapshot->state).
 // The keys of all generated entries will be recorded here so that in the pruning
 // stage the entries belong to the specific version can be avoided for deletion.
 //
@@ -65,37 +60,37 @@ func (f stateBloomHasher) Sum64() uint64 {
 //
 // After the entire state is generated, the bloom filter should be persisted into
 // the disk. It indicates the whole generation procedure is finished.
-type StateBloom struct {
+type stateBloom struct {
 	bloom *bloomfilter.Filter
 	done  uint32
 }
 
-// NewStateBloom creates a brand new state bloom for state generation.
+// newStateBloom creates a brand new state bloom for state generation.
 // The optimal bloom filter will be created by the passing "max entries"
 // and the "estimated" maximum collision rate.
-func NewStateBloom(maxElements uint64, probCollide float64) (*StateBloom, error) {
+func newStateBloom(maxElements uint64, probCollide float64) (*stateBloom, error) {
 	bloom, err := bloomfilter.NewOptimal(maxElements, probCollide)
 	if err != nil {
 		return nil, err
 	}
 	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
-	return &StateBloom{
+	return &stateBloom{
 		bloom: bloom,
 		done:  0,
 	}, nil
 }
 
-// NewStateBloomWithSize creates a brand new state bloom for state generation.
+// newStateBloomWithSize creates a brand new state bloom for state generation.
 // The bloom filter will be created by the passing bloom filter size. According
 // to the https://hur.st/bloomfilter/?n=600000000&p=&m=4096MB&k=3, the parameters
 // are picked so that the false-positive rate for mainnet is low enough.
-func NewStateBloomWithSize(size uint64) (*StateBloom, error) {
+func newStateBloomWithSize(size uint64) (*stateBloom, error) {
 	bloom, err := bloomfilter.New(size*1024*1024*8, 3)
 	if err != nil {
 		return nil, err
 	}
 	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
-	return &StateBloom{
+	return &stateBloom{
 		bloom: bloom,
 		done:  0,
 	}, nil
@@ -103,12 +98,12 @@ func NewStateBloomWithSize(size uint64) (*StateBloom, error) {
 
 // NewStateBloomFromDisk loads the state bloom from the given file.
 // In this case the assumption is held the bloom filter is complete.
-func NewStateBloomFromDisk(filename string) (*StateBloom, error) {
+func NewStateBloomFromDisk(filename string) (*stateBloom, error) {
 	bloom, _, err := bloomfilter.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	return &StateBloom{
+	return &stateBloom{
 		bloom: bloom,
 		done:  1,
 	}, nil
@@ -116,40 +111,40 @@ func NewStateBloomFromDisk(filename string) (*StateBloom, error) {
 
 // Commit flushes the bloom filter content into the disk and marks the bloom
 // as complete.
-func (bloom *StateBloom) Commit(filename string) error {
-	if atomic.CompareAndSwapUint32(&bloom.done, 0, 1) {
-		// Firstly, flush the bloom filter to the temporary file
-		_, err := bloom.bloom.WriteFile(filename + ".tmp")
-		if err != nil {
-			return err
-		}
-		// Secondly, fsync the file. In the bloomfilter library
-		// there is no guarantee the file is actually flushed
-		// into the disk
-		f, err := os.Open(filename + ".tmp")
-		if err != nil {
-			return err
-		}
-		if err := f.Sync(); err != nil {
-			return err
-		}
-		f.Close()
-		// Thirdly, rename the file.
-		if err := rename(filename+".tmp", filename); err != nil {
-			return err
-		}
-		// Lastly, fsync the directory to ensure all pending
-		// rename operations are transferred to disk
-		if err := syncDir(filepath.Dir(filename)); err != nil {
-			return err
-		}
-		return nil
+func (bloom *stateBloom) Commit(filename string) error {
+	if !atomic.CompareAndSwapUint32(&bloom.done, 0, 1) {
+		return errors.New("bloom filter is committed")
 	}
-	return errors.New("bloom filter is committed")
+	// Firstly, flush the bloom filter to the temporary file
+	_, err := bloom.bloom.WriteFile(filename + ".tmp")
+	if err != nil {
+		return err
+	}
+	// Secondly, fsync the file. In the bloomfilter library
+	// there is no guarantee the file is actually flushed
+	// into the disk
+	f, err := os.Open(filename + ".tmp")
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	f.Close()
+	// Thirdly, rename the file.
+	if err := rename(filename+".tmp", filename); err != nil {
+		return err
+	}
+	// Lastly, fsync the directory to ensure all pending
+	// rename operations are transferred to disk
+	if err := syncDir(filepath.Dir(filename)); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Put implements the KeyValueWriter interface. But here only the key is needed.
-func (bloom *StateBloom) Put(key []byte, value []byte) error {
+func (bloom *stateBloom) Put(key []byte, value []byte) error {
 	// If the key length is not 32bytes, ensure it's contract code
 	// entry with new scheme.
 	if len(key) != common.HashLength {
@@ -165,12 +160,12 @@ func (bloom *StateBloom) Put(key []byte, value []byte) error {
 }
 
 // Delete removes the key from the key-value data store.
-func (bloom *StateBloom) Delete(key []byte) error { panic("not supported") }
+func (bloom *stateBloom) Delete(key []byte) error { panic("not supported") }
 
 // Contain is the wrapper of the underlying contains function which
 // reports whether the key is contained.
 // - If it says yes, the key may be contained
 // - If it says no, the key is definitely not contained.
-func (bloom *StateBloom) Contain(key []byte) (bool, error) {
+func (bloom *stateBloom) Contain(key []byte) (bool, error) {
 	return bloom.bloom.Contains(stateBloomHasher(key)), nil
 }
