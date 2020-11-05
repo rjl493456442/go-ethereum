@@ -28,7 +28,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -63,6 +62,8 @@ will prune historical state data with the help of the state snapshot.
 All trie nodes and contract codes that do not belong to the specified
 version state will be deleted from the database. After pruning, only
 two version states are available: genesis and the specific one.
+
+The default pruning target is the HEAD-127 state.
 
 WARNING: It's necessary to delete the trie clean cache after the pruning.
 If you specify another directory for the trie clean cache via "--cache.trie.journal"
@@ -140,34 +141,27 @@ It's also usable without snapshot enabled.
 )
 
 func pruneState(ctx *cli.Context) error {
-	glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(true)))
-	glogger.Verbosity(log.LvlInfo)
-	log.Root().SetHandler(glogger)
-
-	stack, _ := makeConfigNode(ctx)
+	stack, config := makeConfigNode(ctx)
 	defer stack.Close()
 
 	chain, chaindb := utils.MakeChain(ctx, stack, true)
 	defer chaindb.Close()
 
-	trieCache := eth.DefaultConfig.TrieCleanCacheJournal
-	if ctx.GlobalIsSet(utils.CacheTrieJournalFlag.Name) {
-		trieCache = ctx.GlobalString(utils.CacheTrieJournalFlag.Name)
-		log.Info("Customized trie clean cache specified", "path", stack.ResolvePath(trieCache))
-	}
-	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), trieCache, ctx.GlobalUint64(utils.BloomFilterSizeFlag.Name))
+	pruner, err := pruner.NewPruner(chaindb, chain.CurrentBlock().Header(), stack.ResolvePath(""), config.Eth.TrieCleanCacheJournal, ctx.GlobalUint64(utils.BloomFilterSizeFlag.Name))
 	if err != nil {
 		utils.Fatalf("Failed to open snapshot tree %v", err)
 	}
 	if ctx.NArg() > 1 {
-		utils.Fatalf("too many arguments given")
+		utils.Fatalf("Too many arguments given")
 	}
 	var targetRoot common.Hash
 	if ctx.NArg() == 1 {
-		targetRoot = common.HexToHash(ctx.Args()[0])
+		targetRoot, err = parseRoot(ctx.Args()[0])
+		if err != nil {
+			utils.Fatalf("Failed to resolve state root %v", err)
+		}
 	}
-	err = pruner.Prune(targetRoot)
-	if err != nil {
+	if err = pruner.Prune(targetRoot); err != nil {
 		utils.Fatalf("Failed to prune state %v", err)
 	}
 	return nil
@@ -193,7 +187,10 @@ func verifyState(ctx *cli.Context) error {
 	}
 	var root = chain.CurrentBlock().Root()
 	if ctx.NArg() == 1 {
-		root = common.HexToHash(ctx.Args()[0])
+		root, err = parseRoot(ctx.Args()[0])
+		if err != nil {
+			utils.Fatalf("Failed to resolve state root %v", err)
+		}
 	}
 	if err := snapshot.VerifyState(snaptree, root); err != nil {
 		log.Crit("Failed to verfiy state", "error", err)
@@ -233,9 +230,15 @@ func traverseState(ctx *cli.Context) error {
 	if head == nil {
 		log.Crit("Head block is missing")
 	}
-	var root common.Hash
+	var (
+		root common.Hash
+		err  error
+	)
 	if ctx.NArg() == 1 {
-		root = common.HexToHash(ctx.Args()[0])
+		root, err = parseRoot(ctx.Args()[0])
+		if err != nil {
+			utils.Fatalf("Failed to resolve state root %v", err)
+		}
 		log.Info("Start traversing the state", "root", root)
 	} else {
 		root = head.Root()
@@ -319,9 +322,15 @@ func traverseRawState(ctx *cli.Context) error {
 	if head == nil {
 		log.Crit("Head block is missing")
 	}
-	var root common.Hash
+	var (
+		root common.Hash
+		err  error
+	)
 	if ctx.NArg() == 1 {
-		root = common.HexToHash(ctx.Args()[0])
+		root, err = parseRoot(ctx.Args()[0])
+		if err != nil {
+			utils.Fatalf("Failed to resolve state root %v", err)
+		}
 		log.Info("Start traversing the state", "root", root)
 	} else {
 		root = head.Root()
@@ -410,4 +419,12 @@ func traverseRawState(ctx *cli.Context) error {
 	}
 	log.Info("State is complete", "nodes", nodes, "accounts", accounts, "slots", slots, "codes", codes, "elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
+}
+
+func parseRoot(input string) (common.Hash, error) {
+	var h common.Hash
+	if err := h.UnmarshalText([]byte(input)); err != nil {
+		return h, err
+	}
+	return h, nil
 }
