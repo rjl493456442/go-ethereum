@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +27,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -70,17 +70,28 @@ var (
 	emptyCode = crypto.Keccak256(nil)
 )
 
+// Pruner is an offline tool to prune the stale state with the
+// help of the snapshot. The workflow of pruner is very simple:
+//
+// - iterate the snapshot, reconstruct the relevant state
+// - iterate the database, delete all other state entries which
+//   don't belong to the target state and the genesis state
+//
+// It can take several hours(around 2 hours for mainnet) to finish
+// the whole pruning work. It's recommended to run this offline tool
+// periodically in order to release the disk usage and improve the
+// disk read performance to some extent.
 type Pruner struct {
 	db            ethdb.Database
 	stateBloom    *stateBloom
 	datadir       string
-	trieCacheName string
+	trieCachePath string
 	headHeader    *types.Header
 	snaptree      *snapshot.Tree
 }
 
 // NewPruner creates the pruner instance.
-func NewPruner(db ethdb.Database, headHeader *types.Header, datadir, trieCacheName string, bloomSize uint64) (*Pruner, error) {
+func NewPruner(db ethdb.Database, headHeader *types.Header, datadir, trieCachePath string, bloomSize uint64) (*Pruner, error) {
 	snaptree, err := snapshot.New(db, trie.NewDatabase(db), 256, headHeader.Root, false, false, false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
@@ -98,7 +109,7 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, datadir, trieCacheNa
 		db:            db,
 		stateBloom:    stateBloom,
 		datadir:       datadir,
-		trieCacheName: trieCacheName,
+		trieCachePath: trieCachePath,
 		headHeader:    headHeader,
 		snaptree:      snaptree,
 	}, nil
@@ -107,7 +118,7 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, datadir, trieCacheNa
 func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error {
 	// Extract all node refs belong to the genesis. We have to keep the
 	// genesis all the time.
-	genesisMarker, err := extractGenesis(maindb)
+	genesisHashset, err := extractGenesis(maindb)
 	if err != nil {
 		return err
 	}
@@ -142,7 +153,7 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 				checkKey = codeKey
 			}
 			// Filter out the state belongs to the genesis
-			if _, ok := genesisMarker[common.BytesToHash(checkKey)]; ok {
+			if _, ok := genesisHashset[common.BytesToHash(checkKey)]; ok {
 				continue
 			}
 			// Filter out the state belongs the pruning target
@@ -213,7 +224,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 		return err
 	}
 	if stateBloomRoot != (common.Hash{}) {
-		return RecoverPruning(p.datadir, p.db, filepath.Join(p.datadir, p.trieCacheName))
+		return RecoverPruning(p.datadir, p.db, p.trieCachePath)
 	}
 	// If the target state root is not specified, use the HEAD-127 as the
 	// target. The reason for picking it is:
@@ -275,7 +286,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// It's necessary otherwise in the next restart we will hit the
 	// deleted state root in the "clean cache" so that the incomplete
 	// state is picked for usage.
-	deleteCleanTrieCache(filepath.Join(p.datadir, p.trieCacheName))
+	deleteCleanTrieCache(p.trieCachePath)
 
 	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
@@ -390,28 +401,23 @@ func extractGenesis(db ethdb.Database) (map[common.Hash]struct{}, error) {
 	if genesis == nil {
 		return nil, errors.New("missing genesis block")
 	}
-	t, err := trie.New(genesis.Root(), trie.NewDatabase(db))
+	t, err := trie.NewSecure(genesis.Root(), trie.NewDatabase(db))
 	if err != nil {
 		return nil, err
 	}
-	marker := make(map[common.Hash]struct{})
+	hashset := make(map[common.Hash]struct{})
 	accIter := t.NodeIterator(nil)
 	for accIter.Next(true) {
-		node := accIter.Hash()
+		hash := accIter.Hash()
 
 		// Embedded nodes don't have hash.
-		if node != (common.Hash{}) {
-			marker[node] = struct{}{}
+		if hash != (common.Hash{}) {
+			hashset[hash] = struct{}{}
 		}
 		// If it's a leaf node, yes we are touching an account,
 		// dig into the storage trie further.
 		if accIter.Leaf() {
-			var acc struct {
-				Nonce    uint64
-				Balance  *big.Int
-				Root     common.Hash
-				CodeHash []byte
-			}
+			var acc state.Account
 			if err := rlp.DecodeBytes(accIter.LeafBlob(), &acc); err != nil {
 				return nil, err
 			}
@@ -424,7 +430,7 @@ func extractGenesis(db ethdb.Database) (map[common.Hash]struct{}, error) {
 				for storageIter.Next(true) {
 					node := storageIter.Hash()
 					if node != (common.Hash{}) {
-						marker[node] = struct{}{}
+						hashset[node] = struct{}{}
 					}
 				}
 				if storageIter.Error() != nil {
@@ -432,14 +438,14 @@ func extractGenesis(db ethdb.Database) (map[common.Hash]struct{}, error) {
 				}
 			}
 			if !bytes.Equal(acc.CodeHash, emptyCode) {
-				marker[common.BytesToHash(acc.CodeHash)] = struct{}{}
+				hashset[common.BytesToHash(acc.CodeHash)] = struct{}{}
 			}
 		}
 	}
 	if accIter.Error() != nil {
 		return nil, accIter.Error()
 	}
-	return marker, nil
+	return hashset, nil
 }
 
 func bloomFilterName(datadir string, hash common.Hash) string {
