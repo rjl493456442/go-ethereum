@@ -21,7 +21,6 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -62,7 +61,6 @@ func (f stateBloomHasher) Sum64() uint64 {
 // the disk. It indicates the whole generation procedure is finished.
 type stateBloom struct {
 	bloom *bloomfilter.Filter
-	done  uint32
 }
 
 // newStateBloom creates a brand new state bloom for state generation.
@@ -74,10 +72,7 @@ func newStateBloom(maxElements uint64, probCollide float64) (*stateBloom, error)
 		return nil, err
 	}
 	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
-	return &stateBloom{
-		bloom: bloom,
-		done:  0,
-	}, nil
+	return &stateBloom{bloom: bloom}, nil
 }
 
 // newStateBloomWithSize creates a brand new state bloom for state generation.
@@ -90,10 +85,7 @@ func newStateBloomWithSize(size uint64) (*stateBloom, error) {
 		return nil, err
 	}
 	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
-	return &stateBloom{
-		bloom: bloom,
-		done:  0,
-	}, nil
+	return &stateBloom{bloom: bloom}, nil
 }
 
 // NewStateBloomFromDisk loads the state bloom from the given file.
@@ -103,18 +95,12 @@ func NewStateBloomFromDisk(filename string) (*stateBloom, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &stateBloom{
-		bloom: bloom,
-		done:  1,
-	}, nil
+	return &stateBloom{bloom: bloom}, nil
 }
 
 // Commit flushes the bloom filter content into the disk and marks the bloom
 // as complete.
 func (bloom *stateBloom) Commit(filename string) error {
-	if !atomic.CompareAndSwapUint32(&bloom.done, 0, 1) {
-		return errors.New("bloom filter is committed")
-	}
 	// Firstly, flush the bloom filter to the temporary file
 	_, err := bloom.bloom.WriteFile(filename + ".tmp")
 	if err != nil {
