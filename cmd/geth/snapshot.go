@@ -235,7 +235,8 @@ func traverseState(ctx *cli.Context) error {
 		root = head.Root()
 		log.Info("Start traversing the state", "root", root, "number", head.NumberU64())
 	}
-	t, err := trie.NewSecure(root, trie.NewDatabase(chaindb))
+	triedb := trie.NewDatabase(chaindb)
+	t, err := trie.NewSecure(root, triedb)
 	if err != nil {
 		log.Crit("Failed to open trie", "root", root, "error", err)
 	}
@@ -254,7 +255,7 @@ func traverseState(ctx *cli.Context) error {
 			log.Crit("Invalid account encountered during traversal", "error", err)
 		}
 		if acc.Root != emptyRoot {
-			storageTrie, err := trie.NewSecure(acc.Root, trie.NewDatabase(chaindb))
+			storageTrie, err := trie.NewSecure(acc.Root, triedb)
 			if err != nil {
 				log.Crit("Failed to open storage trie", "root", acc.Root, "error", err)
 			}
@@ -318,7 +319,8 @@ func traverseRawState(ctx *cli.Context) error {
 		root = head.Root()
 		log.Info("Start traversing the state", "root", root, "number", head.NumberU64())
 	}
-	t, err := trie.NewSecure(root, trie.NewDatabase(chaindb))
+	triedb := trie.NewDatabase(chaindb)
+	t, err := trie.NewSecure(root, triedb)
 	if err != nil {
 		log.Crit("Failed to open trie", "root", root, "error", err)
 	}
@@ -352,7 +354,7 @@ func traverseRawState(ctx *cli.Context) error {
 				log.Crit("Invalid account encountered during traversal", "error", err)
 			}
 			if acc.Root != emptyRoot {
-				storageTrie, err := trie.NewSecure(acc.Root, trie.NewDatabase(chaindb))
+				storageTrie, err := trie.NewSecure(acc.Root, triedb)
 				if err != nil {
 					log.Crit("Failed to open storage trie", "root", acc.Root, "error", err)
 				}
