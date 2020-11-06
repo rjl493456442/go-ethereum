@@ -90,30 +90,25 @@ func VerifyState(snaptree *Tree, root common.Hash) error {
 	return nil
 }
 
-// CommitAndVerifyState takes the whole snapshot tree as the input, traverses all the
-// accounts as well as the corresponding storages and commits all re-constructed trie
-// nodes to the given database(usually the given db is not the main one used in the
-// system, acts as the temporary storage here).
-//
-// Besides, whenever we meet an account with additional contract code, the code will
-// also be migrated to ensure the integrity of the newly created state.
-func CommitAndVerifyState(snaptree *Tree, root common.Hash, db ethdb.Database, commitdb ethdb.KeyValueWriter) error {
-	// Traverse all state by snapshot, re-construct the whole state trie
-	// and commit to the given storage.
+// GenerateTrie takes the whole snapshot tree as the input, traverses all the
+// accounts as well as the corresponding storages and regenerate the whole state
+// (account trie + all storage tries).
+func GenerateTrie(snaptree *Tree, root common.Hash, src ethdb.Database, dst ethdb.KeyValueWriter) error {
+	// Traverse all state by snapshot, re-generate the whole state trie
 	acctIt, err := snaptree.AccountIterator(root, common.Hash{})
 	if err != nil {
 		return err // The required snapshot might not exist.
 	}
 	defer acctIt.Release()
 
-	got, err := generateTrieRoot(commitdb, acctIt, common.Hash{}, stackTrieGenerate, func(commitdb ethdb.KeyValueWriter, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
+	got, err := generateTrieRoot(dst, acctIt, common.Hash{}, stackTrieGenerate, func(dst ethdb.KeyValueWriter, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
 		// Migrate the code first, commit the contract code into the tmp db.
 		if codeHash != emptyCode {
-			code := rawdb.ReadCode(db, codeHash)
+			code := rawdb.ReadCode(src, codeHash)
 			if len(code) == 0 {
-				return common.Hash{}, errors.New("failed to migrate contract code")
+				return common.Hash{}, errors.New("failed to read contract code")
 			}
-			rawdb.WriteCode(commitdb, codeHash, code)
+			rawdb.WriteCode(dst, codeHash, code)
 		}
 		// Then migrate all storage trie nodes into the tmp db.
 		storageIt, err := snaptree.StorageIterator(root, accountHash, common.Hash{})
@@ -122,7 +117,7 @@ func CommitAndVerifyState(snaptree *Tree, root common.Hash, db ethdb.Database, c
 		}
 		defer storageIt.Release()
 
-		hash, err := generateTrieRoot(commitdb, storageIt, accountHash, stackTrieGenerate, nil, stat, false)
+		hash, err := generateTrieRoot(dst, storageIt, accountHash, stackTrieGenerate, nil, stat, false)
 		if err != nil {
 			return common.Hash{}, err
 		}

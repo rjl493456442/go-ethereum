@@ -116,12 +116,6 @@ func NewPruner(db ethdb.Database, headHeader *types.Header, datadir, trieCachePa
 }
 
 func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error {
-	// Extract all node refs belong to the genesis. We have to keep the
-	// genesis all the time.
-	genesisHashset, err := extractGenesis(maindb)
-	if err != nil {
-		return err
-	}
 	// Delete all stale trie nodes in the disk. With the help of state bloom
 	// the trie nodes(and codes) belong to the active state will be filtered
 	// out. A very small part of stale tries will also be filtered because of
@@ -152,10 +146,6 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 			if isCode {
 				checkKey = codeKey
 			}
-			// Filter out the state belongs to the genesis
-			if _, ok := genesisHashset[common.BytesToHash(checkKey)]; ok {
-				continue
-			}
 			// Filter out the state belongs the pruning target
 			if ok, err := stateBloom.Contain(checkKey); err != nil {
 				return err
@@ -172,7 +162,7 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 				batch.Reset()
 			}
 			count += 1
-			if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			if time.Since(logged) > 8*time.Second {
 				log.Info("Pruning state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
 				logged = time.Now()
 			}
@@ -288,10 +278,15 @@ func (p *Pruner) Prune(root common.Hash) error {
 	// state is picked for usage.
 	deleteCleanTrieCache(p.trieCachePath)
 
-	start := time.Now()
 	// Traverse the target state, re-construct the whole state trie and
 	// commit to the given bloom filter.
-	if err := snapshot.CommitAndVerifyState(p.snaptree, root, p.db, p.stateBloom); err != nil {
+	start := time.Now()
+	if err := snapshot.GenerateTrie(p.snaptree, root, p.db, p.stateBloom); err != nil {
+		return err
+	}
+	// Traverse the genesis, put all genesis state entries into the
+	// bloom filter too.
+	if err := extractGenesis(p.db, p.stateBloom); err != nil {
 		return err
 	}
 	filterName := bloomFilterName(p.datadir, root)
@@ -299,6 +294,7 @@ func (p *Pruner) Prune(root common.Hash) error {
 		return err
 	}
 	log.Info("Committed the state bloom filter", "name", filterName)
+
 	if err := prune(p.db, p.stateBloom, start); err != nil {
 		return err
 	}
@@ -390,62 +386,58 @@ func RecoverPruning(datadir string, db ethdb.Database, trieCachePath string) err
 	return nil
 }
 
-// extractGenesis loads the genesis state and creates the nodes marker.
-// So that it can be used as an present indicator for all genesis trie nodes.
-func extractGenesis(db ethdb.Database) (map[common.Hash]struct{}, error) {
+// extractGenesis loads the genesis state and commits all the state entries
+// into the given bloomfilter.
+func extractGenesis(db ethdb.Database, stateBloom *stateBloom) error {
 	genesisHash := rawdb.ReadCanonicalHash(db, 0)
 	if genesisHash == (common.Hash{}) {
-		return nil, errors.New("missing genesis hash")
+		return errors.New("missing genesis hash")
 	}
 	genesis := rawdb.ReadBlock(db, genesisHash, 0)
 	if genesis == nil {
-		return nil, errors.New("missing genesis block")
+		return errors.New("missing genesis block")
 	}
 	t, err := trie.NewSecure(genesis.Root(), trie.NewDatabase(db))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	hashset := make(map[common.Hash]struct{})
 	accIter := t.NodeIterator(nil)
 	for accIter.Next(true) {
 		hash := accIter.Hash()
 
 		// Embedded nodes don't have hash.
 		if hash != (common.Hash{}) {
-			hashset[hash] = struct{}{}
+			stateBloom.Put(hash.Bytes(), nil)
 		}
 		// If it's a leaf node, yes we are touching an account,
 		// dig into the storage trie further.
 		if accIter.Leaf() {
 			var acc state.Account
 			if err := rlp.DecodeBytes(accIter.LeafBlob(), &acc); err != nil {
-				return nil, err
+				return err
 			}
 			if acc.Root != emptyRoot {
 				storageTrie, err := trie.NewSecure(acc.Root, trie.NewDatabase(db))
 				if err != nil {
-					return nil, err
+					return err
 				}
 				storageIter := storageTrie.NodeIterator(nil)
 				for storageIter.Next(true) {
-					node := storageIter.Hash()
-					if node != (common.Hash{}) {
-						hashset[node] = struct{}{}
+					hash := storageIter.Hash()
+					if hash != (common.Hash{}) {
+						stateBloom.Put(hash.Bytes(), nil)
 					}
 				}
 				if storageIter.Error() != nil {
-					return nil, storageIter.Error()
+					return storageIter.Error()
 				}
 			}
 			if !bytes.Equal(acc.CodeHash, emptyCode) {
-				hashset[common.BytesToHash(acc.CodeHash)] = struct{}{}
+				stateBloom.Put(acc.CodeHash, nil)
 			}
 		}
 	}
-	if accIter.Error() != nil {
-		return nil, accIter.Error()
-	}
-	return hashset, nil
+	return accIter.Error()
 }
 
 func bloomFilterName(datadir string, hash common.Hash) string {
