@@ -129,59 +129,75 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 		pstart = time.Now()
 		logged = time.Now()
 		batch  = maindb.NewBatch()
-		iter   = maindb.NewIterator(nil, nil)
 
-		rangestart = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
-		rangelimit = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
+		rstart = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
+		rlimit = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
+		last   = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
 	)
-	for iter.Next() {
-		key := iter.Key()
+	for {
+		var (
+			flushed bool
+			iter    = maindb.NewIterator(nil, last)
+		)
+		for iter.Next() {
+			key := iter.Key()
 
-		// All state entries don't belong to specific state and genesis are deleted here
-		// - trie node
-		// - legacy contract code
-		// - new-scheme contract code
-		isCode, codeKey := rawdb.IsCodeKey(key)
-		if len(key) == common.HashLength || isCode {
-			checkKey := key
-			if isCode {
-				checkKey = codeKey
-			}
-			// Filter out the state belongs the pruning target
-			if ok, err := stateBloom.Contain(checkKey); err != nil {
-				return err
-			} else if ok {
-				continue
-			}
-			// Filter out the state belongs to the "blacklist". Usually
-			// the root of the "useless" states are contained here.
-			size += common.StorageSize(len(key) + len(iter.Value()))
-			batch.Delete(key)
+			// All state entries don't belong to specific state and genesis are deleted here
+			// - trie node
+			// - legacy contract code
+			// - new-scheme contract code
+			isCode, codeKey := rawdb.IsCodeKey(key)
+			if len(key) == common.HashLength || isCode {
+				checkKey := key
+				if isCode {
+					checkKey = codeKey
+				}
+				// Filter out the state belongs the pruning target
+				if ok, err := stateBloom.Contain(checkKey); err != nil {
+					return err
+				} else if ok {
+					continue
+				}
+				count += 1
+				size += common.StorageSize(len(key) + len(iter.Value()))
+				batch.Delete(key)
 
-			if batch.ValueSize() >= ethdb.IdealBatchSize {
+				if time.Since(logged) > 8*time.Second {
+					log.Info("Pruning state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
+					logged = time.Now()
+				}
+				if len(rstart) == 0 || bytes.Compare(rstart, key) > 0 {
+					rstart = rstart[:len(key)]
+					copy(rstart, key)
+				}
+				if len(rlimit) == 0 || bytes.Compare(rlimit, key) < 0 {
+					rlimit = rlimit[:len(key)]
+					copy(rlimit, key)
+				}
+				// Recreate the iterator after every batch commit in order
+				// to allow the underlying compactor to delete the entries.
+				if batch.ValueSize() >= ethdb.IdealBatchSize {
+					batch.Write()
+					batch.Reset()
+
+					last = last[:len(key)]
+					copy(last, key)
+					iter.Release()
+					flushed = true
+					break
+				}
+			}
+		}
+		// Flush the last batch content and stop the iteration
+		if !flushed {
+			if batch.ValueSize() > 0 {
 				batch.Write()
 				batch.Reset()
 			}
-			count += 1
-			if time.Since(logged) > 8*time.Second {
-				log.Info("Pruning state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
-				logged = time.Now()
-			}
-			if len(rangestart) == 0 || bytes.Compare(rangestart, key) > 0 {
-				rangestart = rangestart[:len(key)]
-				copy(rangestart, key)
-			}
-			if len(rangelimit) == 0 || bytes.Compare(rangelimit, key) < 0 {
-				rangelimit = rangelimit[:len(key)]
-				copy(rangelimit, key)
-			}
+			iter.Release()
+			break
 		}
 	}
-	if batch.ValueSize() > 0 {
-		batch.Write()
-		batch.Reset()
-	}
-	iter.Release() // Please release the iterator here, otherwise will block the compactor
 	log.Info("Pruned state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
 
 	// Start compactions, will remove the deleted data from the disk immediately.
@@ -189,7 +205,7 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 	if count >= rangeCompactionThreshold {
 		cstart := time.Now()
 		log.Info("Start compacting the database")
-		if err := maindb.Compact(rangestart, rangelimit); err != nil {
+		if err := maindb.Compact(rstart, rlimit); err != nil {
 			log.Error("Failed to compact the whole database", "error", err)
 		}
 		log.Info("Compacted the whole database", "elapsed", common.PrettyDuration(time.Since(cstart)))
