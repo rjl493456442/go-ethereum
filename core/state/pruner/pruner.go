@@ -131,7 +131,8 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 		batch  = maindb.NewBatch()
 		iter   = maindb.NewIterator(nil, nil)
 
-		rangestart, rangelimit []byte
+		rangestart = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
+		rangelimit = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
 	)
 	for iter.Next() {
 		key := iter.Key()
@@ -166,16 +167,12 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 				log.Info("Pruning state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
 				logged = time.Now()
 			}
-			if rangestart == nil || bytes.Compare(rangestart, key) > 0 {
-				if rangestart == nil {
-					rangestart = make([]byte, common.HashLength)
-				}
+			if len(rangestart) == 0 || bytes.Compare(rangestart, key) > 0 {
+				rangestart = rangestart[:len(key)]
 				copy(rangestart, key)
 			}
-			if rangelimit == nil || bytes.Compare(rangelimit, key) < 0 {
-				if rangelimit == nil {
-					rangelimit = make([]byte, common.HashLength)
-				}
+			if len(rangelimit) == 0 || bytes.Compare(rangelimit, key) < 0 {
+				rangelimit = rangelimit[:len(key)]
 				copy(rangelimit, key)
 			}
 		}

@@ -335,7 +335,7 @@ func InspectDatabase(db ethdb.Database) error {
 			hashNumPairings.Add(size)
 		case len(key) == common.HashLength:
 			tries.Add(size)
-		case bytes.HasPrefix(key, codePrefix) && len(key) == len(codePrefix)+common.HashLength:
+		case bytes.HasPrefix(key, CodePrefix) && len(key) == len(CodePrefix)+common.HashLength:
 			codes.Add(size)
 		case bytes.HasPrefix(key, txLookupPrefix) && len(key) == (len(txLookupPrefix)+common.HashLength):
 			txLookups.Add(size)
