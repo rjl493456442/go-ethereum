@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -715,6 +716,38 @@ func (t *Tree) StorageIterator(root common.Hash, account common.Hash, seek commo
 		return nil, ErrNotConstructed
 	}
 	return newFastStorageIterator(t, root, account, seek)
+}
+
+// Verify iterates the whole state(all the accounts as well as the corresponding storages)
+// with the specific root and compares the re-computed hash with the original one.
+func (t *Tree) Verify(root common.Hash) error {
+	acctIt, err := t.AccountIterator(root, common.Hash{})
+	if err != nil {
+		return err
+	}
+	defer acctIt.Release()
+
+	got, err := generateTrieRoot(nil, acctIt, common.Hash{}, stackTrieGenerate, func(db ethdb.KeyValueWriter, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
+		storageIt, err := t.StorageIterator(root, accountHash, common.Hash{})
+		if err != nil {
+			return common.Hash{}, err
+		}
+		defer storageIt.Release()
+
+		hash, err := generateTrieRoot(nil, storageIt, accountHash, stackTrieGenerate, nil, stat, false)
+		if err != nil {
+			return common.Hash{}, err
+		}
+		return hash, nil
+	}, &generateStats{start: time.Now()}, true)
+
+	if err != nil {
+		return err
+	}
+	if got != root {
+		return fmt.Errorf("state root hash mismatch: got %x, want %x", got, root)
+	}
+	return nil
 }
 
 // disklayer is an internal helper function to return the disk layer.

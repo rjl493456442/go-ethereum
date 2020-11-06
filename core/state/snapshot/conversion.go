@@ -57,39 +57,6 @@ func GenerateStorageTrieRoot(account common.Hash, it StorageIterator) (common.Ha
 	return generateTrieRoot(nil, it, account, stackTrieGenerate, nil, &generateStats{start: time.Now()}, true)
 }
 
-// VerifyState takes the whole snapshot tree as the input, traverses all the accounts
-// as well as the corresponding storages and compares the re-computed hash with the
-// original one(state root and the storage root).
-func VerifyState(snaptree *Tree, root common.Hash) error {
-	acctIt, err := snaptree.AccountIterator(root, common.Hash{})
-	if err != nil {
-		return err
-	}
-	defer acctIt.Release()
-
-	got, err := generateTrieRoot(nil, acctIt, common.Hash{}, stackTrieGenerate, func(db ethdb.KeyValueWriter, accountHash, codeHash common.Hash, stat *generateStats) (common.Hash, error) {
-		storageIt, err := snaptree.StorageIterator(root, accountHash, common.Hash{})
-		if err != nil {
-			return common.Hash{}, err
-		}
-		defer storageIt.Release()
-
-		hash, err := generateTrieRoot(nil, storageIt, accountHash, stackTrieGenerate, nil, stat, false)
-		if err != nil {
-			return common.Hash{}, err
-		}
-		return hash, nil
-	}, &generateStats{start: time.Now()}, true)
-
-	if err != nil {
-		return err
-	}
-	if got != root {
-		return fmt.Errorf("state root hash mismatch: got %x, want %x", got, root)
-	}
-	return nil
-}
-
 // GenerateTrie takes the whole snapshot tree as the input, traverses all the
 // accounts as well as the corresponding storages and regenerate the whole state
 // (account trie + all storage tries).
@@ -230,7 +197,7 @@ type subTask struct {
 func runSubTasks(in chan subTask, out chan error, stop chan struct{}) {
 	var (
 		running int
-		failed  bool
+		failed  bool // Flag to limit the number of reported errors to 1
 		limit   = runtime.NumCPU()
 		done    = make(chan error)
 	)

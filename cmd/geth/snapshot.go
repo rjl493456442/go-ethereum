@@ -195,7 +195,7 @@ func verifyState(ctx *cli.Context) error {
 			utils.Fatalf("Failed to resolve state root %v", err)
 		}
 	}
-	if err := snapshot.VerifyState(snaptree, root); err != nil {
+	if err := snaptree.Verify(root); err != nil {
 		log.Crit("Failed to verfiy state", "error", err)
 	} else {
 		log.Info("Verified the state")
