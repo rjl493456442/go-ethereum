@@ -132,72 +132,59 @@ func prune(maindb ethdb.Database, stateBloom *stateBloom, start time.Time) error
 
 		rstart = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
 		rlimit = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
-		last   = make([]byte, 0, common.HashLength+len(rawdb.CodePrefix))
+		iter   = maindb.NewIterator(nil, nil)
 	)
-	for {
-		var (
-			flushed bool
-			iter    = maindb.NewIterator(nil, last)
-		)
-		for iter.Next() {
-			key := iter.Key()
+	for iter.Next() {
+		key := iter.Key()
 
-			// All state entries don't belong to specific state and genesis are deleted here
-			// - trie node
-			// - legacy contract code
-			// - new-scheme contract code
-			isCode, codeKey := rawdb.IsCodeKey(key)
-			if len(key) == common.HashLength || isCode {
-				checkKey := key
-				if isCode {
-					checkKey = codeKey
-				}
-				// Filter out the state belongs the pruning target
-				if ok, err := stateBloom.Contain(checkKey); err != nil {
-					return err
-				} else if ok {
-					continue
-				}
-				count += 1
-				size += common.StorageSize(len(key) + len(iter.Value()))
-				batch.Delete(key)
-
-				if time.Since(logged) > 8*time.Second {
-					log.Info("Pruning state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
-					logged = time.Now()
-				}
-				if len(rstart) == 0 || bytes.Compare(rstart, key) > 0 {
-					rstart = rstart[:len(key)]
-					copy(rstart, key)
-				}
-				if len(rlimit) == 0 || bytes.Compare(rlimit, key) < 0 {
-					rlimit = rlimit[:len(key)]
-					copy(rlimit, key)
-				}
-				// Recreate the iterator after every batch commit in order
-				// to allow the underlying compactor to delete the entries.
-				if batch.ValueSize() >= ethdb.IdealBatchSize {
-					batch.Write()
-					batch.Reset()
-
-					last = last[:len(key)]
-					copy(last, key)
-					iter.Release()
-					flushed = true
-					break
-				}
+		// All state entries don't belong to specific state and genesis are deleted here
+		// - trie node
+		// - legacy contract code
+		// - new-scheme contract code
+		isCode, codeKey := rawdb.IsCodeKey(key)
+		if len(key) == common.HashLength || isCode {
+			checkKey := key
+			if isCode {
+				checkKey = codeKey
 			}
-		}
-		// Flush the last batch content and stop the iteration
-		if !flushed {
-			if batch.ValueSize() > 0 {
+			// Filter out the state belongs the pruning target
+			if ok, err := stateBloom.Contain(checkKey); err != nil {
+				return err
+			} else if ok {
+				continue
+			}
+			count += 1
+			size += common.StorageSize(len(key) + len(iter.Value()))
+			batch.Delete(key)
+
+			if time.Since(logged) > 8*time.Second {
+				log.Info("Pruning state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
+				logged = time.Now()
+			}
+			if len(rstart) == 0 || bytes.Compare(rstart, key) > 0 {
+				rstart = rstart[:len(key)]
+				copy(rstart, key)
+			}
+			if len(rlimit) == 0 || bytes.Compare(rlimit, key) < 0 {
+				rlimit = rlimit[:len(key)]
+				copy(rlimit, key)
+			}
+			// Recreate the iterator after every batch commit in order
+			// to allow the underlying compactor to delete the entries.
+			if batch.ValueSize() >= ethdb.IdealBatchSize {
 				batch.Write()
 				batch.Reset()
+
+				iter.Release()
+				iter = maindb.NewIterator(nil, key)
 			}
-			iter.Release()
-			break
 		}
 	}
+	if batch.ValueSize() > 0 {
+		batch.Write()
+		batch.Reset()
+	}
+	iter.Release()
 	log.Info("Pruned state data", "count", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
 
 	// Start compactions, will remove the deleted data from the disk immediately.
