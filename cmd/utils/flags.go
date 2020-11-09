@@ -215,7 +215,7 @@ var (
 	BloomFilterSizeFlag = cli.Uint64Flag{
 		Name:  "bloomfilter.size",
 		Usage: "Megabytes of memory allocated to bloom-filter for pruning",
-		Value: 4096,
+		Value: 2048,
 	}
 	// Light server and client settings
 	LightServeFlag = cli.IntFlag{

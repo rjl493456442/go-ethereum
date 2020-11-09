@@ -77,10 +77,10 @@ func newStateBloom(maxElements uint64, probCollide float64) (*stateBloom, error)
 
 // newStateBloomWithSize creates a brand new state bloom for state generation.
 // The bloom filter will be created by the passing bloom filter size. According
-// to the https://hur.st/bloomfilter/?n=600000000&p=&m=4096MB&k=3, the parameters
+// to the https://hur.st/bloomfilter/?n=600000000&p=&m=2048MB&k=4, the parameters
 // are picked so that the false-positive rate for mainnet is low enough.
 func newStateBloomWithSize(size uint64) (*stateBloom, error) {
-	bloom, err := bloomfilter.New(size*1024*1024*8, 3)
+	bloom, err := bloomfilter.New(size*1024*1024*8, 4)
 	if err != nil {
 		return nil, err
 	}
