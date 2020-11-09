@@ -44,18 +44,6 @@ const (
 	// stateBloomFilePrefix is the filename suffix of state bloom filter.
 	stateBloomFileSuffix = "bf.gz"
 
-	// bloomFilterEntries is the estimated value of the number of trie nodes
-	// and codes contained in the state. It's designed for mainnet but also
-	// suitable for other small testnets.
-	bloomFilterEntries = 600 * 1024 * 1024
-
-	// bloomFalsePositiveRate is the acceptable probability of bloom filter
-	// false-positive. It's around 0.01%.
-	//
-	// Check the https://hur.st/bloomfilter/?n=600000000&p=0.0005&m=&k= for
-	// more calculation details.
-	bloomFalsePositiveRate = 0.0005
-
 	// rangeCompactionThreshold is the minimal deleted entry number for
 	// triggering range compaction. It's a quite arbitrary number but just
 	// to avoid triggering range compaction because of small deletion.

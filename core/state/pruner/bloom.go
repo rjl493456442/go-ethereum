@@ -63,18 +63,6 @@ type stateBloom struct {
 	bloom *bloomfilter.Filter
 }
 
-// newStateBloom creates a brand new state bloom for state generation.
-// The optimal bloom filter will be created by the passing "max entries"
-// and the "estimated" maximum collision rate.
-func newStateBloom(maxElements uint64, probCollide float64) (*stateBloom, error) {
-	bloom, err := bloomfilter.NewOptimal(maxElements, probCollide)
-	if err != nil {
-		return nil, err
-	}
-	log.Info("Initialized state bloom", "size", common.StorageSize(float64(bloom.M()/8)))
-	return &stateBloom{bloom: bloom}, nil
-}
-
 // newStateBloomWithSize creates a brand new state bloom for state generation.
 // The bloom filter will be created by the passing bloom filter size. According
 // to the https://hur.st/bloomfilter/?n=600000000&p=&m=2048MB&k=4, the parameters
