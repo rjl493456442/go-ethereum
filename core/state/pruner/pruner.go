@@ -446,7 +446,7 @@ func findBloomFilter(datadir string) (string, common.Hash, error) {
 		stateBloomRoot common.Hash
 	)
 	if err := filepath.Walk(datadir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
+		if info != nil && !info.IsDir() {
 			ok, root := isBloomFilter(path)
 			if ok {
 				stateBloomPath = path
