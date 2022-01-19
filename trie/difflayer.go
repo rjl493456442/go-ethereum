@@ -173,13 +173,13 @@ func (dl *diffLayer) Update(blockRoot common.Hash, id uint64, nodes map[string]*
 // Note this function can destruct the ancestor layers(mark them as stale)
 // of the given diff layer, please ensure prevent state access operation
 // to this layer through any **descendant layer**.
-func (dl *diffLayer) persist(config *Config, forceCommit bool) (snapshot, error) {
+func (dl *diffLayer) persist(config *Config, force bool, sync bool) (snapshot, error) {
 	parent, ok := dl.Parent().(*diffLayer)
 	if ok {
 		// Hold the lock to prevent any read operation until the new
 		// parent is linked correctly.
 		dl.lock.Lock()
-		result, err := parent.persist(config, forceCommit)
+		result, err := parent.persist(config, force, sync)
 		if err != nil {
 			dl.lock.Unlock()
 			return nil, err
@@ -187,14 +187,14 @@ func (dl *diffLayer) persist(config *Config, forceCommit bool) (snapshot, error)
 		dl.parent = result
 		dl.lock.Unlock()
 	}
-	return diffToDisk(dl, config, forceCommit)
+	return diffToDisk(dl, config, force, sync)
 }
 
 // diffToDisk merges a bottom-most diff into the persistent disk layer underneath
 // it. The method will panic if called onto a non-bottom-most diff layer. The disk
 // layer persistence should be operated in an atomic way. All updates should be
 // discarded if the whole transition if not finished.
-func diffToDisk(bottom *diffLayer, config *Config, force bool) (*diskLayer, error) {
+func diffToDisk(bottom *diffLayer, config *Config, force bool, sync bool) (*diskLayer, error) {
 	// Construct and store the reverse diff firstly. If crash happens
 	// after storing the reverse diff but without flushing the corresponding
 	// states, the stored reverse diff will be truncated in the next restart.
@@ -208,7 +208,7 @@ func diffToDisk(bottom *diffLayer, config *Config, force bool) (*diskLayer, erro
 	base.MarkStale()
 
 	dl := newDiskLayer(bottom.root, bottom.rid, base.clean, base.dirty.update(bottom.nodes), base.diskdb)
-	if err := dl.flush(config, force); err != nil {
+	if err := dl.flush(config, force, sync); err != nil {
 		return nil, err
 	}
 	return dl, nil

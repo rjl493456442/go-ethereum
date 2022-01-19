@@ -18,6 +18,7 @@ package trie
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -29,7 +30,7 @@ import (
 )
 
 var (
-	// dirtyMemoryLimit is the maximum size of the dirty cache size that
+	// dirtyMemoryLimit is the maximum size of a single dirty node set that
 	// aggregates the writes from above until it's flushed into the disk.
 	dirtyMemoryLimit = uint64(256 * 1024 * 1024)
 )
@@ -37,12 +38,18 @@ var (
 // dirtyCache is a collection of uncommitted dirty nodes to aggregate the disk
 // write. And it can act as an additional cache avoid hitting disk too much.
 type dirtyCache struct {
+	db    ethdb.Database
 	nodes map[string]*cachedNode // Uncommitted dirty nodes, indexed by storage key
 	size  uint64                 // The approximate size of cached nodes
+
+	// Frozen node set
+	frozenCommitted chan struct{}          // Channel used to send signal when the frozen set is flushed
+	frozenLock      sync.RWMutex           // Lock used to protect frozen list
+	frozen          map[string]*cachedNode // Frozen dirty node set, waiting for flushing
 }
 
 // newDirtyCache initializes the dirty node cache with the given nodes.
-func newDirtyCache(nodes map[string]*cachedNode) *dirtyCache {
+func newDirtyCache(db ethdb.Database, nodes map[string]*cachedNode) *dirtyCache {
 	if nodes == nil {
 		nodes = make(map[string]*cachedNode)
 	}
@@ -50,49 +57,60 @@ func newDirtyCache(nodes map[string]*cachedNode) *dirtyCache {
 	for key, node := range nodes {
 		size += uint64(len(key) + int(node.size) + cachedNodeSize)
 	}
-	return &dirtyCache{nodes: nodes, size: size}
+	return &dirtyCache{
+		db:              db,
+		nodes:           nodes,
+		size:            size,
+		frozenCommitted: make(chan struct{}),
+	}
 }
 
 // node retrieves the node with given path and hash.
 func (cache *dirtyCache) node(storage []byte, hash common.Hash) (node, error) {
-	n, ok := cache.nodes[string(storage)]
-	if ok {
-		if n.node == nil || n.hash != hash {
-			owner, path := DecodeStorageKey(storage)
-			return nil, fmt.Errorf("%w %x(%x %v)", errUnexpectedNode, hash, owner, path)
+	for _, set := range cache.dirtySets() {
+		n, ok := set[string(storage)]
+		if ok {
+			if n.node == nil || n.hash != hash {
+				owner, path := DecodeStorageKey(storage)
+				return nil, fmt.Errorf("%w %x(%x %v)", errUnexpectedNode, hash, owner, path)
+			}
+			triedbDirtyHitMeter.Mark(1)
+			triedbDirtyNodeHitDepthHist.Update(int64(128))
+			triedbDirtyReadMeter.Mark(int64(n.size))
+			return n.obj(hash), nil
 		}
-		triedbDirtyHitMeter.Mark(1)
-		triedbDirtyNodeHitDepthHist.Update(int64(128))
-		triedbDirtyReadMeter.Mark(int64(n.size))
-		return n.obj(hash), nil
 	}
 	return nil, nil
 }
 
 // nodeBlob retrieves the node blob with given path and hash.
 func (cache *dirtyCache) nodeBlob(storage []byte, hash common.Hash) ([]byte, error) {
-	n, ok := cache.nodes[string(storage)]
-	if ok {
-		if n.node == nil || n.hash != hash {
-			owner, path := DecodeStorageKey(storage)
-			return nil, fmt.Errorf("%w %x(%x %v)", errUnexpectedNode, hash, owner, path)
+	for _, set := range cache.dirtySets() {
+		n, ok := set[string(storage)]
+		if ok {
+			if n.node == nil || n.hash != hash {
+				owner, path := DecodeStorageKey(storage)
+				return nil, fmt.Errorf("%w %x(%x %v)", errUnexpectedNode, hash, owner, path)
+			}
+			triedbDirtyHitMeter.Mark(1)
+			triedbDirtyNodeHitDepthHist.Update(int64(128))
+			triedbDirtyReadMeter.Mark(int64(n.size))
+			return n.rlp(), nil
 		}
-		triedbDirtyHitMeter.Mark(1)
-		triedbDirtyNodeHitDepthHist.Update(int64(128))
-		triedbDirtyReadMeter.Mark(int64(n.size))
-		return n.rlp(), nil
 	}
 	return nil, nil
 }
 
 // nodeBlobByPath retrieves the node blob with given path regardless of the node hash.
 func (cache *dirtyCache) nodeBlobByPath(storage []byte) ([]byte, bool) {
-	n, ok := cache.nodes[string(storage)]
-	if ok {
-		if n.node == nil {
-			return nil, true
+	for _, set := range cache.dirtySets() {
+		n, ok := set[string(storage)]
+		if ok {
+			if n.node == nil {
+				return nil, true
+			}
+			return n.rlp(), true
 		}
-		return n.rlp(), true
 	}
 	return nil, false
 }
@@ -104,8 +122,10 @@ func (cache *dirtyCache) update(nodes map[string]*cachedNode) *dirtyCache {
 	for storage, n := range nodes {
 		if prev, exist := cache.nodes[storage]; exist {
 			diff += int64(n.size) - int64(prev.size)
+			triedbDiskCacheHitMeter.Mark(1)
 		} else {
 			diff += int64(int(n.size) + len(storage) + cachedNodeSize)
+			triedbDiskCacheMissMeter.Mark(1)
 		}
 		cache.nodes[storage] = n
 	}
@@ -149,20 +169,67 @@ func (cache *dirtyCache) revert(diff *reverseDiff) error {
 // format node can be written as well (e.g. for archive node). Note, all data must
 // be written to disk atomically.
 // This function should never be called simultaneously with other map accessors.
-func (cache *dirtyCache) flush(db ethdb.KeyValueStore, clean *fastcache.Cache, config *Config, force bool) error {
+func (cache *dirtyCache) flush(clean *fastcache.Cache, config *Config, force bool, sync bool) error {
 	if cache.size <= dirtyMemoryLimit && !force {
 		return nil
 	}
+	cache.waitCommit()
+	cache.addFrozen(cache.nodes)
+
+	// Reset the local dirty node set
+	cache.nodes = make(map[string]*cachedNode)
+	cache.size = 0
+	cache.frozenCommitted = make(chan struct{})
+
+	go cache.flushFrozen(clean, config)
+	if sync {
+		cache.waitCommit()
+	}
+	return nil
+}
+
+func (cache *dirtyCache) addFrozen(frozen map[string]*cachedNode) {
+	cache.frozenLock.Lock()
+	defer cache.frozenLock.Unlock()
+
+	cache.frozen = frozen
+}
+
+// waitCommit blocks until the frozen dirty set is flushed into the disk,
+// or return directly if there is no frozen set waiting for flushing.
+func (cache *dirtyCache) waitCommit() {
+	cache.frozenLock.RLock()
+	frozen := cache.frozen
+	cache.frozenLock.RUnlock()
+
+	if frozen == nil {
+		return
+	}
+	<-cache.frozenCommitted
+}
+
+func (cache *dirtyCache) dirtySets() []map[string]*cachedNode {
+	cache.frozenLock.RLock()
+	defer cache.frozenLock.RUnlock()
+
+	lookup := []map[string]*cachedNode{cache.nodes}
+	if cache.frozen != nil {
+		lookup = append(lookup, cache.frozen)
+	}
+	return lookup
+}
+
+func (cache *dirtyCache) flushFrozen(clean *fastcache.Cache, config *Config) {
 	var (
 		total int64
 		start = time.Now()
-		batch = db.NewBatch()
+		batch = cache.db.NewBatch()
 
 		encodeTime time.Duration
 		batchTime  time.Duration
 		flushTime  time.Duration
 	)
-	for storage, n := range cache.nodes {
+	for storage, n := range cache.frozen {
 		if n.node == nil {
 			rawdb.DeleteTrieNode(batch, []byte(storage))
 			continue
@@ -188,7 +255,7 @@ func (cache *dirtyCache) flush(db ethdb.KeyValueStore, clean *fastcache.Cache, c
 
 	t := time.Now()
 	if err := batch.Write(); err != nil {
-		return err
+		panic(fmt.Sprintf("failed to write %v", err))
 	}
 	flushTime = time.Since(t)
 
@@ -200,6 +267,9 @@ func (cache *dirtyCache) flush(db ethdb.KeyValueStore, clean *fastcache.Cache, c
 		"flush-time", common.PrettyDuration(flushTime),
 		"elapsed", common.PrettyDuration(time.Since(start)),
 	)
-	cache.nodes, cache.size = make(map[string]*cachedNode), 0
-	return nil
+	cache.frozenLock.Lock()
+	cache.frozen = nil
+	cache.frozenLock.Unlock()
+
+	close(cache.frozenCommitted) // fire the signal
 }

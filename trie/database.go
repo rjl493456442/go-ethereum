@@ -59,11 +59,15 @@ var (
 	triedbDiffLayerSizeMeter  = metrics.NewRegisteredMeter("trie/triedb/diff/size", nil)
 	triedbDiffLayerNodesMeter = metrics.NewRegisteredMeter("trie/triedb/diff/nodes", nil)
 
-	triedbReverseDiffTimeTimer = metrics.NewRegisteredTimer("trie/triedb/reversediff/time", nil)
-	triedbReverseDiffSizeMeter = metrics.NewRegisteredMeter("trie/triedb/reversediff/size", nil)
-	triedbReverseDiskHitMeter  = metrics.NewRegisteredMeter("trie/triedb/reversediff/disk", nil)
-	triedbReverseDirtyHitMeter = metrics.NewRegisteredMeter("trie/triedb/reversediff/dirty", nil)
-	triedbReverseMissMeter     = metrics.NewRegisteredMeter("trie/triedb/reversediff/miss", nil)
+	triedbReverseDiffTimeTimer  = metrics.NewRegisteredTimer("trie/triedb/reversediff/time", nil)
+	triedbReverseDiffSizeMeter  = metrics.NewRegisteredMeter("trie/triedb/reversediff/size", nil)
+	triedbReverseDiffCountMeter = metrics.NewRegisteredMeter("trie/triedb/reversediff/count", nil)
+	triedbReverseDiskHitMeter   = metrics.NewRegisteredMeter("trie/triedb/reversediff/disk", nil)
+	triedbReverseDirtyHitMeter  = metrics.NewRegisteredMeter("trie/triedb/reversediff/dirty", nil)
+	triedbReverseMissMeter      = metrics.NewRegisteredMeter("trie/triedb/reversediff/miss", nil)
+
+	triedbDiskCacheHitMeter  = metrics.NewRegisteredMeter("trie/triedb/diskcache/hit", nil)
+	triedbDiskCacheMissMeter = metrics.NewRegisteredMeter("trie/triedb/diskcache/miss", nil)
 
 	// ErrSnapshotReadOnly is returned if the database is opened in read only mode
 	// and mutation is requested.
@@ -492,7 +496,7 @@ func (db *Database) Cap(root common.Hash, layers int) error {
 	// child for the capping and then remove it.
 	if layers == 0 {
 		// If full commit was requested, flatten the diffs and merge onto disk
-		result, err := diff.persist(db.config, true)
+		result, err := diff.persist(db.config, true, true)
 		if err != nil {
 			return err
 		}
@@ -563,7 +567,7 @@ func (db *Database) cap(diff *diffLayer, layers int) error {
 		diff.lock.Lock()
 		defer diff.lock.Unlock()
 
-		base, err := parent.persist(db.config, false)
+		base, err := parent.persist(db.config, false, false)
 		if err != nil {
 			return err
 		}
@@ -600,6 +604,9 @@ func (db *Database) Journal(root common.Hash) error {
 	if err := rlp.Encode(journal, journalVersion); err != nil {
 		return err
 	}
+	// TODO(rjl4934565442) ugly hack! please drop it
+	db.disklayer().dirty.waitCommit()
+
 	_, diskroot := rawdb.ReadTrieNode(db.diskdb, EncodeStorageKey(common.Hash{}, nil))
 	if diskroot == (common.Hash{}) {
 		diskroot = emptyRoot
@@ -675,7 +682,10 @@ func (db *Database) revert(diff *reverseDiff, cleans *fastcache.Cache) error {
 	if dl.rid == 0 {
 		return fmt.Errorf("%w: zero reverse diff id", errStateUnrecoverable)
 	}
+	// Mark the disk layer as stale to prevent any following read operations,
+	// and also ensure the frozen dirty set is flushed.
 	dl.MarkStale()
+	dl.dirty.waitCommit()
 
 	_, diskRoot := rawdb.ReadTrieNode(db.diskdb, EncodeStorageKey(common.Hash{}, nil))
 	switch {
@@ -698,7 +708,7 @@ func (db *Database) revert(diff *reverseDiff, cleans *fastcache.Cache) error {
 	case diskRoot == diff.Parent:
 		// diff.Root == dl.root and diff.Parent == diskRoot,
 		// nuke out the dirty node set for reverting.
-		dl.dirty = newDirtyCache(nil)
+		dl.dirty = newDirtyCache(db.diskdb, nil)
 
 	default:
 		// Revert embedded state in the dirty set.

@@ -576,6 +576,6 @@ func TestNodeIteratorLargeTrie(t *testing.T) {
 	// master: 24 get operations
 	// this pr: 2 get operations
 	if have, want := logDb.getCount, uint64(13853); have != want {
-		t.Fatalf("Too many lookups during seek, have %d want %d", have, want)
+		t.Fatalf("Too many dirtySets during seek, have %d want %d", have, want)
 	}
 }

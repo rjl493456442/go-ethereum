@@ -108,6 +108,7 @@ func storeReverseDiff(dl *diffLayer, limit uint64) error {
 	rawdb.WriteReverseDiff(base.diskdb, dl.rid, blob, base.root)
 	rawdb.WriteReverseDiffLookup(base.diskdb, base.root, dl.rid)
 	triedbReverseDiffSizeMeter.Mark(int64(len(blob)))
+	triedbReverseDiffCountMeter.Mark(int64(len(dl.nodes)))
 
 	// Prune stale reverse diffs if necessary
 	pruned, err := truncateFromTail(base.diskdb, dl.rid, limit)

@@ -146,7 +146,7 @@ func loadDiskLayer(r *rlp.Stream, clean *fastcache.Cache, disk ethdb.Database, c
 			}
 		}
 	}
-	base := newDiskLayer(root, loadDiffHead(config, disk, root), clean, newDirtyCache(nodes), disk)
+	base := newDiskLayer(root, loadDiffHead(config, disk, root), clean, newDirtyCache(disk, nodes), disk)
 	return base, nil
 }
 

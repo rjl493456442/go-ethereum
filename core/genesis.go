@@ -179,8 +179,10 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 	}
 	// We have the genesis block in database(perhaps in ancient database)
 	// but the corresponding state is missing.
-	header := rawdb.ReadHeader(db, stored, 0)
-	if _, err := state.New(header.Root, state.NewDatabaseWithConfig(db, &trie.Config{ReadOnly: true}), nil); err != nil {
+
+	// TODO(rjl493456442) ugly hack.
+	blob, _ := rawdb.ReadTrieNode(db, trie.EncodeStorageKey(common.Hash{}, nil))
+	if len(blob) == 0 {
 		if genesis == nil {
 			genesis = DefaultGenesisBlock()
 		}
@@ -195,6 +197,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 		}
 		return genesis.Config, block.Hash(), nil
 	}
+
 	// Check whether the genesis block is already written.
 	if genesis != nil {
 		hash := genesis.ToBlock(nil).Hash()

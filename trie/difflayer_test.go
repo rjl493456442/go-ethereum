@@ -191,7 +191,7 @@ func benchmarkPersist(b *testing.B, writeLegacy bool) {
 		if !ok {
 			break
 		}
-		dl.persist(&Config{WriteLegacy: writeLegacy}, false)
+		dl.persist(&Config{WriteLegacy: writeLegacy}, false, false)
 		b.StopTimer()
 	}
 }

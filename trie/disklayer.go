@@ -40,7 +40,7 @@ type diskLayer struct {
 // newDiskLayer creates a new disk layer based on the passing arguments.
 func newDiskLayer(root common.Hash, rid uint64, clean *fastcache.Cache, dirty *dirtyCache, diskdb ethdb.Database) *diskLayer {
 	if dirty == nil {
-		dirty = newDirtyCache(nil)
+		dirty = newDirtyCache(diskdb, nil)
 	}
 	return &diskLayer{
 		diskdb: diskdb,
@@ -211,6 +211,6 @@ func (dl *diskLayer) Update(blockHash common.Hash, id uint64, nodes map[string]*
 // flush persists the in-memory dirty trie node into the disk if the predefined
 // memory threshold is reached. Depends on the given config, the additional legacy
 // format node can be written as well (e.g. for archive node).
-func (dl *diskLayer) flush(config *Config, force bool) error {
-	return dl.dirty.flush(dl.diskdb, dl.clean, config, force)
+func (dl *diskLayer) flush(config *Config, force bool, sync bool) error {
+	return dl.dirty.flush(dl.clean, config, force, sync)
 }
