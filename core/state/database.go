@@ -19,6 +19,7 @@ package state
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
@@ -28,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/ethereum/go-ethereum/trie/utils"
+	"github.com/gballet/go-verkle"
 )
 
 const (
@@ -44,7 +47,7 @@ type Database interface {
 	OpenTrie(root common.Hash) (Trie, error)
 
 	// OpenStorageTrie opens the storage trie of an account.
-	OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash) (Trie, error)
+	OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash, main Trie) (Trie, error)
 
 	// CopyTrie returns an independent copy of the given trie.
 	CopyTrie(Trie) Trie
@@ -60,6 +63,8 @@ type Database interface {
 
 	// TrieDB returns the underlying trie database for managing trie nodes.
 	TrieDB() *trie.Database
+
+	EndVerkleTransition()
 }
 
 // Trie is a Ethereum Merkle Patricia trie.
@@ -130,6 +135,9 @@ type Trie interface {
 	// nodes of the longest existing prefix of the key (at least the root), ending
 	// with the node that proves the absence of the key.
 	Prove(key []byte, proofDb ethdb.KeyValueWriter) error
+
+	// IsVerkle returns true if the trie is verkle-tree based
+	IsVerkle() bool
 }
 
 // NewDatabase creates a backing store for state. The returned database is safe for
@@ -148,6 +156,7 @@ func NewDatabaseWithConfig(db ethdb.Database, config *trie.Config) Database {
 		codeSizeCache: lru.NewCache[common.Hash, int](codeSizeCacheSize),
 		codeCache:     lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
 		triedb:        trie.NewDatabase(db, config),
+		addrToPoint:   utils.NewPointCache(),
 	}
 }
 
@@ -158,7 +167,35 @@ func NewDatabaseWithNodeDB(db ethdb.Database, triedb *trie.Database) Database {
 		codeSizeCache: lru.NewCache[common.Hash, int](codeSizeCacheSize),
 		codeCache:     lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
 		triedb:        triedb,
+		addrToPoint:   utils.NewPointCache(),
+		ended:         triedb.Verkle(),
 	}
+}
+
+func (db *cachingDB) EndVerkleTransition() {
+	if !db.started {
+		db.started = true
+	}
+
+	fmt.Println(`
+	__________.__                       .__                .__                   __       .__                       .__                    .___         .___
+	\__    ___|  |__   ____        ____ |  |   ____ ______ |  |__ _____    _____/  |_     |  |__ _____    ______    |  | _____    ____   __| _/____   __| _/
+	  |    |  |  |  \_/ __ \     _/ __ \|  | _/ __ \\____ \|  |  \\__  \  /    \   __\    |  |  \\__  \  /  ___/    |  | \__  \  /    \ / __ _/ __ \ / __ |
+	  |    |  |   Y  \  ___/     \  ___/|  |_\  ___/|  |_> |   Y  \/ __ \|   |  |  |      |   Y  \/ __ \_\___ \     |  |__/ __ \|   |  / /_/ \  ___// /_/ |
+	  |____|  |___|  /\___        \___  |____/\___  |   __/|___|  (____  |___|  |__|      |___|  (____  /_____/     |____(____  |___|  \____ |\___  \____ |
+                                                    |__|`)
+	db.ended = true
+}
+
+func (db *cachingDB) getTranslation(orig common.Hash) common.Hash {
+	db.translatedRootsLock.RLock()
+	defer db.translatedRootsLock.RUnlock()
+	for i, o := range db.origRoots {
+		if o == orig {
+			return db.translatedRoots[i]
+		}
+	}
+	return common.Hash{}
 }
 
 type cachingDB struct {
@@ -166,10 +203,18 @@ type cachingDB struct {
 	codeSizeCache *lru.Cache[common.Hash, int]
 	codeCache     *lru.SizeConstrainedCache[common.Hash, []byte]
 	triedb        *trie.Database
+
+	// Verkle specific fields
+	// TODO ensure that this info is in the DB
+	started, ended      bool
+	translatedRoots     [32]common.Hash // hash of the translated root, for opening
+	origRoots           [32]common.Hash
+	translatedRootsLock sync.RWMutex
+
+	addrToPoint *utils.PointCache
 }
 
-// OpenTrie opens the main account trie at a specific root hash.
-func (db *cachingDB) OpenTrie(root common.Hash) (Trie, error) {
+func (db *cachingDB) openMPTTrie(root common.Hash) (Trie, error) {
 	tr, err := trie.NewStateTrie(trie.StateTrieID(root), db.triedb)
 	if err != nil {
 		return nil, err
@@ -177,8 +222,33 @@ func (db *cachingDB) OpenTrie(root common.Hash) (Trie, error) {
 	return tr, nil
 }
 
-// OpenStorageTrie opens the storage trie of an account.
-func (db *cachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash) (Trie, error) {
+func (db *cachingDB) openVKTrie(root common.Hash) (Trie, error) {
+	// TODO translation from mpt root to verkle root?
+	payload, err := db.DiskDB().Get(trie.FlatDBVerkleNodeKeyPrefix)
+	if err != nil {
+		return trie.NewVerkleTrie(verkle.New(), db.triedb, db.addrToPoint, db.ended)
+	}
+	r, err := verkle.ParseNode(payload, 0)
+	if err != nil {
+		panic(err)
+	}
+	return trie.NewVerkleTrie(r, db.triedb, db.addrToPoint, db.ended)
+}
+
+// OpenTrie opens the main account trie at a specific root hash.
+func (db *cachingDB) OpenTrie(root common.Hash) (Trie, error) {
+	if db.ended {
+		vkt, err := db.openVKTrie(root)
+		if err != nil {
+			return nil, err
+		}
+
+		return vkt, nil
+	}
+	return db.openMPTTrie(root)
+}
+
+func (db *cachingDB) openStorageMPTrie(stateRoot common.Hash, address common.Address, root common.Hash, _ Trie) (Trie, error) {
 	tr, err := trie.NewStateTrie(trie.StorageTrieID(stateRoot, crypto.Keccak256Hash(address.Bytes()), root), db.triedb)
 	if err != nil {
 		return nil, err
@@ -186,10 +256,21 @@ func (db *cachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Addre
 	return tr, nil
 }
 
+// OpenStorageTrie opens the storage trie of an account
+func (db *cachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash, self Trie) (Trie, error) {
+	if db.ended {
+		return self, nil
+	}
+	mpt, err := db.openStorageMPTrie(stateRoot, address, root, nil)
+	return mpt, err
+}
+
 // CopyTrie returns an independent copy of the given trie.
 func (db *cachingDB) CopyTrie(t Trie) Trie {
 	switch t := t.(type) {
 	case *trie.StateTrie:
+		return t.Copy()
+	case *trie.VerkleTrie:
 		return t.Copy()
 	default:
 		panic(fmt.Errorf("unknown trie type %T", t))

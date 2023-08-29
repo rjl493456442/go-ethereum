@@ -74,7 +74,7 @@ func checkChildren(root verkle.VerkleNode, resolver verkle.NodeResolverFn) error
 	switch node := root.(type) {
 	case *verkle.InternalNode:
 		for i, child := range node.Children() {
-			childC := child.Commit().Bytes()
+			childC := child.Commitment().Bytes()
 
 			childS, err := resolver(childC[:])
 			if bytes.Equal(childC[:], zero[:]) {
@@ -84,7 +84,7 @@ func checkChildren(root verkle.VerkleNode, resolver verkle.NodeResolverFn) error
 				return fmt.Errorf("could not find child %x in db: %w", childC, err)
 			}
 			// depth is set to 0, the tree isn't rebuilt so it's not a problem
-			childN, err := verkle.ParseNode(childS, 0, childC[:])
+			childN, err := verkle.ParseNode(childS, 0)
 			if err != nil {
 				return fmt.Errorf("decode error child %x in db: %w", child.Commitment().Bytes(), err)
 			}
@@ -144,7 +144,7 @@ func verifyVerkle(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	root, err := verkle.ParseNode(serializedRoot, 0, rootC[:])
+	root, err := verkle.ParseNode(serializedRoot, 0)
 	if err != nil {
 		return err
 	}
@@ -193,7 +193,7 @@ func expandVerkle(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	root, err := verkle.ParseNode(serializedRoot, 0, rootC[:])
+	root, err := verkle.ParseNode(serializedRoot, 0)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func expandVerkle(ctx *cli.Context) error {
 		root.Get(key, chaindb.Get)
 	}
 
-	if err := os.WriteFile("dump.dot", []byte(verkle.ToDot(root)), 0600); err != nil {
+	if err := os.WriteFile("dump.dot", []byte(verkle.ToDot(root)), 0o600); err != nil {
 		log.Error("Failed to dump file", "err", err)
 	} else {
 		log.Info("Tree was dumped to file", "file", "dump.dot")
