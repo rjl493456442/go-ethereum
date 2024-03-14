@@ -510,7 +510,7 @@ func (db *Database) modifyAllowed() error {
 //
 // End: State ID of the last history for the query. 0 implies the last available
 // object is selected as the ending point. Note end is included in the query.
-func (db *Database) AccountHistory(address common.Address, start, end uint64) (*HistoryStats, error) {
+func (db *Database) AccountHistory(address []byte, start, end uint64) (*HistoryStats, error) {
 	return accountHistory(db.freezer, address, start, end)
 }
 
@@ -523,7 +523,7 @@ func (db *Database) AccountHistory(address common.Address, start, end uint64) (*
 // object is selected as the ending point. Note end is included in the query.
 //
 // Note, slot refers to the hash of the raw slot key.
-func (db *Database) StorageHistory(address common.Address, slot common.Hash, start uint64, end uint64) (*HistoryStats, error) {
+func (db *Database) StorageHistory(address common.Hash, slot []byte, start uint64, end uint64) (*HistoryStats, error) {
 	return storageHistory(db.freezer, address, slot, start, end)
 }
 

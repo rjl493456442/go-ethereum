@@ -17,24 +17,31 @@
 package pathdb
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 )
 
 // HistoryStats wraps the history inspection statistics.
 type HistoryStats struct {
-	Start   uint64   // Block number of the first queried history
-	End     uint64   // Block number of the last queried history
-	Blocks  []uint64 // Blocks refers to the list of block numbers in which the state is mutated
-	Origins [][]byte // Origins refers to the original value of the state before its mutation
+	Start uint64 // Block number of the first queried history
+	End   uint64 // Block number of the last queried history
+
+	Blocks []uint64 // Blocks refers to the list of block numbers in which the state is mutated
+
+	Origins   [][]byte // Origins refers to the original value of the state before its mutation
+	Hashes    [][]common.Hash
+	Addresses [][]common.Address
+	BlobArray [][][]byte
 }
 
 // sanitizeRange limits the given range to fit within the local history store.
-func sanitizeRange(start, end uint64, freezer ethdb.AncientReader) (uint64, uint64, error) {
+func sanitizeRange(start, end uint64, freezer ethdb.AncientStore) (uint64, uint64, error) {
 	// Load the id of the first history object in local store.
 	tail, err := freezer.Tail()
 	if err != nil {
@@ -60,7 +67,7 @@ func sanitizeRange(start, end uint64, freezer ethdb.AncientReader) (uint64, uint
 	return first, last, nil
 }
 
-func inspectHistory(freezer ethdb.AncientReader, start, end uint64, onHistory func(*history, *HistoryStats)) (*HistoryStats, error) {
+func inspectHistory(freezer ethdb.AncientStore, start, end uint64, onHistory func(*history, *HistoryStats)) (*HistoryStats, error) {
 	var (
 		stats  = &HistoryStats{}
 		init   = time.Now()
@@ -96,35 +103,75 @@ func inspectHistory(freezer ethdb.AncientReader, start, end uint64, onHistory fu
 }
 
 // accountHistory inspects the account history within the range.
-func accountHistory(freezer ethdb.AncientReader, address common.Address, start, end uint64) (*HistoryStats, error) {
+func accountHistory(freezer ethdb.AncientStore, address []byte, start, end uint64) (*HistoryStats, error) {
 	return inspectHistory(freezer, start, end, func(h *history, stats *HistoryStats) {
-		blob, exists := h.accounts[address]
-		if !exists {
-			return
+		if len(address) == common.AddressLength {
+			blob, exists := h.accounts[common.BytesToAddress(address)]
+			if !exists {
+				return
+			}
+			stats.Blocks = append(stats.Blocks, h.meta.block)
+			stats.Origins = append(stats.Origins, blob)
+		} else {
+			var (
+				hashes    []common.Hash
+				addresses []common.Address
+				blobs     [][]byte
+			)
+			for addr, blob := range h.accounts {
+				hash := crypto.Keccak256Hash(addr.Bytes())
+				if bytes.HasPrefix([]byte(common.Bytes2Hex(hash.Bytes())), address) {
+					hashes = append(hashes, hash)
+					addresses = append(addresses, addr)
+					blobs = append(blobs, blob)
+				}
+			}
+			if len(hashes) != 0 {
+				stats.Blocks = append(stats.Blocks, h.meta.block)
+				stats.Hashes = append(stats.Hashes, hashes)
+				stats.Addresses = append(stats.Addresses, addresses)
+				stats.BlobArray = append(stats.BlobArray, blobs)
+			}
 		}
-		stats.Blocks = append(stats.Blocks, h.meta.block)
-		stats.Origins = append(stats.Origins, blob)
 	})
 }
 
 // storageHistory inspects the storage history within the range.
-func storageHistory(freezer ethdb.AncientReader, address common.Address, slot common.Hash, start uint64, end uint64) (*HistoryStats, error) {
+func storageHistory(freezer ethdb.AncientStore, addressHash common.Hash, slot []byte, start uint64, end uint64) (*HistoryStats, error) {
 	return inspectHistory(freezer, start, end, func(h *history, stats *HistoryStats) {
-		slots, exists := h.storages[address]
-		if !exists {
-			return
+		for addr, slots := range h.storages {
+			if addressHash == crypto.Keccak256Hash(addr.Bytes()) {
+				if len(slot) == common.HashLength {
+					blob, exists := slots[common.BytesToHash(slot)]
+					if !exists {
+						return
+					}
+					stats.Blocks = append(stats.Blocks, h.meta.block)
+					stats.Origins = append(stats.Origins, blob)
+				} else {
+					var (
+						hashes []common.Hash
+						blobs  [][]byte
+					)
+					for hash, blob := range slots {
+						if bytes.HasPrefix([]byte(common.Bytes2Hex(hash.Bytes())), slot) {
+							hashes = append(hashes, hash)
+							blobs = append(blobs, blob)
+						}
+					}
+					if len(hashes) != 0 {
+						stats.Blocks = append(stats.Blocks, h.meta.block)
+						stats.Hashes = append(stats.Hashes, hashes)
+						stats.BlobArray = append(stats.BlobArray, blobs)
+					}
+				}
+			}
 		}
-		blob, exists := slots[slot]
-		if !exists {
-			return
-		}
-		stats.Blocks = append(stats.Blocks, h.meta.block)
-		stats.Origins = append(stats.Origins, blob)
 	})
 }
 
 // historyRange returns the block number range of local state histories.
-func historyRange(freezer ethdb.AncientReader) (uint64, uint64, error) {
+func historyRange(freezer ethdb.AncientStore) (uint64, uint64, error) {
 	// Load the id of the first history object in local store.
 	tail, err := freezer.Tail()
 	if err != nil {

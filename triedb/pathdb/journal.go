@@ -47,7 +47,7 @@ var (
 //
 // - Version 0: initial version
 // - Version 1: storage.Incomplete field is removed
-const journalVersion uint64 = 1
+const journalVersion uint64 = 0
 
 // journalNode represents a trie node persisted in the journal.
 type journalNode struct {
@@ -70,9 +70,10 @@ type journalAccounts struct {
 
 // journalStorage represents a list of storage slots belong to an account.
 type journalStorage struct {
-	Account common.Address
-	Hashes  []common.Hash
-	Slots   [][]byte
+	Incomplete bool
+	Account    common.Address
+	Hashes     []common.Hash
+	Slots      [][]byte
 }
 
 // loadJournal tries to parse the layer journal from the disk.

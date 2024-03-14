@@ -1206,3 +1206,58 @@ func FuzzTrie(f *testing.F) {
 		}
 	})
 }
+
+func TestFoo(t *testing.T) {
+	db := newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.PathScheme)
+	tr := NewEmpty(db)
+
+	x := common.Hex2Bytes("01")
+	fmt.Println(x)
+	fmt.Printf("%x\n", x)
+
+	tr.Update(common.HexToHash("de3e40013bda5bc9fb5ca74f0d638595ce3a59ac090a3394462e38dbc644332a").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e40f071d30853fa2cf76e951d21b48116b6366c00742d0609ffadf2e0a5b6").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e427ed5874e9cfadc56bd1d372b7ccdbe47e4b64a54eb990486e8bd53d3a1").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e438b79b82c6d451ac38a4b9ee7b90ea36db68b4574d5cad4c3c0abc23ce4").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e43e1638956fb776143a5e783954a703ee59b2853f521f61e1196412f8d52").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e43f57f03deaccc409382d6d098d068f06e203e31deac2ac270ca2eb05da0").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e441e798822302eb47f5cd72bd88d5bf9f774079cb6841ff0a70c7f0d3fc1").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4671b58c78240807e2009a60c1adb55a4d73b1020ddf81e778c08ab32349").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e46e67cedf52db2ec0be944dc4d5414edfdfac665c2b40c6b1edfa7a90509").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e47c88a751293f59c169f8639f19f7afe1b14c50145ae4272b88220a827f3").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e48b06d057a6fbb06870f3fcd30ceb12cdeda3307e6700826f726262d00a4").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e48e1dd148adc4ed653ccf2645793b0ee427bf64efc0aab032ac059d79ff3").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e495fb89178efddb6569c5440af4fbf4812da1860158583258fcf4f2279e6").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4974d446af03c4fce7eddb69cfd15509663c0c6dba39eb7609bb8ca9b06f").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4a030cf81b80ab9756984ab96be70b3f23a40c6b1ed83fb586943a61b6a8").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4a851d340cf5e59aea80b74c7b208e98d4296254f29f55b5cc90e270742f").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4aa57b6d41e11e5ad3c91d651c63e55c1bae0e9958468c811b97f7fab0f6").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4b3edefaea01ce697688a64d468145ca4c8deb3dce135c2eadf729203480").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4c790cb14085d70c4639283ff82d6c17ea18304bd9367f02664d45b675f2").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4d42861d8e3f103e934fb7c93ab5d393965b1243684c58b6389806a7e647").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4e038975a162a7d09396397c8848fcaff2b0cea073bc4524e1700a313ec8").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4e2854349221577977e4e51fafd48bb2484bf0224189e5a1d83cf2b30a8b").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e4ead2c9bd98030d67d4c4fb9a5ce739a71fbc86dcb90e1f8937e54c219ca").Bytes(), common.Hex2Bytes("01"))
+	tr.Update(common.HexToHash("de3e48836d7a2b4a1a4afd5a1990449b0c1e95e5c723e9424b6318314fe3b79e").Bytes(), common.Hex2Bytes("01"))
+
+	_, nodes, err := tr.Commit(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes.ForEachWithOrder(func(path string, n *trienode.Node) {
+		fmt.Println("path", []byte(path), "hash", n.Hash.Hex())
+	})
+	//db.Update(common.Hash{}, root, trienode.NewWithNodeSet(nodes))
+	//
+	//tr, err = New(TrieID(root), db)
+	//if err != nil {
+	//	t.Fatal(err)
+	//}
+	//iter, _ := tr.NodeIterator(nil)
+	//for iter.Next(true) {
+	//	if iter.Hash() == (common.Hash{}) {
+	//		continue
+	//	}
+	//	fmt.Println("path", iter.Path(), "hash", iter.Hash().Hex())
+	//}
+}

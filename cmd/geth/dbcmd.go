@@ -226,6 +226,9 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 				Name:  "raw",
 				Usage: "display the decoded raw state value (otherwise shows rlp-encoded value)",
 			},
+			&cli.StringFlag{
+				Name: "prefix",
+			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
 	}
@@ -789,72 +792,86 @@ func showMetaData(ctx *cli.Context) error {
 	return nil
 }
 
-func inspectAccount(db *triedb.Database, start uint64, end uint64, address common.Address, raw bool) error {
+func inspectAccount(db *triedb.Database, start uint64, end uint64, address []byte, raw bool) error {
 	stats, err := db.AccountHistory(address, start, end)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Account history:\n\taddress: %s\n\tblockrange: [#%d-#%d]\n", address.Hex(), stats.Start, stats.End)
+	fmt.Printf("Account history:\n\t\n\tblockrange: [#%d-#%d]\n", stats.Start, stats.End)
 
 	from := stats.Start
 	for i := 0; i < len(stats.Blocks); i++ {
-		var content string
-		if len(stats.Origins[i]) == 0 {
-			content = "<empty>"
-		} else {
-			if !raw {
-				content = fmt.Sprintf("%#x", stats.Origins[i])
+		if i < len(stats.Origins) {
+			var content string
+			if len(stats.Origins[i]) == 0 {
+				content = "<empty>"
 			} else {
-				account := new(types.SlimAccount)
-				if err := rlp.DecodeBytes(stats.Origins[i], account); err != nil {
-					panic(err)
+				if !raw {
+					content = fmt.Sprintf("%#x", stats.Origins[i])
+				} else {
+					account := new(types.SlimAccount)
+					if err := rlp.DecodeBytes(stats.Origins[i], account); err != nil {
+						panic(err)
+					}
+					code := "<nil>"
+					if len(account.CodeHash) > 0 {
+						code = fmt.Sprintf("%#x", account.CodeHash)
+					}
+					root := "<nil>"
+					if len(account.Root) > 0 {
+						root = fmt.Sprintf("%#x", account.Root)
+					}
+					content = fmt.Sprintf("nonce: %d, balance: %d, codeHash: %s, root: %s", account.Nonce, account.Balance, code, root)
 				}
-				code := "<nil>"
-				if len(account.CodeHash) > 0 {
-					code = fmt.Sprintf("%#x", account.CodeHash)
-				}
-				root := "<nil>"
-				if len(account.Root) > 0 {
-					root = fmt.Sprintf("%#x", account.Root)
-				}
-				content = fmt.Sprintf("nonce: %d, balance: %d, codeHash: %s, root: %s", account.Nonce, account.Balance, code, root)
+			}
+			fmt.Printf("#%d - #%d: %s\n", from, stats.Blocks[i], content)
+			from = stats.Blocks[i]
+		} else if i < len(stats.Hashes) {
+			fmt.Printf("#%d\n", stats.Blocks[i])
+			for j := 0; j < len(stats.Hashes[i]); j++ {
+				fmt.Printf("\t\t%x - (address: %x): %#x\n", stats.Hashes[i][j], stats.Addresses[i][j], stats.BlobArray[i][j])
 			}
 		}
-		fmt.Printf("#%d - #%d: %s\n", from, stats.Blocks[i], content)
-		from = stats.Blocks[i]
 	}
 	return nil
 }
 
-func inspectStorage(db *triedb.Database, start uint64, end uint64, address common.Address, slot common.Hash, raw bool) error {
+func inspectStorage(db *triedb.Database, start uint64, end uint64, address common.Hash, slot []byte, raw bool) error {
 	// The hash of storage slot key is utilized in the history
 	// rather than the raw slot key, make the conversion.
-	slotHash := crypto.Keccak256Hash(slot.Bytes())
-	stats, err := db.StorageHistory(address, slotHash, start, end)
+	//slotHash := crypto.Keccak256Hash(slot.Bytes())
+	stats, err := db.StorageHistory(address, slot, start, end)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Storage history:\n\taddress: %s\n\tslot: %s\n\tblockrange: [#%d-#%d]\n", address.Hex(), slot.Hex(), stats.Start, stats.End)
+	fmt.Printf("Storage history:\n\taddress: %s\n\tblockrange: [#%d-#%d]\n", address.Hex(), stats.Start, stats.End)
 
 	from := stats.Start
 	for i := 0; i < len(stats.Blocks); i++ {
-		var content string
-		if len(stats.Origins[i]) == 0 {
-			content = "<empty>"
-		} else {
-			if !raw {
-				content = fmt.Sprintf("%#x", stats.Origins[i])
+		if i < len(stats.Origins) {
+			var content string
+			if len(stats.Origins[i]) == 0 {
+				content = "<empty>"
 			} else {
-				_, data, _, err := rlp.Split(stats.Origins[i])
-				if err != nil {
-					fmt.Printf("Failed to decode storage slot, %v", err)
-					return err
+				if !raw {
+					content = fmt.Sprintf("%#x", stats.Origins[i])
+				} else {
+					_, data, _, err := rlp.Split(stats.Origins[i])
+					if err != nil {
+						fmt.Printf("Failed to decode storage slot, %v", err)
+						return err
+					}
+					content = fmt.Sprintf("%#x", data)
 				}
-				content = fmt.Sprintf("%#x", data)
+			}
+			fmt.Printf("#%d - #%d: %s\n", from, stats.Blocks[i], content)
+			from = stats.Blocks[i]
+		} else if i < len(stats.Hashes) {
+			fmt.Printf("#%d\n", stats.Blocks[i])
+			for j := 0; j < len(stats.Hashes[i]); j++ {
+				fmt.Printf("\t\t%x: %#x\n", stats.Hashes[i][j], stats.BlobArray[i][j])
 			}
 		}
-		fmt.Printf("#%d - #%d: %s\n", from, stats.Blocks[i], content)
-		from = stats.Blocks[i]
 	}
 	return nil
 }
@@ -864,10 +881,10 @@ func inspectHistory(ctx *cli.Context) error {
 		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
 	}
 	var (
-		address common.Address
-		slot    common.Hash
+		addressHash common.Hash
+		slot        common.Hash
 	)
-	if err := address.UnmarshalText([]byte(ctx.Args().Get(0))); err != nil {
+	if err := addressHash.UnmarshalText([]byte(ctx.Args().Get(0))); err != nil {
 		return err
 	}
 	if ctx.NArg() > 1 {
@@ -926,7 +943,17 @@ func inspectHistory(ctx *cli.Context) error {
 	}
 	// Inspect the state history.
 	if slot == (common.Hash{}) {
-		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
+		addressByte := addressHash.Bytes()
+		if len(ctx.String("prefix")) > 0 {
+			fmt.Println("[]byte(prefix)", []byte(ctx.String("prefix")))
+			addressByte = []byte(ctx.String("prefix"))
+		}
+		return inspectAccount(triedb, start, end, addressByte, ctx.Bool("raw"))
 	}
-	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+	slotBytes := slot.Bytes()
+	if len(ctx.String("prefix")) > 0 {
+		fmt.Println("[]byte(prefix)", []byte(ctx.String("prefix")))
+		slotBytes = []byte(ctx.String("prefix"))
+	}
+	return inspectStorage(triedb, start, end, addressHash, slotBytes, ctx.Bool("raw"))
 }
