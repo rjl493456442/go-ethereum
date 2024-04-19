@@ -143,12 +143,16 @@ func (s *hookedStateDB) Prepare(rules params.Rules, sender, coinbase common.Addr
 	s.inner.Prepare(rules, sender, coinbase, dest, precompiles, txAccesses)
 }
 
-func (s *hookedStateDB) RevertToSnapshot(i int) {
-	s.inner.RevertToSnapshot(i)
+func (s *hookedStateDB) DiscardSnapshot() {
+	s.inner.DiscardSnapshot()
 }
 
-func (s *hookedStateDB) Snapshot() int {
-	return s.inner.Snapshot()
+func (s *hookedStateDB) RevertSnapshot() {
+	s.inner.RevertSnapshot()
+}
+
+func (s *hookedStateDB) Snapshot() {
+	s.inner.Snapshot()
 }
 
 func (s *hookedStateDB) AddPreimage(hash common.Hash, bytes []byte) {
@@ -239,12 +243,11 @@ func (s *hookedStateDB) Finalise(deleteEmptyObjects bool) *bal.StateAccessList {
 		// Short circuit if no relevant hooks are set.
 		return s.inner.Finalise(deleteEmptyObjects)
 	}
-
 	// Collect all self-destructed addresses first, then sort them to ensure
 	// that state change hooks will be invoked in deterministic
 	// order when the accounts are deleted below
 	var selfDestructedAddrs []common.Address
-	for addr := range s.inner.journal.dirties {
+	for _, addr := range s.inner.journal.dirtyAccounts() {
 		obj := s.inner.stateObjects[addr]
 		if obj == nil || !obj.selfDestructed {
 			// Not self-destructed, keep searching.
