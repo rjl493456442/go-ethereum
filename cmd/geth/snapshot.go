@@ -220,6 +220,29 @@ func verifyState(ctx *cli.Context) error {
 	triedb := utils.MakeTrieDatabase(ctx, chaindb, false, true, false)
 	defer triedb.Close()
 
+	var (
+		err  error
+		root = headBlock.Root()
+	)
+	if ctx.NArg() == 1 {
+		root, err = parseRoot(ctx.Args().First())
+		if err != nil {
+			log.Error("Failed to resolve state root", "err", err)
+			return err
+		}
+	}
+	if triedb.Scheme() == rawdb.PathScheme {
+		if err := triedb.VerifyState(root); err != nil {
+			log.Error("Failed to verify state", "root", root, "err", err)
+			return err
+		}
+		if err := snapshot.CheckDanglingStorage(chaindb); err != nil {
+			log.Error("Failed to check dangling storage", "root", root, "err", err)
+			return err
+		}
+		log.Info("Verified the state", "root", root)
+		return nil
+	}
 	snapConfig := snapshot.Config{
 		CacheSize:  256,
 		Recovery:   false,
@@ -234,14 +257,6 @@ func verifyState(ctx *cli.Context) error {
 	if ctx.NArg() > 1 {
 		log.Error("Too many arguments given")
 		return errors.New("too many arguments")
-	}
-	var root = headBlock.Root()
-	if ctx.NArg() == 1 {
-		root, err = parseRoot(ctx.Args().First())
-		if err != nil {
-			log.Error("Failed to resolve state root", "err", err)
-			return err
-		}
 	}
 	if err := snaptree.Verify(root); err != nil {
 		log.Error("Failed to verify state", "root", root, "err", err)
