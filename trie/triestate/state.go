@@ -58,16 +58,18 @@ type TrieLoader interface {
 // The value refers to the original content of state before the transition
 // is made. Nil means that the state was not present previously.
 type Set struct {
-	Accounts map[common.Address][]byte                 // Mutated account set, nil means the account was not present
-	Storages map[common.Address]map[common.Hash][]byte // Mutated storage set, nil means the slot was not present
-	size     common.StorageSize                        // Approximate size of set
+	Accounts       map[common.Address][]byte                 // Mutated account set, nil means the account was not present
+	Storages       map[common.Address]map[common.Hash][]byte // Mutated storage set, nil means the slot was not present
+	StoragesRawKey bool
+	size           common.StorageSize // Approximate size of set
 }
 
 // New constructs the state set with provided data.
-func New(accounts map[common.Address][]byte, storages map[common.Address]map[common.Hash][]byte) *Set {
+func New(accounts map[common.Address][]byte, storages map[common.Address]map[common.Hash][]byte, StoragesRawKey bool) *Set {
 	return &Set{
-		Accounts: accounts,
-		Storages: storages,
+		Accounts:       accounts,
+		Storages:       storages,
+		StoragesRawKey: StoragesRawKey,
 	}
 }
 
@@ -90,6 +92,7 @@ func (s *Set) Size() common.StorageSize {
 
 // context wraps all fields for executing state diffs.
 type context struct {
+	version     uint8
 	prevRoot    common.Hash
 	postRoot    common.Hash
 	accounts    map[common.Address][]byte
@@ -101,12 +104,13 @@ type context struct {
 // Apply traverses the provided state diffs, apply them in the associated
 // post-state and return the generated dirty trie nodes. The state can be
 // loaded via the provided trie loader.
-func Apply(prevRoot common.Hash, postRoot common.Hash, accounts map[common.Address][]byte, storages map[common.Address]map[common.Hash][]byte, loader TrieLoader) (map[common.Hash]map[string]*trienode.Node, error) {
+func Apply(version uint8, prevRoot common.Hash, postRoot common.Hash, accounts map[common.Address][]byte, storages map[common.Address]map[common.Hash][]byte, loader TrieLoader) (map[common.Hash]map[string]*trienode.Node, error) {
 	tr, err := loader.OpenTrie(postRoot)
 	if err != nil {
 		return nil, err
 	}
 	ctx := &context{
+		version:     version,
 		prevRoot:    prevRoot,
 		postRoot:    postRoot,
 		accounts:    accounts,
@@ -170,11 +174,15 @@ func updateAccount(ctx *context, loader TrieLoader, addr common.Address) error {
 		return err
 	}
 	for key, val := range ctx.storages[addr] {
+		tkey := key
+		if ctx.version == 1 {
+			tkey = h.hash(key.Bytes())
+		}
 		var err error
 		if len(val) == 0 {
-			err = st.Delete(key.Bytes())
+			err = st.Delete(tkey.Bytes())
 		} else {
-			err = st.Update(key.Bytes(), val)
+			err = st.Update(tkey.Bytes(), val)
 		}
 		if err != nil {
 			return err
@@ -230,7 +238,11 @@ func deleteAccount(ctx *context, loader TrieLoader, addr common.Address) error {
 		if len(val) != 0 {
 			return errors.New("expect storage deletion")
 		}
-		if err := st.Delete(key.Bytes()); err != nil {
+		tkey := key
+		if ctx.version == 1 {
+			tkey = h.hash(key.Bytes())
+		}
+		if err := st.Delete(tkey.Bytes()); err != nil {
 			return err
 		}
 	}

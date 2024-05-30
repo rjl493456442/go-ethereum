@@ -425,7 +425,7 @@ func (s *stateObject) commitStorage(op *accountUpdate) {
 		if op.storagesOrigin == nil {
 			op.storagesOrigin = make(map[common.Hash][]byte)
 		}
-		op.storagesOrigin[hash] = encode(s.originStorage[key])
+		op.storagesOrigin[key] = encode(s.originStorage[key])
 
 		// Overwrite the clean value of storage slots
 		s.originStorage[key] = slot

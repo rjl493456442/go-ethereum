@@ -1081,7 +1081,7 @@ func (s *StateDB) GetTrie() Trie {
 
 // commit gathers the state mutations accumulated along with the associated
 // trie changes, resetting all internal flags with the new state as the base.
-func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
+func (s *StateDB) commit(deleteEmptyObjects bool, noAccountDeletion bool) (*stateUpdate, error) {
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		return nil, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
@@ -1134,6 +1134,9 @@ func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
 	deletes, delNodes, err := s.handleDestruction()
 	if err != nil {
 		return nil, err
+	}
+	if noAccountDeletion && len(deletes) > 0 {
+		return nil, errors.New("unexpected account deletion after cancun")
 	}
 	for _, set := range delNodes {
 		if err := merge(set); err != nil {
@@ -1226,13 +1229,14 @@ func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
 
 	origin := s.originalRoot
 	s.originalRoot = root
-	return newStateUpdate(origin, root, deletes, updates, nodes), nil
+
+	return newStateUpdate(noAccountDeletion, origin, root, deletes, updates, nodes), nil
 }
 
 // commitAndFlush is a wrapper of commit which also commits the state mutations
 // to the configured data stores.
-func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateUpdate, error) {
-	ret, err := s.commit(deleteEmptyObjects)
+func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noAccountDelete bool) (*stateUpdate, error) {
+	ret, err := s.commit(deleteEmptyObjects, noAccountDelete)
 	if err != nil {
 		return nil, err
 	}
@@ -1267,7 +1271,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 		// If trie database is enabled, commit the state update as a new layer
 		if db := s.db.TrieDB(); db != nil {
 			start := time.Now()
-			set := triestate.New(ret.accountsOrigin, ret.storagesOrigin)
+			set := triestate.New(ret.accountsOrigin, ret.storagesOrigin, ret.storagesRawKey)
 			if err := db.Update(ret.root, ret.originRoot, block, ret.nodes, set); err != nil {
 				return nil, err
 			}
@@ -1286,8 +1290,8 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 //
 // The associated block number of the state transition is also provided
 // for more chain context.
-func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, error) {
-	ret, err := s.commitAndFlush(block, deleteEmptyObjects)
+func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool, noAccountDelete bool) (common.Hash, error) {
+	ret, err := s.commitAndFlush(block, deleteEmptyObjects, noAccountDelete)
 	if err != nil {
 		return common.Hash{}, err
 	}
