@@ -250,6 +250,10 @@ func ReadStateScheme(db ethdb.Reader) string {
 	if HasAccountTrieNode(db, nil) {
 		return PathScheme
 	}
+	// Check if verkle state in path-based scheme is present.
+	if ok, _ := db.Has(verkleTrieNodeKey(nil)); ok {
+		return PathScheme
+	}
 	// The root node might be deleted during the initial snap sync, check
 	// the persistent state id then.
 	if id := ReadPersistentStateID(db); id != 0 {

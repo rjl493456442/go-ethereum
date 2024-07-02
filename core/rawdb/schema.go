@@ -117,6 +117,13 @@ var (
 	TrieNodeStoragePrefix = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
 	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
 
+	// VerklePrefix is the database prefix for Verkle trie data, which includes:
+	// (a) Trie nodes
+	// (b) In-memory trie node journal
+	// (c) Persistent state ID
+	// (d) State ID lookups, etc.
+	VerklePrefix = []byte("v")
+
 	PreimagePrefix = []byte("secure-key-")       // PreimagePrefix + hash -> preimage
 	configPrefix   = []byte("ethereum-config-")  // config prefix for the db
 	genesisPrefix  = []byte("ethereum-genesis-") // genesis state prefix for the db
@@ -214,6 +221,13 @@ func storageSnapshotKey(accountHash, storageHash common.Hash) []byte {
 // storageSnapshotsKey = SnapshotStoragePrefix + account hash + storage hash
 func storageSnapshotsKey(accountHash common.Hash) []byte {
 	return append(SnapshotStoragePrefix, accountHash.Bytes()...)
+}
+
+// verkleTrieNodeKey = verklePrefix + TrieNodeAccountPrefix + nodePath.
+// Since there is only a single verkle trie for hashing the entire state,
+// all trie nodes are placed under the "account-trie" namespace.
+func verkleTrieNodeKey(path []byte) []byte {
+	return append(VerklePrefix, append(TrieNodeAccountPrefix, path...)...)
 }
 
 // bloomBitsKey = bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash

@@ -43,7 +43,16 @@ type Config struct {
 // default settings.
 var HashDefaults = &Config{
 	Preimages: false,
+	IsVerkle:  false,
 	HashDB:    hashdb.Defaults,
+}
+
+// PathDefaults represents a config for using path-based scheme with
+// default settings.
+var PathDefaults = &Config{
+	Preimages: false,
+	IsVerkle:  false,
+	PathDB:    pathdb.Defaults,
 }
 
 // backend defines the methods needed to access/update trie nodes in different
