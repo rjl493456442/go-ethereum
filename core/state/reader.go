@@ -18,6 +18,7 @@ package state
 
 import (
 	"errors"
+	"maps"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -45,7 +46,7 @@ type Reader interface {
 	// - Returns an empty slot if it does not exist
 	// - Returns an error only if an unexpected issue occurs
 	// - The returned storage slot is safe to modify after the call
-	Storage(addr common.Address, storageRoot common.Hash, slot common.Hash) (common.Hash, error)
+	Storage(addr common.Address, slot common.Hash) (common.Hash, error)
 
 	// Copy returns a deep-copied state reader.
 	Copy() Reader
@@ -106,7 +107,7 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 // the requested storage slot is not yet covered by the snapshot.
 //
 // The returned storage slot might be empty if it's not existent.
-func (r *stateReader) Storage(addr common.Address, root common.Hash, key common.Hash) (common.Hash, error) {
+func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
 	addrHash := crypto.HashData(r.buff, addr.Bytes())
 	slotHash := crypto.HashData(r.buff, key.Bytes())
 	ret, err := r.snap.Storage(addrHash, slotHash)
@@ -136,11 +137,12 @@ func (r *stateReader) Copy() Reader {
 // trieReader implements the Reader interface, providing functions to access
 // state from the referenced trie.
 type trieReader struct {
-	root     common.Hash             // State root which uniquely represent a state.
-	db       *triedb.Database        // Database for loading trie
-	buff     crypto.KeccakState      // Buffer for keccak256 hashing.
-	mainTrie Trie                    // Main trie, resolved in constructor
-	subTries map[common.Address]Trie // Group of storage tries, cached when it's resolved.
+	root     common.Hash                    // State root which uniquely represent a state
+	db       *triedb.Database               // Database for loading trie
+	buff     crypto.KeccakState             // Buffer for keccak256 hashing
+	mainTrie Trie                           // Main trie, resolved in constructor
+	subRoots map[common.Address]common.Hash // Set of storage roots, cached when the account is resolved
+	subTries map[common.Address]Trie        // Group of storage tries, cached when it's resolved
 }
 
 // trieReader constructs a trie reader of the specific state. An error will be
@@ -163,6 +165,7 @@ func newTrieReader(root common.Hash, db *triedb.Database, cache *utils.PointCach
 		db:       db,
 		buff:     crypto.NewKeccakState(),
 		mainTrie: tr,
+		subRoots: make(map[common.Address]common.Hash),
 		subTries: make(map[common.Address]Trie),
 	}, nil
 }
@@ -172,7 +175,16 @@ func newTrieReader(root common.Hash, db *triedb.Database, cache *utils.PointCach
 // An error will be returned if the trie state is corrupted. An nil account
 // will be returned if it's not existent in the trie.
 func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
-	return r.mainTrie.GetAccount(addr)
+	account, err := r.mainTrie.GetAccount(addr)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		r.subRoots[addr] = types.EmptyRootHash
+	} else {
+		r.subRoots[addr] = account.Root
+	}
+	return account, nil
 }
 
 // Storage implements Reader, retrieving the storage slot specified by the
@@ -180,7 +192,7 @@ func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
 //
 // An error will be returned if the trie state is corrupted. An empty storage
 // slot will be returned if it's not existent in the trie.
-func (r *trieReader) Storage(addr common.Address, root common.Hash, key common.Hash) (common.Hash, error) {
+func (r *trieReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
 	var (
 		tr    Trie
 		found bool
@@ -191,6 +203,17 @@ func (r *trieReader) Storage(addr common.Address, root common.Hash, key common.H
 	} else {
 		tr, found = r.subTries[addr]
 		if !found {
+			root, ok := r.subRoots[addr]
+
+			// The storage slot is accessed without account caching. It's unexpected
+			// behavior but try to resolve the account first anyway.
+			if !ok {
+				_, err := r.Account(addr)
+				if err != nil {
+					return common.Hash{}, err
+				}
+				root = r.subRoots[addr]
+			}
 			var err error
 			tr, err = trie.NewStateTrie(trie.StorageTrieID(r.root, crypto.HashData(r.buff, addr.Bytes()), root), r.db)
 			if err != nil {
@@ -218,6 +241,7 @@ func (r *trieReader) Copy() Reader {
 		db:       r.db,
 		buff:     crypto.NewKeccakState(),
 		mainTrie: mustCopyTrie(r.mainTrie),
+		subRoots: maps.Clone(r.subRoots),
 		subTries: tries,
 	}
 }
@@ -265,10 +289,10 @@ func (r *multiReader) Account(addr common.Address) (*types.StateAccount, error) 
 // - Returns an empty slot if it does not exist
 // - Returns an error only if an unexpected issue occurs
 // - The returned storage slot is safe to modify after the call
-func (r *multiReader) Storage(addr common.Address, storageRoot common.Hash, slot common.Hash) (common.Hash, error) {
+func (r *multiReader) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
 	var errs []error
 	for _, reader := range r.readers {
-		slot, err := reader.Storage(addr, storageRoot, slot)
+		slot, err := reader.Storage(addr, slot)
 		if err == nil {
 			return slot, nil
 		}

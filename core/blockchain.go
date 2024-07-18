@@ -449,10 +449,8 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 		}
 		bc.snaps, _ = snapshot.New(snapconfig, bc.db, bc.triedb, head.Root)
 
-		// Register the snapshot into statedb. It's an ugly hack as state snapshot
-		// is constructed after stateDb. TODO(rjl493456442) improve the construction
-		// logic.
-		bc.stateDb.SetSnapshot(bc.snaps)
+		// Re-initialize the state database with snapshot
+		bc.stateDb = state.NewDatabase(bc.db, bc.triedb, bc.snaps)
 	}
 
 	// Rewind the chain in case of an incompatible config upgrade.
