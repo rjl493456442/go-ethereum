@@ -19,6 +19,7 @@ package state
 import (
 	"errors"
 	"maps"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -48,6 +49,10 @@ type Reader interface {
 	// - The returned storage slot is safe to modify after the call
 	Storage(addr common.Address, slot common.Hash) (common.Hash, error)
 
+	// Stats returns the statistics of the reader, specifically detailing the time
+	// spent on account reading and storage reading.
+	Stats() (time.Duration, time.Duration)
+
 	// Copy returns a deep-copied state reader.
 	Copy() Reader
 }
@@ -57,6 +62,9 @@ type Reader interface {
 type stateReader struct {
 	snap snapshot.Snapshot
 	buff crypto.KeccakState
+
+	accountTime time.Duration
+	storageTime time.Duration
 }
 
 // newStateReader constructs a flat state reader with on the specified state root.
@@ -78,6 +86,11 @@ func newStateReader(root common.Hash, snaps *snapshot.Tree) (*stateReader, error
 //
 // The returned account might be nil if it's not existent.
 func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) {
+	defer func(start time.Time) {
+		r.accountTime += time.Since(start)
+		snapshotAccountReadTimer.UpdateSince(start)
+	}(time.Now())
+
 	ret, err := r.snap.Account(crypto.HashData(r.buff, addr.Bytes()))
 	if err != nil {
 		return nil, err
@@ -108,6 +121,11 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 //
 // The returned storage slot might be empty if it's not existent.
 func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
+	defer func(start time.Time) {
+		r.storageTime += time.Since(start)
+		snapshotStorageReadTimer.UpdateSince(start)
+	}(time.Now())
+
 	addrHash := crypto.HashData(r.buff, addr.Bytes())
 	slotHash := crypto.HashData(r.buff, key.Bytes())
 	ret, err := r.snap.Storage(addrHash, slotHash)
@@ -126,11 +144,20 @@ func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash
 	return value, nil
 }
 
+// Stats implements Reader, returning the time spent on account reading and
+// storage reading from the snapshot.
+func (r *stateReader) Stats() (time.Duration, time.Duration) {
+	return r.accountTime, r.storageTime
+}
+
 // Copy implements Reader, returning a deep-copied snap reader.
 func (r *stateReader) Copy() Reader {
 	return &stateReader{
 		snap: r.snap,
 		buff: crypto.NewKeccakState(),
+
+		// statistics (accountTime and storageTime) are not copied, as they
+		// only belong to current reader instance.
 	}
 }
 
@@ -143,6 +170,9 @@ type trieReader struct {
 	mainTrie Trie                           // Main trie, resolved in constructor
 	subRoots map[common.Address]common.Hash // Set of storage roots, cached when the account is resolved
 	subTries map[common.Address]Trie        // Group of storage tries, cached when it's resolved
+
+	accountTime time.Duration // Time spent on the account reading
+	storageTime time.Duration // Time spent on the storage reading
 }
 
 // trieReader constructs a trie reader of the specific state. An error will be
@@ -175,6 +205,11 @@ func newTrieReader(root common.Hash, db *triedb.Database, cache *utils.PointCach
 // An error will be returned if the trie state is corrupted. An nil account
 // will be returned if it's not existent in the trie.
 func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
+	defer func(start time.Time) {
+		r.accountTime += time.Since(start)
+		trieAccountReadTimer.UpdateSince(start)
+	}(time.Now())
+
 	account, err := r.mainTrie.GetAccount(addr)
 	if err != nil {
 		return nil, err
@@ -193,6 +228,11 @@ func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
 // An error will be returned if the trie state is corrupted. An empty storage
 // slot will be returned if it's not existent in the trie.
 func (r *trieReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
+	defer func(start time.Time) {
+		r.storageTime += time.Since(start)
+		trieStorageReadTimer.UpdateSince(start)
+	}(time.Now())
+
 	var (
 		tr    Trie
 		found bool
@@ -230,6 +270,12 @@ func (r *trieReader) Storage(addr common.Address, key common.Hash) (common.Hash,
 	return value, nil
 }
 
+// Stats implements Reader, returning the time spent on account reading and
+// storage reading from the trie.
+func (r *trieReader) Stats() (time.Duration, time.Duration) {
+	return r.accountTime, r.storageTime
+}
+
 // Copy implements Reader, returning a deep-copied trie reader.
 func (r *trieReader) Copy() Reader {
 	tries := make(map[common.Address]Trie)
@@ -243,6 +289,9 @@ func (r *trieReader) Copy() Reader {
 		mainTrie: mustCopyTrie(r.mainTrie),
 		subRoots: maps.Clone(r.subRoots),
 		subTries: tries,
+
+		// statistics (accountTime and storageTime) are not copied, as they
+		// only belong to current reader instance.
 	}
 }
 
@@ -299,6 +348,21 @@ func (r *multiReader) Storage(addr common.Address, slot common.Hash) (common.Has
 		errs = append(errs, err)
 	}
 	return common.Hash{}, errors.Join(errs...)
+}
+
+// Stats implements Reader, returning the time spent on account reading and
+// storage reading from the reader.
+func (r *multiReader) Stats() (time.Duration, time.Duration) {
+	var (
+		accountTime time.Duration
+		storageTime time.Duration
+	)
+	for _, reader := range r.readers {
+		aTime, sTime := reader.Stats()
+		accountTime += aTime
+		storageTime += sTime
+	}
+	return accountTime, storageTime
 }
 
 // Copy implementing Reader interface, returning a deep-copied state reader.

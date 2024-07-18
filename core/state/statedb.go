@@ -149,17 +149,16 @@ type StateDB struct {
 	witness *stateless.Witness
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads         time.Duration
-	AccountHashes        time.Duration
-	AccountUpdates       time.Duration
-	AccountCommits       time.Duration
-	StorageReads         time.Duration
-	StorageUpdates       time.Duration
-	StorageCommits       time.Duration
-	SnapshotAccountReads time.Duration
-	SnapshotStorageReads time.Duration
-	SnapshotCommits      time.Duration
-	TrieDBCommits        time.Duration
+	AccountReads   time.Duration
+	AccountHashes  time.Duration
+	AccountUpdates time.Duration
+	AccountCommits time.Duration
+	StorageReads   time.Duration
+	StorageUpdates time.Duration
+	StorageCommits time.Duration
+
+	SnapshotCommits time.Duration
+	TrieDBCommits   time.Duration
 
 	AccountUpdated int
 	StorageUpdated atomic.Int64
@@ -1302,6 +1301,11 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 			s.TrieDBCommits += time.Since(start)
 		}
 	}
+	// Submit the statistics of reader to metric system and reset it with new root
+	aTime, sTime := s.reader.Stats()
+	s.AccountReads += aTime
+	s.AccountReads += sTime
+
 	s.reader, _ = s.db.Reader(s.originalRoot)
 	return ret, err
 }
