@@ -88,7 +88,6 @@ func newStateReader(root common.Hash, snaps *snapshot.Tree) (*stateReader, error
 func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) {
 	defer func(start time.Time) {
 		r.accountTime += time.Since(start)
-		snapshotAccountReadTimer.UpdateSince(start)
 	}(time.Now())
 
 	ret, err := r.snap.Account(crypto.HashData(r.buff, addr.Bytes()))
@@ -123,7 +122,6 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
 	defer func(start time.Time) {
 		r.storageTime += time.Since(start)
-		snapshotStorageReadTimer.UpdateSince(start)
 	}(time.Now())
 
 	addrHash := crypto.HashData(r.buff, addr.Bytes())
@@ -207,7 +205,6 @@ func newTrieReader(root common.Hash, db *triedb.Database, cache *utils.PointCach
 func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
 	defer func(start time.Time) {
 		r.accountTime += time.Since(start)
-		trieAccountReadTimer.UpdateSince(start)
 	}(time.Now())
 
 	account, err := r.mainTrie.GetAccount(addr)
@@ -230,7 +227,6 @@ func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
 func (r *trieReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
 	defer func(start time.Time) {
 		r.storageTime += time.Since(start)
-		trieStorageReadTimer.UpdateSince(start)
 	}(time.Now())
 
 	var (

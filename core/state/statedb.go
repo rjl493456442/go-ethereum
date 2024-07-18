@@ -1304,7 +1304,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 	// Submit the statistics of reader to metric system and reset it with new root
 	aTime, sTime := s.reader.Stats()
 	s.AccountReads += aTime
-	s.AccountReads += sTime
+	s.StorageReads += sTime
 
 	s.reader, _ = s.db.Reader(s.originalRoot)
 	return ret, err

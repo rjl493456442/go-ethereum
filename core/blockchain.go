@@ -1947,18 +1947,6 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	}
 	proctime := time.Since(start) // processing + validation
 
-	// Update the metrics touched during block processing and validation
-	accountReadTimer.Update(statedb.AccountReads)                 // Account reads are complete(in processing)
-	storageReadTimer.Update(statedb.StorageReads)                 // Storage reads are complete(in processing)
-	accountUpdateTimer.Update(statedb.AccountUpdates)             // Account updates are complete(in validation)
-	storageUpdateTimer.Update(statedb.StorageUpdates)             // Storage updates are complete(in validation)
-	accountHashTimer.Update(statedb.AccountHashes)                // Account hashes are complete(in validation)
-	triehash := statedb.AccountHashes                             // The time spent on tries hashing
-	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates // The time spent on tries update
-	trieRead := statedb.AccountReads + statedb.StorageReads       // The time spent on account read and storage read
-	blockExecutionTimer.Update(ptime - trieRead)                  // The time spent on EVM processing
-	blockValidationTimer.Update(vtime - (triehash + trieUpdate))  // The time spent on block validation
-
 	// Write the block to the chain and get the status.
 	var (
 		wstart = time.Now()
@@ -1973,6 +1961,18 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	if err != nil {
 		return nil, err
 	}
+	// Update the metrics touched during block processing and validation
+	accountReadTimer.Update(statedb.AccountReads)                 // Account reads are complete(in processing)
+	storageReadTimer.Update(statedb.StorageReads)                 // Storage reads are complete(in processing)
+	accountUpdateTimer.Update(statedb.AccountUpdates)             // Account updates are complete(in validation)
+	storageUpdateTimer.Update(statedb.StorageUpdates)             // Storage updates are complete(in validation)
+	accountHashTimer.Update(statedb.AccountHashes)                // Account hashes are complete(in validation)
+	triehash := statedb.AccountHashes                             // The time spent on account trie hashing
+	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates // The time spent on account trie update + storage tries update and hashing
+	trieRead := statedb.AccountReads + statedb.StorageReads       // The time spent on account read and storage read
+	blockExecutionTimer.Update(ptime - trieRead)                  // The time spent on EVM processing
+	blockValidationTimer.Update(vtime - (triehash + trieUpdate))  // The time spent on block validation
+
 	// Update the metrics touched during block commit
 	accountCommitTimer.Update(statedb.AccountCommits)   // Account commits are complete, we can mark them
 	storageCommitTimer.Update(statedb.StorageCommits)   // Storage commits are complete, we can mark them
