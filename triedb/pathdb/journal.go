@@ -70,10 +70,9 @@ type journalAccounts struct {
 
 // journalStorage represents a list of storage slots belong to an account.
 type journalStorage struct {
-	Incomplete bool
-	Account    common.Address
-	Hashes     []common.Hash
-	Slots      [][]byte
+	Account common.Address
+	Hashes  []common.Hash
+	Slots   [][]byte
 }
 
 // loadJournal tries to parse the layer journal from the disk.
