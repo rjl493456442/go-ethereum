@@ -112,6 +112,13 @@ func accountHistory(freezer ethdb.AncientStore, address []byte, start, end uint6
 			}
 			stats.Blocks = append(stats.Blocks, h.meta.block)
 			stats.Origins = append(stats.Origins, blob)
+		} else if len(address) == common.HashLength {
+			for addr, blob := range h.accounts {
+				if crypto.Keccak256Hash(addr.Bytes()) == common.BytesToHash(address) {
+					stats.Blocks = append(stats.Blocks, h.meta.block)
+					stats.Origins = append(stats.Origins, blob)
+				}
+			}
 		} else {
 			var (
 				hashes    []common.Hash
