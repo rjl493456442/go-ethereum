@@ -47,7 +47,7 @@ var (
 //
 // - Version 0: initial version
 // - Version 1: storage.Incomplete field is removed
-const journalVersion uint64 = 0
+const journalVersion uint64 = 1
 
 // journalNode represents a trie node persisted in the journal.
 type journalNode struct {
