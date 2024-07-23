@@ -152,6 +152,7 @@ func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 // update implements the layer interface, creating a new layer on top of the
 // existing layer tree with the specified data items.
 func (dl *diffLayer) update(root common.Hash, id uint64, block uint64, nodes map[common.Hash]map[string]*trienode.Node, states *StateSetWithOrigin) *diffLayer {
+	log.Info("New diff layer", "id", id, "size", states.size)
 	return newDiffLayer(dl, root, id, block, nodes, states)
 }
 

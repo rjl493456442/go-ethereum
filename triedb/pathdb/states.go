@@ -182,6 +182,7 @@ func (s *stateSet) check() int {
 			size += 2*common.HashLength + len(val)
 		}
 	}
+	log.Debug("Initialized state set", "size", size)
 	return size
 }
 
@@ -262,7 +263,7 @@ func (s *stateSet) clearCache() {
 // integrates them into the local set. This function combines the data sets,
 // ensuring that the merged local set accurately reflects the combined state
 // of both the original local set and the provided external set.
-func (s *stateSet) merge(set *stateSet) int64 {
+func (s *stateSet) merge(set *stateSet, id uint64) int64 {
 	var (
 		delta             int
 		accountOverwrites counter
@@ -270,9 +271,19 @@ func (s *stateSet) merge(set *stateSet) int64 {
 		destructs         []destruct
 	)
 	// Apply account deletion markers and discard any previously cached data if exists
+	var (
+		accountDelete int
+		accountUpdate int
+		accountNew    int
+		storageDelete int
+		storageUpdate int
+		storageNew    int
+		destructions  int
+	)
 	for accountHash := range set.destructSet {
 		if origin, ok := s.accountData[accountHash]; ok {
 			delta -= common.HashLength + len(origin)
+			accountDelete += 1
 			accountOverwrites.add(common.HashLength + len(origin))
 			delete(s.accountData, accountHash)
 		}
@@ -282,6 +293,7 @@ func (s *stateSet) merge(set *stateSet) int64 {
 			// fork, this overhead is considered acceptable.
 			for _, val := range s.storageData[accountHash] {
 				delta -= 2*common.HashLength + len(val)
+				storageDelete += 1
 				storageOverwrites.add(2*common.HashLength + len(val))
 			}
 			delete(s.storageData, accountHash)
@@ -298,6 +310,7 @@ func (s *stateSet) merge(set *stateSet) int64 {
 		}
 		delta += common.HashLength
 		s.destructSet[accountHash] = struct{}{}
+		destructions += 1
 	}
 	s.journal.add(destructs)
 
@@ -305,9 +318,11 @@ func (s *stateSet) merge(set *stateSet) int64 {
 	for accountHash, data := range set.accountData {
 		if origin, ok := s.accountData[accountHash]; ok {
 			delta += len(data) - len(origin)
+			accountUpdate += 1
 			accountOverwrites.add(common.HashLength + len(origin))
 		} else {
 			delta += common.HashLength + len(data)
+			accountNew += 1
 		}
 		s.accountData[accountHash] = data
 	}
@@ -324,6 +339,7 @@ func (s *stateSet) merge(set *stateSet) int64 {
 			for storageHash, data := range storage {
 				slots[storageHash] = data
 				delta += 2*common.HashLength + len(data)
+				storageNew += 1
 			}
 			s.storageData[accountHash] = slots
 			continue
@@ -334,8 +350,10 @@ func (s *stateSet) merge(set *stateSet) int64 {
 			if origin, ok := slots[storageHash]; ok {
 				delta += len(data) - len(origin)
 				storageOverwrites.add(2*common.HashLength + len(origin))
+				storageUpdate += 1
 			} else {
 				delta += 2*common.HashLength + len(data)
+				storageNew += 1
 			}
 			slots[storageHash] = data
 		}
@@ -343,32 +361,52 @@ func (s *stateSet) merge(set *stateSet) int64 {
 	accountOverwrites.report(gcAccountMeter, gcAccountBytesMeter)
 	storageOverwrites.report(gcStorageMeter, gcStorageBytesMeter)
 	s.clearCache()
+
+	newSize := s.size + delta
+	if newSize < 0 {
+		newSize = 0
+	}
+	log.Info("Merged state set", "newid", id, "old", s.size, "delta", delta, "newSize", newSize,
+		"destructs", destructions,
+		"accountUpdate", accountUpdate, "accountDelete", accountDelete, "accountNew", accountNew,
+		"storageUpdate", storageUpdate, "storageDelete", storageDelete, "storageNew", storageNew,
+	)
 	s.updateSize(delta)
 	return int64(delta)
 }
 
 // revert takes the original value of accounts and storages as input and reverts
 // the latest state transition applied on the state set.
-func (s *stateSet) revert(accountOrigin map[common.Hash][]byte, storageOrigin map[common.Hash]map[common.Hash][]byte) (int64, error) {
+func (s *stateSet) revert(accountOrigin map[common.Hash][]byte, storageOrigin map[common.Hash]map[common.Hash][]byte, id uint64) (int64, error) {
 	// Load the destruct journal whose availability is always expected
 	destructs, err := s.journal.pop()
 	if err != nil {
 		return 0, err
 	}
 	// Revert the modifications to the destruct set by journal
-	var delta int
+	var (
+		destructions int
+		delta        int
+	)
 	for _, entry := range destructs {
 		if entry.Exist {
 			continue
 		}
 		delete(s.destructSet, entry.Hash)
 		delta -= common.HashLength
+		destructions += 1
 	}
 	// Overwrite the account data with original value blindly
+	var (
+		accountUpdate int
+		accountNew    int
+		accountDelete int
+	)
 	for addrHash, blob := range accountOrigin {
 		if len(blob) == 0 {
 			if data, ok := s.accountData[addrHash]; ok {
 				delta -= common.HashLength + len(data)
+				accountDelete += 1
 			} else {
 				return 0, fmt.Errorf("null to null account transition, %x", addrHash)
 			}
@@ -376,13 +414,20 @@ func (s *stateSet) revert(accountOrigin map[common.Hash][]byte, storageOrigin ma
 		} else {
 			if data, ok := s.accountData[addrHash]; ok {
 				delta += len(blob) - len(data)
+				accountUpdate += 1
 			} else {
 				delta += len(blob) + common.HashLength
+				accountNew += 1
 			}
 			s.accountData[addrHash] = blob
 		}
 	}
 	// Overwrite the storage data with original value blindly
+	var (
+		storageUpdate int
+		storageNew    int
+		storageDelete int
+	)
 	for addrHash, storage := range storageOrigin {
 		// It might be possible that the storage set is not existent because
 		// the whole storage is deleted.
@@ -394,6 +439,7 @@ func (s *stateSet) revert(accountOrigin map[common.Hash][]byte, storageOrigin ma
 			if len(blob) == 0 {
 				if data, ok := slots[storageHash]; ok {
 					delta -= 2*common.HashLength + len(data)
+					storageDelete += 1
 				} else {
 					return 0, fmt.Errorf("null to null storage transition, %x %x", addrHash, storageHash)
 				}
@@ -401,8 +447,10 @@ func (s *stateSet) revert(accountOrigin map[common.Hash][]byte, storageOrigin ma
 			} else {
 				if data, ok := slots[storageHash]; ok {
 					delta += len(blob) - len(data)
+					storageUpdate += 1
 				} else {
 					delta += 2*common.HashLength + len(blob)
+					storageNew += 1
 				}
 				slots[storageHash] = blob
 			}
@@ -414,6 +462,14 @@ func (s *stateSet) revert(accountOrigin map[common.Hash][]byte, storageOrigin ma
 		}
 	}
 	s.clearCache()
+	newSize := s.size + delta
+	if newSize < 0 {
+		newSize = 0
+	}
+	log.Info("Reverted state set", "newid", id, "old", s.size, "delta", delta, "newSize", newSize,
+		"destructs", destructions,
+		"accountUpdate", accountUpdate, "accountDelete", accountDelete, "accountNew", accountNew,
+		"storageUpdate", storageUpdate, "storageDelete", storageDelete, "storageNew", storageNew)
 	s.updateSize(delta)
 	return int64(delta), nil
 }

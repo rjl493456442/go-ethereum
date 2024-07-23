@@ -209,6 +209,7 @@ func (db *Database) loadDiskLayer(r *rlp.Stream) (layer, error) {
 	if err := states.decode(r); err != nil {
 		return nil, err
 	}
+	log.Info("Resolved state set from journal", "id", id, "size", states.size)
 	return newDiskLayer(root, id, db, nil, newBuffer(db.bufferSize, nodes, &states, id-stored)), nil
 }
 

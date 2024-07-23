@@ -133,8 +133,8 @@ func (b *buffer) commitNodes(nodes map[common.Hash]map[string]*trienode.Node) in
 // This operation does not take ownership of the passed maps, which belong to
 // the bottom-most diff layer. Instead, it holds references to the given maps,
 // which are safe to copy.
-func (b *buffer) commit(nodes map[common.Hash]map[string]*trienode.Node, states *stateSet) *buffer {
-	b.updateSize(b.states.merge(states) + b.commitNodes(nodes))
+func (b *buffer) commit(nodes map[common.Hash]map[string]*trienode.Node, states *stateSet, id uint64) *buffer {
+	b.updateSize(b.states.merge(states, id) + b.commitNodes(nodes))
 	b.layers++
 	return b
 }
@@ -181,7 +181,7 @@ func (b *buffer) revertNodes(db ethdb.KeyValueReader, nodes map[common.Hash]map[
 // revert is the reverse operation of commit. It also merges the provided flat
 // states and trie nodes into the buffer. The key difference is that the provided
 // state set should reverse the changes made by the most recent state transition.
-func (b *buffer) revert(db ethdb.KeyValueReader, nodes map[common.Hash]map[string]*trienode.Node, accounts map[common.Hash][]byte, storages map[common.Hash]map[common.Hash][]byte) error {
+func (b *buffer) revert(db ethdb.KeyValueReader, nodes map[common.Hash]map[string]*trienode.Node, accounts map[common.Hash][]byte, storages map[common.Hash]map[common.Hash][]byte, id uint64) error {
 	// Short circuit if no embedded state transition to revert.
 	if b.layers == 0 {
 		return errStateUnrecoverable
@@ -193,7 +193,7 @@ func (b *buffer) revert(db ethdb.KeyValueReader, nodes map[common.Hash]map[strin
 		b.reset()
 		return nil
 	}
-	stateDelta, err := b.states.revert(accounts, storages)
+	stateDelta, err := b.states.revert(accounts, storages, id)
 	if err != nil {
 		return err
 	}
