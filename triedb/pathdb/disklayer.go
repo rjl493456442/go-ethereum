@@ -262,7 +262,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	}
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
-	combined := dl.buffer.commit(bottom.nodes, bottom.states.stateSet)
+	combined := dl.buffer.commit(bottom.nodes, bottom.states.stateSet, bottom.stateID())
 
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
@@ -338,7 +338,7 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 	// needs to be reverted is not yet flushed and cached in node
 	// buffer, otherwise, manipulate persistent state directly.
 	if !dl.buffer.empty() {
-		err := dl.buffer.revert(dl.db.diskdb, nodes, accounts, storages)
+		err := dl.buffer.revert(dl.db.diskdb, nodes, accounts, storages, dl.id-1)
 		if err != nil {
 			return nil, err
 		}
@@ -372,6 +372,7 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 		ndl.generator.run(h.meta.parent)
 		log.Info("Resumed state snapshot generation", "root", h.meta.parent)
 	}
+	log.Info("Reverted in persistent disk", "newid", ndl.id)
 	return ndl, nil
 }
 
