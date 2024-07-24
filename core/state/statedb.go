@@ -794,6 +794,7 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 		if obj.selfDestructed || (deleteEmptyObjects && obj.empty()) {
 			delete(s.stateObjects, obj.address)
 			s.markDelete(addr)
+			log.Info("Mark the account as deleted", "addr", addr.Hex(), "reason", s.journal.reasons[addr])
 
 			// If ether was sent to account post-selfdestruct it is burnt.
 			if bal := obj.Balance(); s.logger != nil && s.logger.OnBalanceChange != nil && obj.selfDestructed && bal.Sign() != 0 {
@@ -808,6 +809,7 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 		} else {
 			obj.finalise()
 			s.markUpdate(addr)
+			log.Info("Mark the account as updated", "addr", addr.Hex(), "reason", s.journal.reasons[addr])
 		}
 		// At this point, also ship the address off to the precacher. The precacher
 		// will start loading tries, and when the change is eventually committed,

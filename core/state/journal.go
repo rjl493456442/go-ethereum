@@ -34,6 +34,8 @@ type journalEntry interface {
 
 	// copy returns a deep-copied journal entry.
 	copy() journalEntry
+
+	string() string
 }
 
 // journal contains the list of state modifications applied since the last state
@@ -42,12 +44,14 @@ type journalEntry interface {
 type journal struct {
 	entries []journalEntry         // Current changes tracked by the journal
 	dirties map[common.Address]int // Dirty accounts and the number of changes
+	reasons map[common.Address]string
 }
 
 // newJournal creates a new initialized journal.
 func newJournal() *journal {
 	return &journal{
 		dirties: make(map[common.Address]int),
+		reasons: make(map[common.Address]string),
 	}
 }
 
@@ -56,6 +60,7 @@ func (j *journal) append(entry journalEntry) {
 	j.entries = append(j.entries, entry)
 	if addr := entry.dirtied(); addr != nil {
 		j.dirties[*addr]++
+		j.reasons[*addr] = entry.string()
 	}
 }
 
@@ -183,6 +188,10 @@ func (ch createObjectChange) copy() journalEntry {
 	}
 }
 
+func (ch createObjectChange) string() string {
+	return "createObjectChange"
+}
+
 func (ch createContractChange) revert(s *StateDB) {
 	s.getStateObject(ch.account).newContract = false
 }
@@ -195,6 +204,10 @@ func (ch createContractChange) copy() journalEntry {
 	return createContractChange{
 		account: ch.account,
 	}
+}
+
+func (ch createContractChange) string() string {
+	return "createContractChange"
 }
 
 func (ch selfDestructChange) revert(s *StateDB) {
@@ -217,6 +230,10 @@ func (ch selfDestructChange) copy() journalEntry {
 	}
 }
 
+func (ch selfDestructChange) string() string {
+	return "selfDestructChange"
+}
+
 var ripemd = common.HexToAddress("0000000000000000000000000000000000000003")
 
 func (ch touchChange) revert(s *StateDB) {
@@ -230,6 +247,10 @@ func (ch touchChange) copy() journalEntry {
 	return touchChange{
 		account: ch.account,
 	}
+}
+
+func (ch touchChange) string() string {
+	return "touchChange"
 }
 
 func (ch balanceChange) revert(s *StateDB) {
@@ -247,6 +268,10 @@ func (ch balanceChange) copy() journalEntry {
 	}
 }
 
+func (ch balanceChange) string() string {
+	return "balanceChange"
+}
+
 func (ch nonceChange) revert(s *StateDB) {
 	s.getStateObject(*ch.account).setNonce(ch.prev)
 }
@@ -260,6 +285,10 @@ func (ch nonceChange) copy() journalEntry {
 		account: ch.account,
 		prev:    ch.prev,
 	}
+}
+
+func (ch nonceChange) string() string {
+	return "nonceChange"
 }
 
 func (ch codeChange) revert(s *StateDB) {
@@ -278,6 +307,10 @@ func (ch codeChange) copy() journalEntry {
 	}
 }
 
+func (ch codeChange) string() string {
+	return "codeChange"
+}
+
 func (ch storageChange) revert(s *StateDB) {
 	s.getStateObject(*ch.account).setState(ch.key, ch.prevvalue, ch.origvalue)
 }
@@ -292,6 +325,10 @@ func (ch storageChange) copy() journalEntry {
 		key:       ch.key,
 		prevvalue: ch.prevvalue,
 	}
+}
+
+func (ch storageChange) string() string {
+	return "storageChange"
 }
 
 func (ch transientStorageChange) revert(s *StateDB) {
@@ -310,6 +347,10 @@ func (ch transientStorageChange) copy() journalEntry {
 	}
 }
 
+func (ch transientStorageChange) string() string {
+	return "transientStorageChange"
+}
+
 func (ch refundChange) revert(s *StateDB) {
 	s.refund = ch.prev
 }
@@ -322,6 +363,10 @@ func (ch refundChange) copy() journalEntry {
 	return refundChange{
 		prev: ch.prev,
 	}
+}
+
+func (ch refundChange) string() string {
+	return "refundChange"
 }
 
 func (ch addLogChange) revert(s *StateDB) {
@@ -344,6 +389,10 @@ func (ch addLogChange) copy() journalEntry {
 	}
 }
 
+func (ch addLogChange) string() string {
+	return "addLogChange"
+}
+
 func (ch addPreimageChange) revert(s *StateDB) {
 	delete(s.preimages, ch.hash)
 }
@@ -356,6 +405,10 @@ func (ch addPreimageChange) copy() journalEntry {
 	return addPreimageChange{
 		hash: ch.hash,
 	}
+}
+
+func (ch addPreimageChange) string() string {
+	return "addPreimageChange"
 }
 
 func (ch accessListAddAccountChange) revert(s *StateDB) {
@@ -381,6 +434,10 @@ func (ch accessListAddAccountChange) copy() journalEntry {
 	}
 }
 
+func (ch accessListAddAccountChange) string() string {
+	return "accessListAddAccountChange"
+}
+
 func (ch accessListAddSlotChange) revert(s *StateDB) {
 	s.accessList.DeleteSlot(*ch.address, *ch.slot)
 }
@@ -394,4 +451,8 @@ func (ch accessListAddSlotChange) copy() journalEntry {
 		address: ch.address,
 		slot:    ch.slot,
 	}
+}
+
+func (ch accessListAddSlotChange) string() string {
+	return "accessListAddSlotChange"
 }

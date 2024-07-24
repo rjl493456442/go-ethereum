@@ -507,6 +507,7 @@ func (s *stateObject) AddBalance(amount *uint256.Int, reason tracing.BalanceChan
 	if amount.IsZero() {
 		if s.empty() {
 			s.touch()
+			log.Info("Touched account", "address", s.address.Hex())
 		}
 		return
 	}
