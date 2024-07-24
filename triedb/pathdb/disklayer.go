@@ -19,6 +19,7 @@ package pathdb
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -317,10 +318,10 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 		storages = make(map[common.Hash]map[common.Hash][]byte)
 	)
 	for addr, blob := range h.accounts {
-		accounts[crypto.HashData(buff, addr.Bytes())] = blob
+		accounts[crypto.HashData(buff, addr.Bytes())] = common.CopyBytes(blob)
 	}
 	for addr, storage := range h.storages {
-		storages[crypto.HashData(buff, addr.Bytes())] = storage
+		storages[crypto.HashData(buff, addr.Bytes())] = maps.Clone(storage)
 	}
 	// Apply the reverse state changes upon the current state. This must
 	// be done before holding the lock in order to access state in "this"
