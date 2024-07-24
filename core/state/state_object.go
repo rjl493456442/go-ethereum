@@ -535,6 +535,9 @@ func (s *stateObject) SetBalance(amount *uint256.Int, reason tracing.BalanceChan
 
 func (s *stateObject) setBalance(amount *uint256.Int) {
 	s.data.Balance = amount
+	if s.origin != nil && s.origin.Balance != nil && amount.Eq(s.origin.Balance) {
+		log.Info("Reset balance", "address", s.address.Hex(), "balance", s.Balance().ToBig())
+	}
 }
 
 func (s *stateObject) deepCopy(db *StateDB) *stateObject {
@@ -633,6 +636,10 @@ func (s *stateObject) SetNonce(nonce uint64) {
 
 func (s *stateObject) setNonce(nonce uint64) {
 	s.data.Nonce = nonce
+
+	if s.origin != nil && s.origin.Nonce == nonce {
+		log.Info("Reset nonce", "address", s.address.Hex(), "nonce", nonce)
+	}
 }
 
 func (s *stateObject) CodeHash() []byte {
