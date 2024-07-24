@@ -59,6 +59,7 @@ type stateObject struct {
 	originStorage  Storage // Storage entries that have been accessed within the current block
 	dirtyStorage   Storage // Storage entries that have been modified within the current transaction
 	pendingStorage Storage // Storage entries that have been modified within the current block
+	emptied        bool
 
 	// uncommittedStorage tracks a set of storage entries that have been modified
 	// but not yet committed since the "last commit operation", along with their
@@ -270,9 +271,17 @@ func (s *stateObject) setState(key common.Hash, value common.Hash, origin common
 	// Storage slot is set back to its original value, undo the dirty marker
 	if value == origin {
 		delete(s.dirtyStorage, key)
+		log.Info("Reset the dirty slot", "key", key.Hex(), "address", s.address.Hex(), "len", len(s.dirtyStorage))
+		if len(s.dirtyStorage) == 0 {
+			s.emptied = true
+		}
 		return
 	}
 	s.dirtyStorage[key] = value
+
+	if s.emptied {
+		log.Info("Had more dirty slot", "key", key.Hex(), "address", s.address.Hex(), "len", len(s.dirtyStorage))
+	}
 }
 
 // finalise moves all dirty storage slots into the pending area to be hashed or
