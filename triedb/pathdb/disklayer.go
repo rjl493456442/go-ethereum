@@ -316,10 +316,19 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 		buff     = crypto.NewKeccakState()
 		accounts = make(map[common.Hash][]byte)
 		storages = make(map[common.Hash]map[common.Hash][]byte)
+
+		accountUpdate int
+		accountDelete int
 	)
 	for addr, blob := range h.accounts {
 		accounts[crypto.HashData(buff, addr.Bytes())] = common.CopyBytes(blob)
+		if len(blob) == 0 {
+			accountDelete += 1 // delete
+		} else {
+			accountUpdate += 1 // update or new
+		}
 	}
+	log.Info("Trying to revert state", "newid", dl.id-1, "accountDelete", accountDelete, "account update or new", accountUpdate)
 	for addr, storage := range h.storages {
 		storages[crypto.HashData(buff, addr.Bytes())] = maps.Clone(storage)
 	}

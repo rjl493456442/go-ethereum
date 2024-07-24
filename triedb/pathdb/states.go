@@ -17,8 +17,10 @@
 package pathdb
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
 	"io"
 	"slices"
 	"sync"
@@ -631,6 +633,37 @@ func NewStateSetWithOrigin(destructs map[common.Hash]struct{}, accounts map[comm
 		accountOrigin: accountOrigin,
 		storageOrigin: storageOrigin,
 	}
+}
+
+func (s *StateSetWithOrigin) verify() error {
+	for addr, origin := range s.accountOrigin {
+		addrHash := crypto.Keccak256Hash(addr.Bytes())
+
+		// account creation
+		if len(origin) == 0 {
+			if _, ok := s.destructSet[addrHash]; ok {
+				return fmt.Errorf("null account got deleted %x", addr.Hex())
+			}
+			data, ok := s.accountData[addrHash]
+			if !ok {
+				return fmt.Errorf("account got deleted without modify %x", addr.Hex())
+			}
+			if len(data) == 0 {
+				return fmt.Errorf("null account is modified to null %x", addr.Hex())
+			}
+			continue
+		}
+
+		// account update or deletion
+		data, ok := s.account(addrHash)
+		if !ok {
+			return fmt.Errorf("account got deleted without modify %x", addr.Hex())
+		}
+		if bytes.Equal(data, origin) {
+			return fmt.Errorf("account got deleted without change %x", addr.Hex())
+		}
+	}
+	return nil
 }
 
 // encode serializes the content of state set into the provided writer.

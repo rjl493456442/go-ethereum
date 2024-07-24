@@ -19,6 +19,7 @@ package pathdb
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -99,6 +100,9 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	parent := tree.get(parentRoot)
 	if parent == nil {
 		return fmt.Errorf("triedb parent [%#x] layer missing", parentRoot)
+	}
+	if err := states.verify(); err != nil {
+		log.Error("state verification failed", "id", parent.stateID()+1, "err", err)
 	}
 	l := parent.update(root, parent.stateID()+1, block, nodes.Flatten(), states)
 
