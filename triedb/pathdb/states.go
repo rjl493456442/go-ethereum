@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"io"
 	"slices"
@@ -642,14 +643,14 @@ func (s *StateSetWithOrigin) verify() error {
 		// account creation
 		if len(origin) == 0 {
 			if _, ok := s.destructSet[addrHash]; ok {
-				return fmt.Errorf("null account got deleted %x", addr.Hex())
+				return fmt.Errorf("null account got deleted %s", addr.Hex())
 			}
 			data, ok := s.accountData[addrHash]
 			if !ok {
-				return fmt.Errorf("account got deleted without modify %x", addr.Hex())
+				return fmt.Errorf("account got deleted without modify %s", addr.Hex())
 			}
 			if len(data) == 0 {
-				return fmt.Errorf("null account is modified to null %x", addr.Hex())
+				return fmt.Errorf("null account is modified to null %s", addr.Hex())
 			}
 			continue
 		}
@@ -657,10 +658,14 @@ func (s *StateSetWithOrigin) verify() error {
 		// account update or deletion
 		data, ok := s.account(addrHash)
 		if !ok {
-			return fmt.Errorf("account got deleted without modify %x", addr.Hex())
+			return fmt.Errorf("account got updated without modify %s", addr.Hex())
 		}
 		if bytes.Equal(data, origin) {
-			return fmt.Errorf("account got deleted without change %x", addr.Hex())
+			if _, ok := s.destructSet[addrHash]; ok {
+				log.Info("account is deleted and resurrected with same data %s, %v", addr.Hex(), hexutil.Encode(data))
+			} else {
+				return fmt.Errorf("account got updated without change %s origin: %v, new: %v", addr.Hex(), hexutil.Encode(origin), hexutil.Encode(data))
+			}
 		}
 	}
 	return nil

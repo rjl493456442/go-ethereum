@@ -578,3 +578,9 @@ func TestYParityJSONUnmarshalling(t *testing.T) {
 		}
 	}
 }
+
+func TestFoo(t *testing.T) {
+	blob := common.FromHex("0xf8440180a068cbe262d43b3425f50c7cc727f4c66d95b4c927ede0ab105b64eceb16352bdca091e320718b6539e015042f66c8153df0bfb14381443f348015ea48714434b2d0")
+	account, _ := FullAccount(blob)
+	fmt.Println(account.Nonce, account.Balance, account.Root.Hex())
+}

@@ -17,8 +17,11 @@
 package state
 
 import (
+	"bytes"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
 )
@@ -88,8 +91,12 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 			storagesOrigin[addr] = op.storagesOrigin
 		}
 	}
+	log.Info("Deleted", "number", len(deletes))
 	// Aggregate account updates then.
 	for addrHash, op := range updates {
+		if bytes.Equal(op.data, op.origin) {
+			log.Info("Found invalid account set", "address", op.address.Hex(), "data", hexutil.Encode(op.data))
+		}
 		// Aggregate dirty contract codes if they are available.
 		addr := op.address
 		if op.code != nil {
