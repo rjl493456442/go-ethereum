@@ -17,8 +17,11 @@
 package state
 
 import (
+	"bytes"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
@@ -93,6 +96,9 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		addr := op.address
 		if op.code != nil {
 			codes[addr] = *op.code
+		}
+		if bytes.Equal(op.data, op.origin) {
+			log.Info("Found invalid account update", "address", op.address.Hex(), "data", hexutil.Encode(op.data))
 		}
 		// Aggregate the account changes. The original account value will only
 		// be tracked if it's not present yet.

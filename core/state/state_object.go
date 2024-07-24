@@ -19,6 +19,7 @@ package state
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"maps"
 	"time"
 
@@ -464,6 +465,9 @@ func (s *stateObject) commit() (*accountUpdate, *trienode.NodeSet, error) {
 	}
 	if s.origin != nil {
 		op.origin = types.SlimAccountRLP(*s.origin)
+	}
+	if bytes.Equal(op.data, op.origin) {
+		log.Info("Found invalid account update in commit", "address", op.address.Hex(), "data", hexutil.Encode(op.data))
 	}
 	// commit the contract code if it's modified
 	if s.dirtyCode {
