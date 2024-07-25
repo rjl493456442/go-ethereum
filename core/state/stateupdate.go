@@ -92,10 +92,13 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		}
 	}
 	log.Info("Deleted", "number", len(deletes))
+
 	// Aggregate account updates then.
 	for addrHash, op := range updates {
-		if bytes.Equal(op.data, op.origin) {
-			log.Info("Found invalid account set", "address", op.address.Hex(), "data", hexutil.Encode(op.data))
+		_, isDeleted := destructs[addrHash]
+		if bytes.Equal(op.data, op.origin) && !isDeleted {
+			log.Info("Filtered out account set", "address", op.address.Hex(), "data", hexutil.Encode(op.data))
+			continue
 		}
 		// Aggregate dirty contract codes if they are available.
 		addr := op.address

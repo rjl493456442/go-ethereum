@@ -101,7 +101,7 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	if parent == nil {
 		return fmt.Errorf("triedb parent [%#x] layer missing", parentRoot)
 	}
-	if err := states.verify(); err != nil {
+	if err := states.verify(parent.stateID() + 1); err != nil {
 		log.Error("state verification failed", "id", parent.stateID()+1, "err", err)
 	}
 	l := parent.update(root, parent.stateID()+1, block, nodes.Flatten(), states)

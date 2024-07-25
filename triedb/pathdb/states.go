@@ -636,7 +636,11 @@ func NewStateSetWithOrigin(destructs map[common.Hash]struct{}, accounts map[comm
 	}
 }
 
-func (s *StateSetWithOrigin) verify() error {
+func (s *StateSetWithOrigin) verify(id uint64) error {
+	var (
+		creates int
+		updates int
+	)
 	for addr, origin := range s.accountOrigin {
 		addrHash := crypto.Keccak256Hash(addr.Bytes())
 
@@ -652,6 +656,7 @@ func (s *StateSetWithOrigin) verify() error {
 			if len(data) == 0 {
 				return fmt.Errorf("null account is modified to null %s", addr.Hex())
 			}
+			creates += 1 // reverse delete
 			continue
 		}
 
@@ -667,7 +672,9 @@ func (s *StateSetWithOrigin) verify() error {
 				return fmt.Errorf("account got updated without change %s origin: %v, new: %v", addr.Hex(), hexutil.Encode(origin), hexutil.Encode(data))
 			}
 		}
+		updates += 1
 	}
+	log.Info("Verified state", "id", id, "destructs", len(s.destructSet), "update", updates, "create", creates, "accountData", len(s.accountData), "accountOrigin", len(s.accountOrigin))
 	return nil
 }
 
