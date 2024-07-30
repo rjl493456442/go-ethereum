@@ -161,7 +161,8 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 // This is not threadsafe and should only be done very cautiously.
 func (evm *EVM) Reset(txCtx TxContext, statedb StateDB) {
 	if evm.chainRules.IsEIP4762 {
-		txCtx.AccessEvents = state.NewAccessEvents(statedb.PointCache())
+		txCtx.AccessEvents = statedb.AccessEvents().Copy()
+		txCtx.AccessEvents.Reset()
 	}
 	evm.TxContext = txCtx
 	evm.StateDB = statedb
@@ -209,7 +210,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	if !evm.StateDB.Exist(addr) {
 		if !isPrecompile && evm.chainRules.IsEIP4762 {
 			// add proof of absence to witness
-			wgas := evm.AccessEvents.AddAccount(addr, false)
+			wgas := evm.AccessEvents.AddAccount(addr, false, false)
 			if gas < wgas {
 				evm.StateDB.RevertToSnapshot(snapshot)
 				return nil, 0, ErrOutOfGas
@@ -220,6 +221,15 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		if !isPrecompile && evm.chainRules.IsEIP158 && value.IsZero() {
 			// Calling a non-existing account, don't do anything.
 			return nil, gas, nil
+		}
+		if !isPrecompile && evm.chainRules.IsEIP4762 && !value.IsZero() {
+			// Charge the fill+write costs if the account is created
+			wgas := evm.AccessEvents.AddAccount(addr, true, true)
+			if gas < wgas {
+				evm.StateDB.RevertToSnapshot(snapshot)
+				return nil, 0, ErrOutOfGas
+			}
+			gas -= wgas
 		}
 		evm.StateDB.CreateAccount(addr)
 	}
@@ -490,7 +500,8 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// It might be possible the contract code is deployed to a pre-existent
 	// account with non-zero balance.
 	snapshot := evm.StateDB.Snapshot()
-	if !evm.StateDB.Exist(address) {
+	addressExisted := evm.StateDB.Exist(address)
+	if !addressExisted {
 		evm.StateDB.CreateAccount(address)
 	}
 	// CreateContract means that regardless of whether the account previously existed
@@ -512,7 +523,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 	// Charge the contract creation init gas in verkle mode
 	if evm.chainRules.IsEIP4762 {
-		if !contract.UseGas(evm.AccessEvents.ContractCreateInitGas(address, value.Sign() != 0), evm.Config.Tracer, tracing.GasChangeWitnessContractInit) {
+		if !contract.UseGas(evm.AccessEvents.ContractCreateInitGas(address, value.Sign() != 0, !addressExisted), evm.Config.Tracer, tracing.GasChangeWitnessContractInit) {
 			err = ErrOutOfGas
 		}
 	}
@@ -543,11 +554,13 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 			}
 		} else {
 			// Contract creation completed, touch the missing fields in the contract
-			if !contract.UseGas(evm.AccessEvents.AddAccount(address, true), evm.Config.Tracer, tracing.GasChangeWitnessContractCreation) {
+			// The isFill argument is always set to true, but if it has been charged,
+			// e.g. when performing the top-level call, it won't be charged twice.
+			if !contract.UseGas(evm.AccessEvents.AddAccount(address, true, true), evm.Config.Tracer, tracing.GasChangeWitnessContractCreation) {
 				err = ErrCodeStoreOutOfGas
 			}
 
-			if err == nil && len(ret) > 0 && !contract.UseGas(evm.AccessEvents.CodeChunksRangeGas(address, 0, uint64(len(ret)), uint64(len(ret)), true), evm.Config.Tracer, tracing.GasChangeWitnessCodeChunk) {
+			if err == nil && len(ret) > 0 && !contract.UseGas(evm.AccessEvents.CodeChunksRangeGas(address, 0, uint64(len(ret)), uint64(len(ret)), true, true), evm.Config.Tracer, tracing.GasChangeWitnessCodeChunk) {
 				err = ErrCodeStoreOutOfGas
 			}
 		}

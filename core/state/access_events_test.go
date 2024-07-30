@@ -52,7 +52,7 @@ func TestAccountHeaderGas(t *testing.T) {
 	}
 
 	// Check cold read costs in the same group no longer incur the branch read cost
-	gas = ae.BalanceGas(testAddr, false)
+	gas = ae.BalanceGas(testAddr, false, false)
 	if gas != params.WitnessChunkReadCost {
 		t.Fatalf("incorrect gas computed, got %d, want %d", gas, params.WitnessChunkReadCost)
 	}
@@ -82,20 +82,20 @@ func TestAccountHeaderGas(t *testing.T) {
 	}
 
 	// Check a write without a read charges both read and write costs
-	gas = ae.BalanceGas(testAddr2, true)
+	gas = ae.BalanceGas(testAddr2, true, false)
 	if want := params.WitnessBranchReadCost + params.WitnessBranchWriteCost + params.WitnessChunkWriteCost + params.WitnessChunkReadCost; gas != want {
 		t.Fatalf("incorrect gas computed, got %d, want %d", gas, want)
 	}
 
 	// Check that a write followed by a read charges nothing
-	gas = ae.BalanceGas(testAddr2, false)
+	gas = ae.BalanceGas(testAddr2, false, false)
 	if gas != 0 {
 		t.Fatalf("incorrect gas computed, got %d, want %d", gas, 0)
 	}
 
 	// Check that reading a slot from the account header only charges the
 	// chunk read cost.
-	gas = ae.SlotGas(testAddr, common.Hash{}, false)
+	gas = ae.SlotGas(testAddr, common.Hash{}, false, false)
 	if gas != params.WitnessChunkReadCost {
 		t.Fatalf("incorrect gas computed, got %d, want %d", gas, params.WitnessChunkReadCost)
 	}
@@ -112,13 +112,13 @@ func TestContractCreateInitGas(t *testing.T) {
 	}
 
 	// Check cold read cost, without a value
-	gas := ae.ContractCreateInitGas(testAddr, false)
+	gas := ae.ContractCreateInitGas(testAddr, false, false)
 	if want := params.WitnessBranchWriteCost + params.WitnessBranchReadCost + params.WitnessChunkWriteCost*2 + params.WitnessChunkReadCost*2; gas != want {
 		t.Fatalf("incorrect gas computed, got %d, want %d", gas, want)
 	}
 
 	// Check warm read cost
-	gas = ae.ContractCreateInitGas(testAddr, false)
+	gas = ae.ContractCreateInitGas(testAddr, false, false)
 	if gas != 0 {
 		t.Fatalf("incorrect gas computed, got %d, want %d", gas, 0)
 	}

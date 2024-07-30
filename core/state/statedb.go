@@ -28,7 +28,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -36,7 +35,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
@@ -136,7 +134,8 @@ type StateDB struct {
 	preimages map[common.Hash][]byte
 
 	// Per-transaction access list
-	accessList *accessList
+	accessList   *accessList
+	accessEvents *AccessEvents
 
 	// Transient storage
 	transientStorage transientStorage
@@ -178,7 +177,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StateDB{
+	sdb := &StateDB{
 		db:                   db,
 		trie:                 tr,
 		originalRoot:         root,
@@ -191,7 +190,12 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		journal:              newJournal(),
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
-	}, nil
+	}
+	if db.TrieDB().IsVerkle() {
+		sdb.accessEvents = NewAccessEvents(db.(*CachingDB).pointCache)
+	}
+
+	return sdb, nil
 }
 
 // SetLogger sets the logger for account update hooks.
@@ -681,6 +685,9 @@ func (s *StateDB) Copy() *StateDB {
 	}
 	if s.witness != nil {
 		state.witness = s.witness.Copy()
+	}
+	if s.accessEvents != nil {
+		state.accessEvents = s.accessEvents.Copy()
 	}
 	// Deep copy cached state objects.
 	for addr, obj := range s.stateObjects {
@@ -1438,11 +1445,10 @@ func (s *StateDB) Witness() *stateless.Witness {
 }
 
 func (s *StateDB) IsSlotFilled(addr common.Address, slot common.Hash) bool {
-	// The snapshot can not be used, because it uses the old encoding where
-	// no difference is made between 0 and no data.
-	_, err := s.db.DiskDB().Get(utils.StorageSlotKeyWithEvaluatedAddress(s.accessList.pointCache.GetTreeKeyHeader(addr[:]), slot[:]))
-	// The error needs to be checked because we want to be future-proof
-	// and not rely on the length of the encoding, in case 0-values are
-	// somehow compressed later.
-	return errors.Is(pebble.ErrNotFound, err) || errors.Is(memorydb.ErrMemorydbNotFound, err)
+	ok, err := s.GetTrie().StorageExists(addr, slot[:])
+	return err == nil && ok
+}
+
+func (s *StateDB) AccessEvents() *AccessEvents {
+	return s.accessEvents
 }

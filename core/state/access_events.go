@@ -49,11 +49,11 @@ type AccessEvents struct {
 	pointCache *utils.PointCache
 }
 
-func NewAccessEvents(pointCache *utils.PointCache, fills map[chunkAccessKey]struct{}) *AccessEvents {
+func NewAccessEvents(pointCache *utils.PointCache) *AccessEvents {
 	return &AccessEvents{
 		branches:   make(map[branchAccessKey]mode),
 		chunks:     make(map[chunkAccessKey]mode),
-		fills:      fills,
+		fills:      make(map[chunkAccessKey]struct{}),
 		pointCache: pointCache,
 	}
 }
@@ -94,6 +94,12 @@ func (ae *AccessEvents) Copy() *AccessEvents {
 		pointCache: ae.pointCache,
 	}
 	return cpy
+}
+
+// Reset resets all values of an access event, except its `fills` and point cache fields
+func (ae *AccessEvents) Reset() {
+	ae.branches = make(map[branchAccessKey]mode)
+	ae.chunks = make(map[chunkAccessKey]mode)
 }
 
 // AddAccount returns the gas to be charged for each of the currently cold

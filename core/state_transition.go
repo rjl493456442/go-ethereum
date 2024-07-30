@@ -410,7 +410,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		st.evm.AccessEvents.AddTxOrigin(msg.From)
 
 		if targetAddr := msg.To; targetAddr != nil {
-			st.evm.AccessEvents.AddTxDestination(*targetAddr, msg.Value.Sign() != 0)
+			// the fill is always set to true, as it will be covered by the intrinsic gas
+			// if needed.
+			st.evm.AccessEvents.AddTxDestination(*targetAddr, msg.Value.Sign() != 0, true)
 		}
 	}
 
@@ -470,7 +472,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 
 		// add the coinbase to the witness iff the fee is greater than 0
 		if rules.IsEIP4762 && fee.Sign() != 0 {
-			st.evm.AccessEvents.BalanceGas(st.evm.Context.Coinbase, true)
+			st.evm.AccessEvents.BalanceGas(st.evm.Context.Coinbase, true, true)
 		}
 	}
 
