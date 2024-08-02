@@ -18,6 +18,7 @@ package snap
 
 import (
 	"bytes"
+	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -161,14 +162,14 @@ func (t *pathTrie) write(path []byte, blob []byte) {
 	}
 }
 
-func (t *pathTrie) deleteAccountNode(path []byte, inner bool) {
+func (t *pathTrie) deleteAccountNode(path []byte, inner bool) bool {
 	if inner {
 		accountInnerLookupGauge.Inc(1)
 	} else {
 		accountOuterLookupGauge.Inc(1)
 	}
 	if !rawdb.HasAccountTrieNode(t.db, path) {
-		return
+		return false
 	}
 	if inner {
 		accountInnerDeleteGauge.Inc(1)
@@ -176,16 +177,17 @@ func (t *pathTrie) deleteAccountNode(path []byte, inner bool) {
 		accountOuterDeleteGauge.Inc(1)
 	}
 	rawdb.DeleteAccountTrieNode(t.batch, path)
+	return true
 }
 
-func (t *pathTrie) deleteStorageNode(path []byte, inner bool) {
+func (t *pathTrie) deleteStorageNode(path []byte, inner bool) bool {
 	if inner {
 		storageInnerLookupGauge.Inc(1)
 	} else {
 		storageOuterLookupGauge.Inc(1)
 	}
 	if !rawdb.HasStorageTrieNode(t.db, t.owner, path) {
-		return
+		return false
 	}
 	if inner {
 		storageInnerDeleteGauge.Inc(1)
@@ -193,14 +195,15 @@ func (t *pathTrie) deleteStorageNode(path []byte, inner bool) {
 		storageOuterDeleteGauge.Inc(1)
 	}
 	rawdb.DeleteStorageTrieNode(t.batch, t.owner, path)
+	return true
 }
 
 // deleteNode commits the node deletion to provided database batch in path mode.
-func (t *pathTrie) deleteNode(path []byte, inner bool) {
+func (t *pathTrie) deleteNode(path []byte, inner bool) bool {
 	if t.owner == (common.Hash{}) {
-		t.deleteAccountNode(path, inner)
+		return t.deleteAccountNode(path, inner)
 	} else {
-		t.deleteStorageNode(path, inner)
+		return t.deleteStorageNode(path, inner)
 	}
 }
 
@@ -228,7 +231,9 @@ func (t *pathTrie) delete(key []byte) error {
 	// path from the database.
 	tkey := t.tr.TrieKey(key)
 	for i := 0; i <= len(tkey); i++ {
-		t.deleteNode(tkey[:i], false)
+		if t.deleteNode(tkey[:i], false) {
+			log.Info("Detected dangling nodes", "accountHash", common.BytesToHash(key).Hex(), "path", tkey[:i])
+		}
 	}
 	return nil
 }
