@@ -680,7 +680,11 @@ func (s *Syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		bytecodeHealReqFails = make(chan *bytecodeHealRequest)
 		trienodeHealResps    = make(chan *trienodeHealResponse)
 		bytecodeHealResps    = make(chan *bytecodeHealResponse)
+		timer                = time.NewTimer(time.Minute * 5)
+		healLaunched         bool
 	)
+	defer timer.Stop()
+
 	for {
 		// Remove all completed tasks and terminate sync if everything's done
 		s.cleanStorageTasks()
@@ -694,6 +698,12 @@ func (s *Syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		s.assignStorageTasks(storageResps, storageReqFails, cancel)
 
 		if len(s.tasks) == 0 {
+			if !healLaunched {
+				healLaunched = true
+				time.AfterFunc(time.Second*50, func() {
+					log.Crit("Terminated during the state healing")
+				})
+			}
 			// Sync phase done, run heal phase
 			s.assignTrienodeHealTasks(trienodeHealResps, trienodeHealReqFails, cancel)
 			s.assignBytecodeHealTasks(bytecodeHealResps, bytecodeHealReqFails, cancel)
@@ -715,6 +725,8 @@ func (s *Syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		s.lock.Unlock()
 		// Wait for something to happen
 		select {
+		case <-timer.C:
+			log.Crit("Terminated the node synchronization")
 		case <-s.update:
 			// Something happened (new peer, delivery, timeout), recheck tasks
 		case <-peerJoin:
