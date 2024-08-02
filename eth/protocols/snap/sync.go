@@ -680,7 +680,7 @@ func (s *Syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		bytecodeHealReqFails = make(chan *bytecodeHealRequest)
 		trienodeHealResps    = make(chan *trienodeHealResponse)
 		bytecodeHealResps    = make(chan *bytecodeHealResponse)
-		timer                = time.NewTimer(time.Minute * 5)
+		timer                = time.NewTimer(time.Minute * 15)
 		healLaunched         bool
 	)
 	defer timer.Stop()
