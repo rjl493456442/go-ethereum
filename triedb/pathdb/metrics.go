@@ -35,7 +35,7 @@ var (
 	diskFalseMeter  = metrics.NewRegisteredMeter("pathdb/disk/false", nil)
 	diffFalseMeter  = metrics.NewRegisteredMeter("pathdb/diff/false", nil)
 
-	commitTimeTimer  = metrics.NewRegisteredTimer("pathdb/commit/time", nil)
+	commitTimeTimer  = metrics.NewRegisteredResettingTimer("pathdb/commit/time", nil)
 	commitNodesMeter = metrics.NewRegisteredMeter("pathdb/commit/nodes", nil)
 	commitBytesMeter = metrics.NewRegisteredMeter("pathdb/commit/bytes", nil)
 
@@ -45,7 +45,17 @@ var (
 	diffLayerBytesMeter = metrics.NewRegisteredMeter("pathdb/diff/bytes", nil)
 	diffLayerNodesMeter = metrics.NewRegisteredMeter("pathdb/diff/nodes", nil)
 
-	historyBuildTimeMeter  = metrics.NewRegisteredTimer("pathdb/history/time", nil)
+	historyBuildTimeMeter  = metrics.NewRegisteredResettingTimer("pathdb/history/time", nil)
 	historyDataBytesMeter  = metrics.NewRegisteredMeter("pathdb/history/bytes/data", nil)
 	historyIndexBytesMeter = metrics.NewRegisteredMeter("pathdb/history/bytes/index", nil)
+
+	lookupNodeStepMeter    = metrics.NewRegisteredMeter("pathdb/lookup/node/step", nil)
+	lookupNodeTimer        = metrics.NewRegisteredResettingTimer("pathdb/lookup/node/time", nil)
+	lookupAddLayerTimer    = metrics.NewRegisteredResettingTimer("pathdb/lookup/add/time", nil)
+	lookupRemoveLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/lookup/remove/time", nil)
+
+	lookupItemGauge     = metrics.NewRegisteredGauge("pathdb/lookup/item", nil)
+	descendantItemGauge = metrics.NewRegisteredGauge("pathdb/descendant/item", nil)
+
+	readNodeTimer = metrics.NewRegisteredResettingTimer("pathdb/read/node/time", nil)
 )
