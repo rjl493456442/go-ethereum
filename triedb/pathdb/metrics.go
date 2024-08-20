@@ -63,6 +63,12 @@ var (
 	historyBuildTimeMeter  = metrics.NewRegisteredTimer("pathdb/history/time", nil)
 	historyDataBytesMeter  = metrics.NewRegisteredMeter("pathdb/history/bytes/data", nil)
 	historyIndexBytesMeter = metrics.NewRegisteredMeter("pathdb/history/bytes/index", nil)
+
+	lookupStepMeter            = metrics.NewRegisteredMeter("pathdb/lookup/lookup", nil)
+	lookupAccountTimeMeter     = metrics.NewRegisteredTimer("pathdb/lookup/time/account", nil)
+	lookupStorageTimeMeter     = metrics.NewRegisteredTimer("pathdb/lookup/time/storage", nil)
+	lookupAddLayerTimeMeter    = metrics.NewRegisteredTimer("pathdb/lookup/time/add", nil)
+	lookupRemoveLayerTimeMeter = metrics.NewRegisteredTimer("pathdb/lookup/time/remove", nil)
 )
 
 // Metrics in generation

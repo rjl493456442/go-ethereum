@@ -32,8 +32,11 @@ import (
 // thread-safe to use. However, callers need to ensure the thread-safety
 // of the referenced layer by themselves.
 type layerTree struct {
-	lock   sync.RWMutex
-	layers map[common.Hash]layer
+	lock        sync.RWMutex
+	base        layer
+	layers      map[common.Hash]layer
+	descendants map[common.Hash]map[common.Hash]struct{}
+	lookup      *lookup
 }
 
 // newLayerTree constructs the layerTree with the given head layer.
@@ -49,12 +52,45 @@ func (tree *layerTree) reset(head layer) {
 	tree.lock.Lock()
 	defer tree.lock.Unlock()
 
-	var layers = make(map[common.Hash]layer)
-	for head != nil {
-		layers[head.rootHash()] = head
-		head = head.parentLayer()
+	var (
+		base        = head
+		current     = head
+		layers      = make(map[common.Hash]layer)
+		descendants = make(map[common.Hash]map[common.Hash]struct{})
+	)
+	for current != nil {
+		layers[current.rootHash()] = current
+		for h := range ancestors(current) {
+			subset := descendants[h]
+			if subset == nil {
+				subset = make(map[common.Hash]struct{})
+				descendants[h] = subset
+			}
+			subset[current.rootHash()] = struct{}{}
+		}
+		parent := current.parentLayer()
+		if parent != nil {
+			base = parent
+		}
+		current = parent
 	}
+	tree.base = base
 	tree.layers = layers
+	tree.descendants = descendants
+	tree.lookup = newLookup(head, tree.isDescendant)
+}
+
+// ancestors returns all the ancestors of the specific layer in a map.
+func ancestors(layer layer) map[common.Hash]struct{} {
+	ret := make(map[common.Hash]struct{})
+	for layer != nil {
+		parent := layer.parentLayer()
+		if parent != nil {
+			ret[parent.rootHash()] = struct{}{}
+		}
+		layer = parent
+	}
+	return ret
 }
 
 // get retrieves a layer belonging to the given state root.
@@ -63,6 +99,17 @@ func (tree *layerTree) get(root common.Hash) layer {
 	defer tree.lock.RUnlock()
 
 	return tree.layers[types.TrieRootHash(root)]
+}
+
+// isDescendant returns whether the specified layer with given root is a
+// descendant of a specific ancestor.
+func (tree *layerTree) isDescendant(root common.Hash, ancestor common.Hash) bool {
+	subset := tree.descendants[ancestor]
+	if subset == nil {
+		return false
+	}
+	_, ok := subset[root]
+	return ok
 }
 
 // forEach iterates the stored layers inside and applies the
@@ -103,8 +150,21 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	l := parent.update(root, parent.stateID()+1, block, newNodeSet(nodes.Flatten()), states)
 
 	tree.lock.Lock()
+	defer tree.lock.Unlock()
+
 	tree.layers[l.rootHash()] = l
-	tree.lock.Unlock()
+
+	// track the ancestors of the new layer respectively
+	for h := range ancestors(l) {
+		subset := tree.descendants[h]
+		if subset == nil {
+			subset = make(map[common.Hash]struct{})
+			tree.descendants[h] = subset
+		}
+		subset[l.rootHash()] = struct{}{}
+	}
+	// track the content of the new layer as the fast lookup index
+	tree.lookup.addLayer(l)
 	return nil
 }
 
@@ -131,7 +191,10 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 			return err
 		}
 		// Replace the entire layer tree with the flat base
+		tree.base = base
 		tree.layers = map[common.Hash]layer{base.rootHash(): base}
+		tree.descendants = make(map[common.Hash]map[common.Hash]struct{})
+		tree.lookup = newLookup(base, tree.isDescendant)
 		return nil
 	}
 	// Dive until we run out of layers or reach the persistent database
@@ -146,6 +209,11 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 	}
 	// We're out of layers, flatten anything below, stopping if it's the disk or if
 	// the memory limit is not yet exceeded.
+	var (
+		err     error
+		stale   layer
+		newBase layer
+	)
 	switch parent := diff.parentLayer().(type) {
 	case *diskLayer:
 		return nil
@@ -155,13 +223,14 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		// parent is linked correctly.
 		diff.lock.Lock()
 
-		base, err := parent.persist(false)
+		newBase, err = parent.persist(false)
 		if err != nil {
 			diff.lock.Unlock()
 			return err
 		}
-		tree.layers[base.rootHash()] = base
-		diff.parent = base
+		stale = parent
+		tree.layers[newBase.rootHash()] = newBase
+		diff.parent = newBase
 
 		diff.lock.Unlock()
 
@@ -177,18 +246,26 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		}
 	}
 	var remove func(root common.Hash)
+	removeLookup := func(layer layer) {
+		diff, ok := layer.(*diffLayer)
+		if !ok {
+			return
+		}
+		tree.lookup.removeLayer(diff)
+	}
 	remove = func(root common.Hash) {
+		removeLookup(tree.layers[root])
 		delete(tree.layers, root)
+		delete(tree.descendants, root)
 		for _, child := range children[root] {
 			remove(child)
 		}
 		delete(children, root)
 	}
-	for root, layer := range tree.layers {
-		if dl, ok := layer.(*diskLayer); ok && dl.isStale() {
-			remove(root)
-		}
-	}
+	remove(tree.base.rootHash()) // remove the old/stale disk layer
+	removeLookup(stale)          // remove the lookup data of the stale parent being replaced
+
+	tree.base = newBase
 	return nil
 }
 
@@ -197,17 +274,27 @@ func (tree *layerTree) bottom() *diskLayer {
 	tree.lock.RLock()
 	defer tree.lock.RUnlock()
 
-	if len(tree.layers) == 0 {
-		return nil // Shouldn't happen, empty tree
+	return tree.base.(*diskLayer)
+}
+
+func (tree *layerTree) lookupAccount(accountHash common.Hash, state common.Hash) layer {
+	tree.lock.RLock()
+	defer tree.lock.RUnlock()
+
+	tip := tree.lookup.lookupAccount(accountHash, state)
+	if tip == (common.Hash{}) {
+		return tree.base
 	}
-	// pick a random one as the entry point
-	var current layer
-	for _, layer := range tree.layers {
-		current = layer
-		break
+	return tree.layers[tip]
+}
+
+func (tree *layerTree) lookupStorage(accountHash common.Hash, storageHash common.Hash, state common.Hash) layer {
+	tree.lock.RLock()
+	defer tree.lock.RUnlock()
+
+	tip := tree.lookup.lookupStorage(accountHash, storageHash, state)
+	if tip == (common.Hash{}) {
+		return tree.base
 	}
-	for current.parentLayer() != nil {
-		current = current.parentLayer()
-	}
-	return current.(*diskLayer)
+	return tree.layers[tip]
 }

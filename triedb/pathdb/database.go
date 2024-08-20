@@ -160,6 +160,7 @@ type Database struct {
 	config     *Config                      // Configuration for database
 	diskdb     ethdb.Database               // Persistent storage for matured trie nodes
 	tree       *layerTree                   // The group for all known layers
+	lookup     *lookup                      // Lookup to fasten state access
 	freezer    ethdb.ResettableAncientStore // Freezer for storing trie histories, nil possible in tests
 	lock       sync.RWMutex                 // Lock to prevent mutations from happening at the same time
 }
@@ -190,7 +191,9 @@ func New(diskdb ethdb.Database, config *Config, isVerkle bool) *Database {
 	}
 	// Construct the layer tree by resolving the in-disk singleton state
 	// and in-memory layer journal.
-	db.tree = newLayerTree(db.loadLayers())
+	head := db.loadLayers()
+	db.tree = newLayerTree(head)
+	db.lookup = newLookup(head, db.tree.isDescendant)
 
 	// Repair the state history, which might not be aligned with the state
 	// in the key-value store due to an unclean shutdown.

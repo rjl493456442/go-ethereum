@@ -17,6 +17,7 @@
 package pathdb
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -86,13 +87,35 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 	return blob, nil
 }
 
+// NodeReader returns a reader that allows access to the trie node data associated
+// with the specified state.
+func (db *Database) NodeReader(root common.Hash) (database.NodeReader, error) {
+	layer := db.tree.get(root)
+	if layer == nil {
+		return nil, fmt.Errorf("state %#x is not available", root)
+	}
+	return &reader{
+		layer:       layer,
+		noHashCheck: db.isVerkle,
+	}, nil
+}
+
+type stateReader struct {
+	state common.Hash
+	db    *Database
+}
+
 // Account directly retrieves the account associated with a particular hash in
 // the slim data format. An error will be returned if the read operation exits
 // abnormally. Specifically, if the layer is already stale.
 //
 // No error will be returned if the requested account is not found in database
-func (r *reader) Account(hash common.Hash) (*types.SlimAccount, error) {
-	blob, err := r.layer.account(hash, 0)
+func (r *stateReader) Account(hash common.Hash) (*types.SlimAccount, error) {
+	l := r.db.tree.lookupAccount(hash, r.state)
+	if l == nil {
+		return nil, errors.New("account is not found")
+	}
+	blob, err := l.account(hash, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -113,18 +136,12 @@ func (r *reader) Account(hash common.Hash) (*types.SlimAccount, error) {
 // Note:
 // - the returned storage data is not a copy, please don't modify it
 // - no error will be returned if the requested slot is not found in database
-func (r *reader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
-	return r.layer.storage(accountHash, storageHash, 0)
-}
-
-// NodeReader returns a reader that allows access to the trie node data associated
-// with the specified state.
-func (db *Database) NodeReader(root common.Hash) (database.NodeReader, error) {
-	layer := db.tree.get(root)
-	if layer == nil {
-		return nil, fmt.Errorf("state %#x is not available", root)
+func (r *stateReader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
+	l := r.db.tree.lookupStorage(accountHash, storageHash, r.state)
+	if l == nil {
+		return nil, errors.New("storage is not found")
 	}
-	return &reader{layer: layer, noHashCheck: db.isVerkle}, nil
+	return l.storage(accountHash, storageHash, 0)
 }
 
 // StateReader returns a reader that allows access to the state data associated
@@ -134,5 +151,8 @@ func (db *Database) StateReader(root common.Hash) (database.StateReader, error) 
 	if layer == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	return &reader{layer: layer}, nil
+	return &stateReader{
+		state: root,
+		db:    db,
+	}, nil
 }
