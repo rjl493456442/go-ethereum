@@ -17,6 +17,7 @@
 package pathdb
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -50,15 +51,22 @@ func (loc *nodeLoc) string() string {
 // reader implements the database.NodeReader interface, providing the functionalities to
 // retrieve trie nodes by wrapping the internal state layer.
 type reader struct {
-	layer       layer
+	db          *Database
+	state       common.Hash
 	noHashCheck bool
+	layer       layer
 }
 
 // Node implements database.NodeReader interface, retrieving the node with specified
 // node info. Don't modify the returned byte slice since it's not deep-copied
 // and still be referenced by database.
 func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
-	blob, got, loc, err := r.layer.node(owner, path, 0)
+	// TODO(rjl493456442) make sure the referenced state is still alive
+	l := r.db.tree.lookupNode(owner, path, r.state)
+	if l == nil {
+		return nil, errors.New("node is not found")
+	}
+	blob, got, loc, err := l.node(owner, path, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +100,12 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 //
 // No error will be returned if the requested account is not found in database
 func (r *reader) Account(hash common.Hash) (*types.SlimAccount, error) {
-	blob, err := r.layer.account(hash, 0)
+	// TODO(rjl493456442) make sure the referenced state is still alive
+	l := r.db.tree.lookupAccount(hash, r.state)
+	if l == nil {
+		return nil, errors.New("node is not found")
+	}
+	blob, err := l.account(hash, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +127,12 @@ func (r *reader) Account(hash common.Hash) (*types.SlimAccount, error) {
 // - the returned storage data is not a copy, please don't modify it
 // - no error will be returned if the requested slot is not found in database
 func (r *reader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
-	return r.layer.storage(accountHash, storageHash, 0)
+	// TODO(rjl493456442) make sure the referenced state is still alive
+	l := r.db.tree.lookupStorage(accountHash, storageHash, r.state)
+	if l == nil {
+		return nil, errors.New("node is not found")
+	}
+	return l.storage(accountHash, storageHash, 0)
 }
 
 // NodeReader returns a reader that allows access to the trie node data associated
@@ -124,7 +142,12 @@ func (db *Database) NodeReader(root common.Hash) (database.NodeReader, error) {
 	if layer == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	return &reader{layer: layer, noHashCheck: db.isVerkle}, nil
+	return &reader{
+		db:          db,
+		state:       root,
+		noHashCheck: db.isVerkle,
+		layer:       layer,
+	}, nil
 }
 
 // StateReader returns a reader that allows access to the state data associated
