@@ -482,8 +482,8 @@ func TestProcessVerkle(t *testing.T) {
 
 	txCost1 := params.TxGas
 	txCost2 := params.TxGas
-	contractCreationCost := intrinsicContractCreationGas + uint64(2039 /* execution costs */)
-	codeWithExtCodeCopyGas := intrinsicCodeWithExtCodeCopyGas + uint64(57444 /* execution costs */)
+	contractCreationCost := intrinsicContractCreationGas + 7*params.WitnessChunkFillCost + uint64(2939 /* execution costs */)
+	codeWithExtCodeCopyGas := intrinsicCodeWithExtCodeCopyGas + 41*params.WitnessChunkFillCost + uint64(56544 /* execution costs */)
 	blockGasUsagesExpected := []uint64{
 		txCost1*2 + txCost2,
 		txCost1*2 + txCost2 + contractCreationCost + codeWithExtCodeCopyGas,
