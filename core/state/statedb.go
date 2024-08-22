@@ -134,7 +134,8 @@ type StateDB struct {
 	preimages map[common.Hash][]byte
 
 	// Per-transaction access list
-	accessList *accessList
+	accessList   *accessList
+	accessEvents *AccessEvents
 
 	// Transient storage
 	transientStorage transientStorage
@@ -176,7 +177,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StateDB{
+	sdb := &StateDB{
 		db:                   db,
 		trie:                 tr,
 		originalRoot:         root,
@@ -189,7 +190,12 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		journal:              newJournal(),
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
-	}, nil
+	}
+	if db.TrieDB().IsVerkle() {
+		sdb.accessEvents = NewAccessEvents(db.(*CachingDB).pointCache)
+	}
+
+	return sdb, nil
 }
 
 // SetLogger sets the logger for account update hooks.
@@ -679,6 +685,9 @@ func (s *StateDB) Copy() *StateDB {
 	}
 	if s.witness != nil {
 		state.witness = s.witness.Copy()
+	}
+	if s.accessEvents != nil {
+		state.accessEvents = s.accessEvents.Copy()
 	}
 	// Deep copy cached state objects.
 	for addr, obj := range s.stateObjects {
@@ -1433,4 +1442,13 @@ func (s *StateDB) PointCache() *utils.PointCache {
 // Witness retrieves the current state witness being collected.
 func (s *StateDB) Witness() *stateless.Witness {
 	return s.witness
+}
+
+func (s *StateDB) IsSlotFilled(addr common.Address, slot common.Hash) bool {
+	ok, err := s.GetTrie().StorageExists(addr, slot[:])
+	return err == nil && ok
+}
+
+func (s *StateDB) AccessEvents() *AccessEvents {
+	return s.accessEvents
 }
