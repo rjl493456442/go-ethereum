@@ -551,6 +551,7 @@ func TestProcessVerkleFillThenNoFill(t *testing.T) {
 			Ethash:                        new(params.EthashConfig),
 			ShanghaiTime:                  u64(0),
 			PragueTime:                    u64(0),
+			VerkleTime:                    u64(0),
 			TerminalTotalDifficulty:       common.Big0,
 			TerminalTotalDifficultyPassed: true,
 		}
@@ -581,7 +582,9 @@ func TestProcessVerkleFillThenNoFill(t *testing.T) {
 
 	// Verkle trees use the snapshot, which must be enabled before the
 	// data is saved into the tree+database.
-	blockchain, _ := NewBlockChain(bcdb, nil, gspec, nil, beacon.New(ethash.NewFaker()), vm.Config{Tracer: logger.NewJSONLogger(loggerCfg, traceFile)}, nil, nil)
+	cacheConfig := DefaultCacheConfigWithScheme("path")
+	cacheConfig.SnapshotLimit = 0
+	blockchain, _ := NewBlockChain(bcdb, cacheConfig, gspec, nil, beacon.New(ethash.NewFaker()), vm.Config{Tracer: logger.NewJSONLogger(loggerCfg, traceFile)}, nil, nil)
 	defer blockchain.Stop()
 
 	blockGasUsagesExpected := params.TxGas + 216 /* intrinsic gas */ + 3*vm.GasFastestStep + params.WitnessChunkReadCost + params.WitnessChunkWriteCost
