@@ -151,7 +151,7 @@ func (db *Database) loadLayers() layer {
 		log.Info("Failed to load journal, discard it", "err", err)
 	}
 	// Return single layer with persistent state.
-	return newDiskLayer(root, rawdb.ReadPersistentStateID(db.diskdb), db, nil, newBuffer(db.bufferSize, nil, nil, 0))
+	return newDiskLayer(root, rawdb.ReadPersistentStateID(db.diskdb), db, nil, nil, newBuffer(db.bufferSize, nil, nil, 0))
 }
 
 // loadDiskLayer reads the binary blob from the layer journal, reconstructing
@@ -183,7 +183,7 @@ func (db *Database) loadDiskLayer(r *rlp.Stream) (layer, error) {
 	if err := states.decode(r); err != nil {
 		return nil, err
 	}
-	return newDiskLayer(root, id, db, nil, newBuffer(db.bufferSize, &nodes, &states, id-stored)), nil
+	return newDiskLayer(root, id, db, nil, nil, newBuffer(db.bufferSize, &nodes, &states, id-stored)), nil
 }
 
 // loadDiffLayer reads the next sections of a layer journal, reconstructing a new

@@ -23,6 +23,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -534,8 +535,8 @@ func (s *stateSet) decode(r *rlp.Stream) error {
 }
 
 // write flushes state mutations into the provided database batch as a whole.
-func (s *stateSet) write(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte) (int, int) {
-	return writeStates(db, batch, genMarker, s.destructSet, s.accountData, s.storageData)
+func (s *stateSet) write(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, clean *fastcache.Cache) (int, int) {
+	return writeStates(db, batch, genMarker, s.destructSet, s.accountData, s.storageData, clean)
 }
 
 // reset clears all cached state data, including any optional sorted lists that

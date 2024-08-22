@@ -66,7 +66,7 @@ func writeNodes(batch ethdb.Batch, nodes map[common.Hash]map[string]*trienode.No
 }
 
 // writeStates flushes state mutations into the provided database batch as a whole.
-func writeStates(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, destructSet map[common.Hash]struct{}, accountData map[common.Hash][]byte, storageData map[common.Hash]map[common.Hash][]byte) (int, int) {
+func writeStates(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, destructSet map[common.Hash]struct{}, accountData map[common.Hash][]byte, storageData map[common.Hash]map[common.Hash][]byte, clean *fastcache.Cache) (int, int) {
 	var (
 		accounts int
 		slots    int
@@ -78,11 +78,16 @@ func writeStates(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, de
 		}
 		rawdb.DeleteAccountSnapshot(batch, addrHash)
 		accounts += 1
-
+		if clean != nil {
+			clean.Set(addrHash[:], nil)
+		}
 		it := rawdb.IterateStorageSnapshots(db, addrHash)
 		for it.Next() {
 			batch.Delete(it.Key())
 			slots += 1
+			if clean != nil {
+				clean.Del(it.Key()[1:])
+			}
 		}
 		it.Release()
 	}
@@ -94,8 +99,14 @@ func writeStates(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, de
 		accounts += 1
 		if len(blob) == 0 {
 			rawdb.DeleteAccountSnapshot(batch, addrHash)
+			if clean != nil {
+				clean.Set(addrHash[:], nil)
+			}
 		} else {
 			rawdb.WriteAccountSnapshot(batch, addrHash, blob)
+			if clean != nil {
+				clean.Set(addrHash[:], blob)
+			}
 		}
 	}
 	for addrHash, storages := range storageData {
@@ -113,8 +124,14 @@ func writeStates(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, de
 			slots += 1
 			if len(blob) == 0 {
 				rawdb.DeleteStorageSnapshot(batch, addrHash, storageHash)
+				if clean != nil {
+					clean.Set(append(addrHash[:], storageHash[:]...), nil)
+				}
 			} else {
 				rawdb.WriteStorageSnapshot(batch, addrHash, storageHash, blob)
+				if clean != nil {
+					clean.Set(append(addrHash[:], storageHash[:]...), blob)
+				}
 			}
 		}
 	}

@@ -175,7 +175,7 @@ func generateSnapshot(triedb *Database, root common.Hash) *diskLayer {
 		stats     = &generatorStats{start: time.Now()}
 		genMarker = []byte{} // Initialized but empty!
 	)
-	dl := newDiskLayer(root, 0, triedb, nil, newBuffer(triedb.bufferSize, nil, nil, 0))
+	dl := newDiskLayer(root, 0, triedb, nil, nil, newBuffer(triedb.bufferSize, nil, nil, 0))
 	dl.generator = newGenerator(triedb.diskdb, false, genMarker, stats)
 	dl.generator.run(root)
 	log.Info("Started snapshot generation", "root", root)

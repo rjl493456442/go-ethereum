@@ -19,10 +19,16 @@ package pathdb
 import "github.com/ethereum/go-ethereum/metrics"
 
 var (
-	cleanHitMeter   = metrics.NewRegisteredMeter("pathdb/clean/hit", nil)
-	cleanMissMeter  = metrics.NewRegisteredMeter("pathdb/clean/miss", nil)
-	cleanReadMeter  = metrics.NewRegisteredMeter("pathdb/clean/read", nil)
-	cleanWriteMeter = metrics.NewRegisteredMeter("pathdb/clean/write", nil)
+	cleanNodeHitMeter   = metrics.NewRegisteredMeter("pathdb/clean/node/hit", nil)
+	cleanNodeMissMeter  = metrics.NewRegisteredMeter("pathdb/clean/node/miss", nil)
+	cleanNodeReadMeter  = metrics.NewRegisteredMeter("pathdb/clean/node/read", nil)
+	cleanNodeWriteMeter = metrics.NewRegisteredMeter("pathdb/clean/node/write", nil)
+
+	cleanStateHitMeter   = metrics.NewRegisteredMeter("pathdb/clean/state/hit", nil)
+	cleanStateMissMeter  = metrics.NewRegisteredMeter("pathdb/clean/state/miss", nil)
+	cleanStateReadMeter  = metrics.NewRegisteredMeter("pathdb/clean/state/read", nil)
+	cleanStateWriteMeter = metrics.NewRegisteredMeter("pathdb/clean/state/write", nil)
+	cleanStateInexMeter  = metrics.NewRegisteredMeter("pathdb/clean/state/inex", nil)
 
 	dirtyNodeHitMeter     = metrics.NewRegisteredMeter("pathdb/dirty/hit/node", nil)
 	dirtyNodeMissMeter    = metrics.NewRegisteredMeter("pathdb/dirty/miss/node", nil)

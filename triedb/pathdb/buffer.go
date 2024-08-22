@@ -133,7 +133,7 @@ func (b *buffer) allocBatch(db ethdb.KeyValueStore) ethdb.Batch {
 
 // flush persists the in-memory dirty trie node into the disk if the configured
 // memory threshold is reached. Note, all data must be written atomically.
-func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, progress []byte, clean *fastcache.Cache, id uint64) error {
+func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, progress []byte, nodesCache, statesCache *fastcache.Cache, id uint64) error {
 	// Ensure the target state id is aligned with the internal counter.
 	head := rawdb.ReadPersistentStateID(db)
 	if head+b.layers != id {
@@ -144,8 +144,8 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, progress []byte
 		start = time.Now()
 		batch = b.allocBatch(db)
 	)
-	nodes := b.nodes.write(batch, b.nodes.nodes, clean)
-	accounts, slots := b.states.write(db, batch, progress)
+	nodes := b.nodes.write(batch, b.nodes.nodes, nodesCache)
+	accounts, slots := b.states.write(db, batch, progress, statesCache)
 	rawdb.WritePersistentStateID(batch, id)
 	rawdb.WriteSnapshotRoot(batch, root)
 

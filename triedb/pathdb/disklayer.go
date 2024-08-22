@@ -33,7 +33,8 @@ type diskLayer struct {
 	root   common.Hash      // Immutable, root hash to which this layer was made for
 	id     uint64           // Immutable, corresponding state id
 	db     *Database        // Path-based trie database
-	cleans *fastcache.Cache // GC friendly memory cache of clean nodes and states
+	nodes  *fastcache.Cache // GC friendly memory cache of clean nodes
+	states *fastcache.Cache // GC friendly memory cache of clean states
 	buffer *buffer          // Dirty buffer to aggregate writes of nodes and states
 	stale  bool             // Signals that the layer became stale (state progressed)
 	lock   sync.RWMutex     // Lock used to protect stale flag and genMarker
@@ -43,18 +44,22 @@ type diskLayer struct {
 }
 
 // newDiskLayer creates a new disk layer based on the passing arguments.
-func newDiskLayer(root common.Hash, id uint64, db *Database, cleans *fastcache.Cache, buffer *buffer) *diskLayer {
-	// Initialize a clean cache if the memory allowance is not zero
-	// or reuse the provided cache if it is not nil (inherited from
+func newDiskLayer(root common.Hash, id uint64, db *Database, nodes *fastcache.Cache, states *fastcache.Cache, buffer *buffer) *diskLayer {
+	// Initialize the clean caches if the memory allowance is not zero
+	// or reuse the provided caches if they are not nil (inherited from
 	// the original disk layer).
-	if cleans == nil && db.config.CleanCacheSize != 0 {
-		cleans = fastcache.New(db.config.CleanCacheSize)
+	if nodes == nil && db.config.CleanCacheSize != 0 {
+		nodes = fastcache.New(db.config.CleanCacheSize / 2)
+	}
+	if states == nil && db.config.CleanCacheSize != 0 {
+		states = fastcache.New(db.config.CleanCacheSize / 2)
 	}
 	return &diskLayer{
 		root:   root,
 		id:     id,
 		db:     db,
-		cleans: cleans,
+		nodes:  nodes,
+		states: states,
 		buffer: buffer,
 	}
 }
@@ -129,13 +134,13 @@ func (dl *diskLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 	defer h.release()
 
 	key := cacheKey(owner, path)
-	if dl.cleans != nil {
-		if blob := dl.cleans.Get(nil, key); len(blob) > 0 {
-			cleanHitMeter.Mark(1)
-			cleanReadMeter.Mark(int64(len(blob)))
+	if dl.nodes != nil {
+		if blob := dl.nodes.Get(nil, key); len(blob) > 0 {
+			cleanNodeHitMeter.Mark(1)
+			cleanNodeReadMeter.Mark(int64(len(blob)))
 			return blob, h.hash(blob), &nodeLoc{loc: locCleanCache, depth: depth}, nil
 		}
-		cleanMissMeter.Mark(1)
+		cleanNodeMissMeter.Mark(1)
 	}
 	// Try to retrieve the trie node from the disk.
 	var blob []byte
@@ -144,9 +149,9 @@ func (dl *diskLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 	} else {
 		blob = rawdb.ReadStorageTrieNode(dl.db.diskdb, owner, path)
 	}
-	if dl.cleans != nil && len(blob) > 0 {
-		dl.cleans.Set(key, blob)
-		cleanWriteMeter.Mark(int64(len(blob)))
+	if dl.nodes != nil && len(blob) > 0 {
+		dl.nodes.Set(key, blob)
+		cleanNodeWriteMeter.Mark(int64(len(blob)))
 	}
 	return blob, h.hash(blob), &nodeLoc{loc: locDiskLayer, depth: depth}, nil
 }
@@ -181,8 +186,26 @@ func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
 	if marker != nil && bytes.Compare(hash.Bytes(), marker) > 0 {
 		return nil, errNotCoveredYet
 	}
+	// Try to retrieve the account from the memory cache
+	if dl.states != nil {
+		if blob, found := dl.states.HasGet(nil, hash[:]); found {
+			cleanStateHitMeter.Mark(1)
+			cleanStateReadMeter.Mark(int64(len(blob)))
+			return blob, nil
+		}
+		cleanStateMissMeter.Mark(1)
+	}
 	// Try to retrieve the account from the disk.
-	return rawdb.ReadAccountSnapshot(dl.db.diskdb, hash), nil
+	blob = rawdb.ReadAccountSnapshot(dl.db.diskdb, hash)
+	if dl.states != nil {
+		dl.states.Set(hash[:], blob)
+		if n := len(blob); n > 0 {
+			cleanStateWriteMeter.Mark(int64(n))
+		} else {
+			cleanStateInexMeter.Mark(1)
+		}
+	}
+	return blob, nil
 }
 
 // storage directly retrieves the storage data associated with a particular hash,
@@ -213,8 +236,26 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 	if marker != nil && bytes.Compare(key, marker) > 0 {
 		return nil, errNotCoveredYet
 	}
+	// Try to retrieve the storage slot from the memory cache
+	if dl.states != nil {
+		if blob, found := dl.states.HasGet(nil, key); found {
+			cleanStateHitMeter.Mark(1)
+			cleanStateReadMeter.Mark(int64(len(blob)))
+			return blob, nil
+		}
+		cleanStateMissMeter.Mark(1)
+	}
 	// Try to retrieve the account from the disk.
-	return rawdb.ReadStorageSnapshot(dl.db.diskdb, accountHash, storageHash), nil
+	blob := rawdb.ReadStorageSnapshot(dl.db.diskdb, accountHash, storageHash)
+	if dl.states != nil {
+		dl.states.Set(key, blob)
+		if n := len(blob); n > 0 {
+			cleanStateWriteMeter.Mark(int64(n))
+		} else {
+			cleanStateInexMeter.Mark(1)
+		}
+	}
+	return blob, nil
 }
 
 // update implements the layer interface, returning a new diff layer on top
@@ -285,7 +326,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 		}
 		// Flush the trie data and state data into the combined buffer. Any state after
 		// the progress marker will be ignored, as the generator will pick it up later.
-		if err := combined.flush(bottom.root, dl.db.diskdb, progress, dl.cleans, bottom.stateID()); err != nil {
+		if err := combined.flush(bottom.root, dl.db.diskdb, progress, dl.nodes, dl.states, bottom.stateID()); err != nil {
 			return nil, err
 		}
 		// Relaunch the state snapshot generation if it's not done yet
@@ -294,7 +335,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 			log.Info("Resumed state snapshot generation", "root", bottom.root)
 		}
 	}
-	ndl := newDiskLayer(bottom.root, bottom.stateID(), dl.db, dl.cleans, combined)
+	ndl := newDiskLayer(bottom.root, bottom.stateID(), dl.db, dl.nodes, dl.states, combined)
 
 	// Link the generator if snapshot is not yet completed
 	if dl.generator != nil && !dl.generator.completed() {
@@ -351,7 +392,7 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 		if err != nil {
 			return nil, err
 		}
-		ndl := newDiskLayer(h.meta.parent, dl.id-1, dl.db, dl.cleans, dl.buffer)
+		ndl := newDiskLayer(h.meta.parent, dl.id-1, dl.db, dl.nodes, dl.states, dl.buffer)
 
 		// Link the generator if it exists
 		if dl.generator != nil {
@@ -366,8 +407,8 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 		progress = dl.generator.progressMarker()
 	}
 	batch := dl.db.diskdb.NewBatch()
-	writeNodes(batch, nodes, dl.cleans)
-	writeStates(dl.db.diskdb, batch, progress, nil, accounts, storages)
+	writeNodes(batch, nodes, dl.nodes)
+	writeStates(dl.db.diskdb, batch, progress, nil, accounts, storages, dl.states)
 	rawdb.WritePersistentStateID(batch, dl.id-1)
 	rawdb.WriteSnapshotRoot(batch, h.meta.parent)
 	if err := batch.Write(); err != nil {
@@ -375,7 +416,7 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 	}
 	// Link the generator and resume generation if the snapshot is not yet
 	// fully completed.
-	ndl := newDiskLayer(h.meta.parent, dl.id-1, dl.db, dl.cleans, dl.buffer)
+	ndl := newDiskLayer(h.meta.parent, dl.id-1, dl.db, dl.nodes, dl.states, dl.buffer)
 	if dl.generator != nil && !dl.generator.completed() {
 		ndl.generator = dl.generator
 		ndl.generator.run(h.meta.parent)
@@ -404,8 +445,11 @@ func (dl *diskLayer) resetCache() {
 	if dl.stale {
 		return
 	}
-	if dl.cleans != nil {
-		dl.cleans.Reset()
+	if dl.nodes != nil {
+		dl.nodes.Reset()
+	}
+	if dl.states != nil {
+		dl.states.Reset()
 	}
 }
 
