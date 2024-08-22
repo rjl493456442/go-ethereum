@@ -376,7 +376,9 @@ func (sf *subfetcher) loop() {
 				if len(task.key) == common.AddressLength {
 					sf.trie.GetAccount(common.BytesToAddress(task.key))
 				} else {
-					sf.trie.GetStorage(sf.addr, task.key)
+					if sf.trie != nil {
+						sf.trie.GetStorage(sf.addr, task.key)
+					}
 				}
 				if task.read {
 					sf.seenRead[key] = struct{}{}

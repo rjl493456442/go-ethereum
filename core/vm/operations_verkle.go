@@ -27,7 +27,7 @@ func gasSStore4762(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memo
 		addr = contract.Address()
 		slot = common.Hash(stack.peek().Bytes32())
 	)
-	gas := evm.AccessEvents.SlotGas(addr, slot, true, evm.StateDB.IsSlotFilled(addr, slot))
+	gas := evm.AccessEvents.SlotGas(addr, slot, true, !evm.StateDB.IsSlotFilled(addr, slot))
 	if gas == 0 {
 		gas = params.WarmStorageReadCostEIP2929
 	}

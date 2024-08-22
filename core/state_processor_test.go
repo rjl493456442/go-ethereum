@@ -619,6 +619,6 @@ func TestProcessVerkleFillThenNoFill(t *testing.T) {
 		t.Fatalf("block #%d not found at expected height", b.NumberU64())
 	}
 	if b.GasUsed() != 2*blockGasUsagesExpected+params.WitnessChunkFillCost {
-		t.Fatalf("expected block #%d txs to use %d, got %d\n", b.NumberU64(), 2*blockGasUsagesExpected, b.GasUsed())
+		t.Fatalf("expected block #%d txs to use %d, got %d\n", b.NumberU64(), 2*blockGasUsagesExpected+params.WitnessChunkFillCost, b.GasUsed())
 	}
 }
