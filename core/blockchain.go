@@ -63,14 +63,18 @@ var (
 
 	chainInfoGauge = metrics.NewRegisteredGaugeInfo("chain/info", nil)
 
-	accountReadTimer   = metrics.NewRegisteredResettingTimer("chain/account/reads", nil)
-	accountHashTimer   = metrics.NewRegisteredResettingTimer("chain/account/hashes", nil)
-	accountUpdateTimer = metrics.NewRegisteredResettingTimer("chain/account/updates", nil)
-	accountCommitTimer = metrics.NewRegisteredResettingTimer("chain/account/commits", nil)
+	accountReadTimer       = metrics.NewRegisteredResettingTimer("chain/account/reads", nil)
+	accountHashTimer       = metrics.NewRegisteredResettingTimer("chain/account/hashes", nil)
+	accountUpdateTimer     = metrics.NewRegisteredResettingTimer("chain/account/updates", nil)
+	accountCommitTimer     = metrics.NewRegisteredResettingTimer("chain/account/commits", nil)
+	accountReadNumberMeter = metrics.NewRegisteredMeter("chain/account/reads/number", nil)
+	accountReadEachMeter   = metrics.NewRegisteredMeter("chain/account/reads/each", nil)
 
-	storageReadTimer   = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
-	storageUpdateTimer = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
-	storageCommitTimer = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
+	storageReadTimer       = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
+	storageUpdateTimer     = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
+	storageCommitTimer     = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
+	storageReadEachMeter   = metrics.NewRegisteredMeter("chain/storage/reads/each", nil)
+	storageReadNumberMeter = metrics.NewRegisteredMeter("chain/storage/reads/number", nil)
 
 	snapshotCommitTimer = metrics.NewRegisteredResettingTimer("chain/snapshot/commits", nil)
 	triedbCommitTimer   = metrics.NewRegisteredResettingTimer("chain/triedb/commits", nil)
@@ -1970,11 +1974,17 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 		return nil, err
 	}
 	// Update the metrics touched during block processing and validation
-	accountReadTimer.Update(statedb.AccountReads)                 // Account reads are complete(in processing)
-	storageReadTimer.Update(statedb.StorageReads)                 // Storage reads are complete(in processing)
-	accountUpdateTimer.Update(statedb.AccountUpdates)             // Account updates are complete(in validation)
-	storageUpdateTimer.Update(statedb.StorageUpdates)             // Storage updates are complete(in validation)
-	accountHashTimer.Update(statedb.AccountHashes)                // Account hashes are complete(in validation)
+	accountReadTimer.Update(statedb.AccountReads)     // Account reads are complete(in processing)
+	storageReadTimer.Update(statedb.StorageReads)     // Storage reads are complete(in processing)
+	accountUpdateTimer.Update(statedb.AccountUpdates) // Account updates are complete(in validation)
+	storageUpdateTimer.Update(statedb.StorageUpdates) // Storage updates are complete(in validation)
+	accountHashTimer.Update(statedb.AccountHashes)    // Account hashes are complete(in validation)
+
+	accountReadNumberMeter.Mark(int64(statedb.AccountLoaded))
+	accountReadEachMeter.Mark(statedb.AccountReads.Nanoseconds() / int64(statedb.AccountLoaded))
+	storageReadNumberMeter.Mark(int64(statedb.StorageLoaded))
+	storageReadEachMeter.Mark(statedb.StorageReads.Nanoseconds() / int64(statedb.StorageLoaded))
+
 	triehash := statedb.AccountHashes                             // The time spent on account trie hashing
 	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates // The time spent on account trie update + storage tries update and hashing
 	trieRead := statedb.AccountReads + statedb.StorageReads       // The time spent on account read and storage read

@@ -51,7 +51,7 @@ type Reader interface {
 
 	// Stats returns the statistics of the reader, specifically detailing the time
 	// spent on account reading and storage reading.
-	Stats() (time.Duration, time.Duration)
+	Stats() (time.Duration, time.Duration, int, int)
 
 	// Copy returns a deep-copied state reader.
 	Copy() Reader
@@ -62,6 +62,8 @@ type stateReader struct {
 	reader database.StateReader
 	buff   crypto.KeccakState
 
+	accountRead int // Number of accounts have been resolved from the reader
+	storageRead int // Number of storages have been resolved from the reader
 	accountTime time.Duration
 	storageTime time.Duration
 }
@@ -90,6 +92,7 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 		return nil, err
 	}
 	if account == nil {
+		r.accountRead++
 		return nil, nil
 	}
 	acct := &types.StateAccount{
@@ -104,6 +107,7 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 	if acct.Root == (common.Hash{}) {
 		acct.Root = types.EmptyRootHash
 	}
+	r.accountRead++
 	return acct, nil
 }
 
@@ -126,6 +130,7 @@ func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash
 		return common.Hash{}, err
 	}
 	if len(ret) == 0 {
+		r.storageRead++
 		return common.Hash{}, nil
 	}
 	_, content, _, err := rlp.Split(ret)
@@ -134,13 +139,14 @@ func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash
 	}
 	var value common.Hash
 	value.SetBytes(content)
+	r.storageRead++
 	return value, nil
 }
 
 // Stats implements Reader, returning the time spent on account reading and
 // storage reading from the snapshot.
-func (r *stateReader) Stats() (time.Duration, time.Duration) {
-	return r.accountTime, r.storageTime
+func (r *stateReader) Stats() (time.Duration, time.Duration, int, int) {
+	return r.accountTime, r.storageTime, r.accountRead, r.storageRead
 }
 
 // Copy implements Reader, returning a deep-copied snap reader.
@@ -164,6 +170,8 @@ type trieReader struct {
 	subRoots map[common.Address]common.Hash // Set of storage roots, cached when the account is resolved
 	subTries map[common.Address]Trie        // Group of storage tries, cached when it's resolved
 
+	accountRead int           // Number of accounts have been resolved from the reader
+	storageRead int           // Number of storages have been resolved from the reader
 	accountTime time.Duration // Time spent on the account reading
 	storageTime time.Duration // Time spent on the storage reading
 }
@@ -211,6 +219,7 @@ func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
 	} else {
 		r.subRoots[addr] = account.Root
 	}
+	r.accountRead++
 	return account, nil
 }
 
@@ -258,13 +267,13 @@ func (r *trieReader) Storage(addr common.Address, key common.Hash) (common.Hash,
 		return common.Hash{}, err
 	}
 	value.SetBytes(ret)
+	r.storageRead++
 	return value, nil
 }
 
-// Stats implements Reader, returning the time spent on account reading and
-// storage reading from the trie.
-func (r *trieReader) Stats() (time.Duration, time.Duration) {
-	return r.accountTime, r.storageTime
+// Stats implements Reader, returning the statistics of reader.
+func (r *trieReader) Stats() (time.Duration, time.Duration, int, int) {
+	return r.accountTime, r.storageTime, r.accountRead, r.storageRead
 }
 
 // Copy implements Reader, returning a deep-copied trie reader.
@@ -281,8 +290,7 @@ func (r *trieReader) Copy() Reader {
 		subRoots: maps.Clone(r.subRoots),
 		subTries: tries,
 
-		// statistics (accountTime and storageTime) are not copied, as they
-		// only belong to current reader instance.
+		// statistics are not copied, as they only belong to current reader instance.
 	}
 }
 
@@ -343,17 +351,21 @@ func (r *multiReader) Storage(addr common.Address, slot common.Hash) (common.Has
 
 // Stats implements Reader, returning the time spent on account reading and
 // storage reading from the reader.
-func (r *multiReader) Stats() (time.Duration, time.Duration) {
+func (r *multiReader) Stats() (time.Duration, time.Duration, int, int) {
 	var (
+		accountRead int
+		storageRead int
 		accountTime time.Duration
 		storageTime time.Duration
 	)
 	for _, reader := range r.readers {
-		aTime, sTime := reader.Stats()
+		aTime, sTime, aRead, sRead := reader.Stats()
 		accountTime += aTime
 		storageTime += sTime
+		accountRead += aRead
+		storageRead += sRead
 	}
-	return accountTime, storageTime
+	return accountTime, storageTime, accountRead, storageRead
 }
 
 // Copy implementing Reader interface, returning a deep-copied state reader.

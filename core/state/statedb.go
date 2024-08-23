@@ -159,6 +159,8 @@ type StateDB struct {
 	SnapshotCommits time.Duration
 	TrieDBCommits   time.Duration
 
+	AccountLoaded  int
+	StorageLoaded  int
 	AccountUpdated int
 	StorageUpdated atomic.Int64
 	AccountDeleted int
@@ -1300,9 +1302,11 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 		}
 	}
 	// Submit the statistics of reader to metric system and reset it with new root
-	aTime, sTime := s.reader.Stats()
+	aTime, sTime, aRead, sRead := s.reader.Stats()
 	s.AccountReads += aTime
 	s.StorageReads += sTime
+	s.AccountLoaded += aRead
+	s.StorageLoaded += sRead
 
 	s.reader, _ = s.db.Reader(s.originalRoot)
 	return ret, err

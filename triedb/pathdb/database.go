@@ -322,9 +322,16 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 	if err := db.modifyAllowed(); err != nil {
 		return err
 	}
+	start := time.Now()
 	if err := db.tree.add(root, parentRoot, block, nodes, states); err != nil {
 		return err
 	}
+	addLayerTimer.UpdateSince(start)
+
+	defer func(start time.Time) {
+		capLayerTimer.UpdateSince(start)
+	}(time.Now())
+
 	// Keep 128 diff layers in the memory, persistent layer is 129th.
 	// - head layer is paired with HEAD state
 	// - head-1 layer is paired with HEAD-1 state

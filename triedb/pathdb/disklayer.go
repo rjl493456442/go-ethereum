@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
@@ -312,7 +313,9 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	}
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
+	start := time.Now()
 	combined := dl.buffer.commit(bottom.nodes, bottom.states.stateSet)
+	bufferMergeTimer.UpdateSince(start)
 
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
@@ -344,10 +347,12 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// To remove outdated history objects from the end, we set the 'tail' parameter
 	// to 'oldest-1' due to the offset between the freezer index and the history ID.
 	if overflow {
+		start := time.Now()
 		pruned, err := truncateFromTail(ndl.db.diskdb, ndl.db.freezer, oldest-1)
 		if err != nil {
 			return nil, err
 		}
+		historyTruncateTimeMeter.UpdateSince(start)
 		log.Debug("Pruned state history", "items", pruned, "tailid", oldest)
 	}
 	return ndl, nil

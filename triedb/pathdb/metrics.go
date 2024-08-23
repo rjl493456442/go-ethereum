@@ -53,6 +53,7 @@ var (
 	commitStoragesMeter = metrics.NewRegisteredMeter("pathdb/commit/slots", nil)
 	commitBytesMeter    = metrics.NewRegisteredMeter("pathdb/commit/bytes", nil)
 
+	bufferMergeTimer     = metrics.NewRegisteredTimer("pathdb/buffer/merge/time", nil)
 	gcTrieNodeMeter      = metrics.NewRegisteredMeter("pathdb/gc/trienode/count", nil)
 	gcTrieNodeBytesMeter = metrics.NewRegisteredMeter("pathdb/gc/trienode/bytes", nil)
 	gcAccountMeter       = metrics.NewRegisteredMeter("pathdb/gc/account/count", nil)
@@ -60,15 +61,20 @@ var (
 	gcStorageMeter       = metrics.NewRegisteredMeter("pathdb/gc/storage/count", nil)
 	gcStorageBytesMeter  = metrics.NewRegisteredMeter("pathdb/gc/storage/bytes", nil)
 
-	historyBuildTimeMeter  = metrics.NewRegisteredTimer("pathdb/history/time", nil)
-	historyDataBytesMeter  = metrics.NewRegisteredMeter("pathdb/history/bytes/data", nil)
-	historyIndexBytesMeter = metrics.NewRegisteredMeter("pathdb/history/bytes/index", nil)
+	historyBuildTimeMeter    = metrics.NewRegisteredTimer("pathdb/history/build/time", nil)
+	historyTruncateTimeMeter = metrics.NewRegisteredTimer("pathdb/history/truncate/time", nil)
+	historyDataBytesMeter    = metrics.NewRegisteredMeter("pathdb/history/bytes/data", nil)
+	historyIndexBytesMeter   = metrics.NewRegisteredMeter("pathdb/history/bytes/index", nil)
 
 	lookupStepMeter            = metrics.NewRegisteredMeter("pathdb/lookup/lookup", nil)
 	lookupAccountTimeMeter     = metrics.NewRegisteredTimer("pathdb/lookup/time/account", nil)
 	lookupStorageTimeMeter     = metrics.NewRegisteredTimer("pathdb/lookup/time/storage", nil)
 	lookupAddLayerTimeMeter    = metrics.NewRegisteredTimer("pathdb/lookup/time/add", nil)
 	lookupRemoveLayerTimeMeter = metrics.NewRegisteredTimer("pathdb/lookup/time/remove", nil)
+	lookupCleanTimer           = metrics.NewRegisteredTimer("pathdb/lookup/time/clean", nil)
+
+	addLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/addlayer/time", nil)
+	capLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/caplayer/time", nil)
 )
 
 // Metrics in generation

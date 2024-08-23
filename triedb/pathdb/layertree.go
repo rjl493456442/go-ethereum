@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -238,6 +239,7 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		panic(fmt.Sprintf("unknown data layer in triedb: %T", parent))
 	}
 	// Remove any layer that is stale or links into a stale layer
+	ss := time.Now()
 	children := make(map[common.Hash][]common.Hash)
 	for root, layer := range tree.layers {
 		if dl, ok := layer.(*diffLayer); ok {
@@ -266,6 +268,7 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 	removeLookup(stale)          // remove the lookup data of the stale parent being replaced
 
 	tree.base = newBase
+	lookupCleanTimer.UpdateSince(ss)
 	return nil
 }
 
