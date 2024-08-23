@@ -19,6 +19,7 @@ package pathdb
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -102,6 +103,8 @@ func (dl *diffLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diffLayer) account(hash common.Hash, depth int) ([]byte, error) {
+	s := time.Now()
+
 	// Hold the lock, ensure the parent won't be changed during the
 	// state accessing.
 	dl.lock.RLock()
@@ -111,6 +114,7 @@ func (dl *diffLayer) account(hash common.Hash, depth int) ([]byte, error) {
 		dirtyStateHitMeter.Mark(1)
 		dirtyStateHitDepthHist.Update(int64(depth))
 		dirtyStateReadMeter.Mark(int64(len(blob)))
+		diffLayerAccountReadTimer.UpdateSince(s)
 		return blob, nil
 	}
 	// Account is unknown to this layer, resolve from parent
@@ -122,6 +126,8 @@ func (dl *diffLayer) account(hash common.Hash, depth int) ([]byte, error) {
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([]byte, error) {
+	s := time.Now()
+
 	// Hold the lock, ensure the parent won't be changed during the
 	// state accessing.
 	dl.lock.RLock()
@@ -131,6 +137,7 @@ func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 		dirtyStateHitMeter.Mark(1)
 		dirtyStateHitDepthHist.Update(int64(depth))
 		dirtyStateReadMeter.Mark(int64(len(blob)))
+		diffLayerStorageReadTimer.UpdateSince(s)
 		return blob, nil
 	}
 	// storage slot is unknown to this layer, resolve from parent

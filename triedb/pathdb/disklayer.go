@@ -162,6 +162,8 @@ func (dl *diskLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
+	s := time.Now()
+
 	dl.lock.RLock()
 	defer dl.lock.RUnlock()
 
@@ -177,6 +179,7 @@ func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
 		dirtyStateHitMeter.Mark(1)
 		dirtyStateReadMeter.Mark(int64(len(blob)))
 		dirtyStateHitDepthHist.Update(int64(depth))
+		bufferAccountReadTimer.UpdateSince(s)
 		return blob, nil
 	}
 	dirtyStateMissMeter.Mark(1)
@@ -192,6 +195,7 @@ func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
 		if blob, found := dl.states.HasGet(nil, hash[:]); found {
 			cleanStateHitMeter.Mark(1)
 			cleanStateReadMeter.Mark(int64(len(blob)))
+			cleanAccountReadTimer.UpdateSince(s)
 			return blob, nil
 		}
 		cleanStateMissMeter.Mark(1)
@@ -206,6 +210,7 @@ func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
 			cleanStateInexMeter.Mark(1)
 		}
 	}
+	diskAccountReadTimer.UpdateSince(s)
 	return blob, nil
 }
 
@@ -214,6 +219,7 @@ func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([]byte, error) {
+	s := time.Now()
 	// Hold the lock, ensure the parent won't be changed during the
 	// state accessing.
 	dl.lock.RLock()
@@ -226,6 +232,7 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 		dirtyStateHitMeter.Mark(1)
 		dirtyStateReadMeter.Mark(int64(len(blob)))
 		dirtyStateHitDepthHist.Update(int64(depth))
+		bufferStorageReadTimer.UpdateSince(s)
 		return blob, nil
 	}
 	dirtyStateMissMeter.Mark(1)
@@ -242,6 +249,7 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 		if blob, found := dl.states.HasGet(nil, key); found {
 			cleanStateHitMeter.Mark(1)
 			cleanStateReadMeter.Mark(int64(len(blob)))
+			cleanStorageReadTimer.UpdateSince(s)
 			return blob, nil
 		}
 		cleanStateMissMeter.Mark(1)
@@ -256,6 +264,7 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 			cleanStateInexMeter.Mark(1)
 		}
 	}
+	diskStorageReadTimer.UpdateSince(s)
 	return blob, nil
 }
 
@@ -269,6 +278,10 @@ func (dl *diskLayer) update(root common.Hash, id uint64, block uint64, nodes *no
 // and returns a newly constructed disk layer. Note the current disk
 // layer must be tagged as stale first to prevent re-access.
 func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
+	defer func(start time.Time) {
+		diffToDiskTimer.UpdateSince(start)
+	}(time.Now())
+
 	// Construct and store the state history first. If crash happens after storing
 	// the state history but without flushing the corresponding states(journal),
 	// the stored state history will be truncated from head in the next restart.
@@ -276,6 +289,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 		overflow bool
 		oldest   uint64
 	)
+	// 2-3ms
 	if dl.db.freezer != nil {
 		err := writeHistory(dl.db.freezer, bottom)
 		if err != nil {
@@ -296,6 +310,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Mark the diskLayer as stale before applying any mutations on top.
 	dl.markStale()
 
+	ss := time.Now()
 	// Store the root->id lookup afterwards. All stored lookups are identified
 	// by the **unique** state root. It's impossible that in the same chain
 	// blocks are not adjacent but have the same root.
@@ -303,6 +318,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 		rawdb.WriteStateID(dl.db.diskdb, dl.root, 0)
 	}
 	rawdb.WriteStateID(dl.db.diskdb, bottom.rootHash(), bottom.stateID())
+	writeLookupTimer.UpdateSince(ss)
 
 	// In a unique scenario where the ID of the oldest history object (after tail
 	// truncation) surpasses the persisted state ID, we take the necessary action

@@ -73,8 +73,19 @@ var (
 	lookupRemoveLayerTimeMeter = metrics.NewRegisteredTimer("pathdb/lookup/time/remove", nil)
 	lookupCleanTimer           = metrics.NewRegisteredTimer("pathdb/lookup/time/clean", nil)
 
-	addLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/addlayer/time", nil)
-	capLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/caplayer/time", nil)
+	addLayerTimer    = metrics.NewRegisteredResettingTimer("pathdb/addlayer/time", nil)
+	capLayerTimer    = metrics.NewRegisteredResettingTimer("pathdb/caplayer/time", nil)
+	diffToDiskTimer  = metrics.NewRegisteredResettingTimer("pathdb/todisk/time", nil)
+	writeLookupTimer = metrics.NewRegisteredResettingTimer("pathdb/writelookup/time", nil)
+
+	diffLayerAccountReadTimer = metrics.NewRegisteredResettingTimer("pathdb/diff/account/read/time", nil)
+	diffLayerStorageReadTimer = metrics.NewRegisteredResettingTimer("pathdb/diff/storage/read/time", nil)
+	bufferAccountReadTimer    = metrics.NewRegisteredResettingTimer("pathdb/buffer/account/read/time", nil)
+	bufferStorageReadTimer    = metrics.NewRegisteredResettingTimer("pathdb/buffer/storage/read/time", nil)
+	cleanAccountReadTimer     = metrics.NewRegisteredResettingTimer("pathdb/clean/account/read/time", nil)
+	cleanStorageReadTimer     = metrics.NewRegisteredResettingTimer("pathdb/clean/storage/read/time", nil)
+	diskAccountReadTimer      = metrics.NewRegisteredResettingTimer("pathdb/disk/account/read/time", nil)
+	diskStorageReadTimer      = metrics.NewRegisteredResettingTimer("pathdb/disk/storage/read/time", nil)
 )
 
 // Metrics in generation
