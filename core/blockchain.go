@@ -68,12 +68,12 @@ var (
 	accountUpdateTimer     = metrics.NewRegisteredResettingTimer("chain/account/updates", nil)
 	accountCommitTimer     = metrics.NewRegisteredResettingTimer("chain/account/commits", nil)
 	accountReadNumberMeter = metrics.NewRegisteredMeter("chain/account/reads/number", nil)
-	accountReadEachMeter   = metrics.NewRegisteredMeter("chain/account/reads/each", nil)
+	accountReadEachMeter   = metrics.NewRegisteredResettingTimer("chain/account/reads/each", nil)
 
 	storageReadTimer       = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
 	storageUpdateTimer     = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
 	storageCommitTimer     = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
-	storageReadEachMeter   = metrics.NewRegisteredMeter("chain/storage/reads/each", nil)
+	storageReadEachMeter   = metrics.NewRegisteredResettingTimer("chain/storage/reads/each", nil)
 	storageReadNumberMeter = metrics.NewRegisteredMeter("chain/storage/reads/number", nil)
 
 	snapshotCommitTimer = metrics.NewRegisteredResettingTimer("chain/snapshot/commits", nil)
@@ -1982,11 +1982,11 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 
 	if statedb.AccountLoaded != 0 {
 		accountReadNumberMeter.Mark(int64(statedb.AccountLoaded))
-		accountReadEachMeter.Mark(statedb.AccountReads.Nanoseconds() / int64(statedb.AccountLoaded))
+		accountReadEachMeter.Update(time.Duration(statedb.AccountReads.Nanoseconds()) / time.Duration(statedb.AccountLoaded))
 	}
 	if statedb.StorageLoaded != 0 {
 		storageReadNumberMeter.Mark(int64(statedb.StorageLoaded))
-		storageReadEachMeter.Mark(statedb.StorageReads.Nanoseconds() / int64(statedb.StorageLoaded))
+		storageReadEachMeter.Update(time.Duration(statedb.StorageReads.Nanoseconds()) / time.Duration(statedb.StorageLoaded))
 	}
 	triehash := statedb.AccountHashes                             // The time spent on account trie hashing
 	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates // The time spent on account trie update + storage tries update and hashing

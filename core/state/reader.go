@@ -24,11 +24,24 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/database"
+)
+
+var (
+	readerAccountTimer       = metrics.NewRegisteredResettingTimer("statedb/reader/account/total/read/time", nil)
+	readerAccountHashTimer   = metrics.NewRegisteredResettingTimer("statedb/reader/account/hash/read/time", nil)
+	readerAccountBlobTimer   = metrics.NewRegisteredResettingTimer("statedb/reader/account/blob/read/time", nil)
+	readerAccountDecodeTimer = metrics.NewRegisteredResettingTimer("statedb/reader/account/decode/read/time", nil)
+
+	readerStorageTimer       = metrics.NewRegisteredResettingTimer("statedb/reader/storage/total/read/time", nil)
+	readerStorageHashTimer   = metrics.NewRegisteredResettingTimer("statedb/reader/storage/hash/read/time", nil)
+	readerStorageBlobTimer   = metrics.NewRegisteredResettingTimer("statedb/reader/storage/blob/read/time", nil)
+	readerStorageDecodeTimer = metrics.NewRegisteredResettingTimer("statedb/reader/storage/decode/read/time", nil)
 )
 
 // Reader defines the interface for accessing accounts and storage slots
@@ -85,16 +98,24 @@ func newStateReader(reader database.StateReader) *stateReader {
 func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) {
 	defer func(start time.Time) {
 		r.accountTime += time.Since(start)
+		readerAccountTimer.UpdateSince(start)
 	}(time.Now())
 
-	account, err := r.reader.Account(crypto.HashData(r.buff, addr.Bytes()))
+	ss := time.Now()
+	hash := crypto.HashData(r.buff, addr.Bytes())
+	readerAccountHashTimer.UpdateSince(ss)
+
+	ss = time.Now()
+	account, err := r.reader.Account(hash)
 	if err != nil {
 		return nil, err
 	}
+	readerAccountBlobTimer.UpdateSince(ss)
 	if account == nil {
 		r.accountRead++
 		return nil, nil
 	}
+	ss = time.Now()
 	acct := &types.StateAccount{
 		Nonce:    account.Nonce,
 		Balance:  account.Balance,
@@ -107,6 +128,7 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 	if acct.Root == (common.Hash{}) {
 		acct.Root = types.EmptyRootHash
 	}
+	readerAccountDecodeTimer.UpdateSince(ss)
 	r.accountRead++
 	return acct, nil
 }
@@ -121,24 +143,32 @@ func (r *stateReader) Account(addr common.Address) (*types.StateAccount, error) 
 func (r *stateReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
 	defer func(start time.Time) {
 		r.storageTime += time.Since(start)
+		readerStorageTimer.UpdateSince(start)
 	}(time.Now())
 
+	ss := time.Now()
 	addrHash := crypto.HashData(r.buff, addr.Bytes())
 	slotHash := crypto.HashData(r.buff, key.Bytes())
+	readerStorageHashTimer.UpdateSince(ss)
+
+	ss = time.Now()
 	ret, err := r.reader.Storage(addrHash, slotHash)
 	if err != nil {
 		return common.Hash{}, err
 	}
+	readerStorageBlobTimer.UpdateSince(ss)
 	if len(ret) == 0 {
 		r.storageRead++
 		return common.Hash{}, nil
 	}
+	ss = time.Now()
 	_, content, _, err := rlp.Split(ret)
 	if err != nil {
 		return common.Hash{}, err
 	}
 	var value common.Hash
 	value.SetBytes(content)
+	readerStorageDecodeTimer.UpdateSince(ss)
 	r.storageRead++
 	return value, nil
 }
