@@ -1980,11 +1980,14 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	storageUpdateTimer.Update(statedb.StorageUpdates) // Storage updates are complete(in validation)
 	accountHashTimer.Update(statedb.AccountHashes)    // Account hashes are complete(in validation)
 
-	accountReadNumberMeter.Mark(int64(statedb.AccountLoaded))
-	accountReadEachMeter.Mark(statedb.AccountReads.Nanoseconds() / int64(statedb.AccountLoaded))
-	storageReadNumberMeter.Mark(int64(statedb.StorageLoaded))
-	storageReadEachMeter.Mark(statedb.StorageReads.Nanoseconds() / int64(statedb.StorageLoaded))
-
+	if statedb.AccountLoaded != 0 {
+		accountReadNumberMeter.Mark(int64(statedb.AccountLoaded))
+		accountReadEachMeter.Mark(statedb.AccountReads.Nanoseconds() / int64(statedb.AccountLoaded))
+	}
+	if statedb.StorageLoaded != 0 {
+		storageReadNumberMeter.Mark(int64(statedb.StorageLoaded))
+		storageReadEachMeter.Mark(statedb.StorageReads.Nanoseconds() / int64(statedb.StorageLoaded))
+	}
 	triehash := statedb.AccountHashes                             // The time spent on account trie hashing
 	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates // The time spent on account trie update + storage tries update and hashing
 	trieRead := statedb.AccountReads + statedb.StorageReads       // The time spent on account read and storage read
