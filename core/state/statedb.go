@@ -163,6 +163,8 @@ type StateDB struct {
 	SnapshotCommits      time.Duration
 	TrieDBCommits        time.Duration
 
+	AccountLoaded  int
+	StorageLoaded  int
 	AccountUpdated int
 	StorageUpdated atomic.Int64
 	AccountDeleted int
@@ -599,6 +601,7 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 		start := time.Now()
 		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
 		s.SnapshotAccountReads += time.Since(start)
+		s.AccountLoaded++
 		if err == nil {
 			if acc == nil {
 				return nil

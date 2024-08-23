@@ -203,6 +203,7 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 	if s.db.snap != nil {
 		start := time.Now()
 		enc, err = s.db.snap.Storage(s.addrHash, crypto.Keccak256Hash(key.Bytes()))
+		s.db.StorageLoaded++
 		s.db.SnapshotStorageReads += time.Since(start)
 
 		if len(enc) > 0 {

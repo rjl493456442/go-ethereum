@@ -63,14 +63,16 @@ var (
 
 	chainInfoGauge = metrics.NewRegisteredGaugeInfo("chain/info", nil)
 
-	accountReadTimer   = metrics.NewRegisteredResettingTimer("chain/account/reads", nil)
-	accountHashTimer   = metrics.NewRegisteredResettingTimer("chain/account/hashes", nil)
-	accountUpdateTimer = metrics.NewRegisteredResettingTimer("chain/account/updates", nil)
-	accountCommitTimer = metrics.NewRegisteredResettingTimer("chain/account/commits", nil)
+	accountReadTimer     = metrics.NewRegisteredResettingTimer("chain/account/reads", nil)
+	accountHashTimer     = metrics.NewRegisteredResettingTimer("chain/account/hashes", nil)
+	accountUpdateTimer   = metrics.NewRegisteredResettingTimer("chain/account/updates", nil)
+	accountCommitTimer   = metrics.NewRegisteredResettingTimer("chain/account/commits", nil)
+	accountReadEachMeter = metrics.NewRegisteredMeter("chain/account/read/each", nil)
 
-	storageReadTimer   = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
-	storageUpdateTimer = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
-	storageCommitTimer = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
+	storageReadTimer     = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
+	storageUpdateTimer   = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
+	storageCommitTimer   = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
+	storageReadEachMeter = metrics.NewRegisteredMeter("chain/storage/read/each", nil)
 
 	snapshotAccountReadTimer = metrics.NewRegisteredResettingTimer("chain/snapshot/account/reads", nil)
 	snapshotStorageReadTimer = metrics.NewRegisteredResettingTimer("chain/snapshot/storage/reads", nil)
@@ -1979,7 +1981,13 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	accountCommitTimer.Update(statedb.AccountCommits)   // Account commits are complete, we can mark them
 	storageCommitTimer.Update(statedb.StorageCommits)   // Storage commits are complete, we can mark them
 	snapshotCommitTimer.Update(statedb.SnapshotCommits) // Snapshot commits are complete, we can mark them
-	triedbCommitTimer.Update(statedb.TrieDBCommits)     // Trie database commits are complete, we can mark them
+	if statedb.AccountLoaded != 0 {
+		accountReadEachMeter.Mark(statedb.AccountReads.Nanoseconds() / int64(statedb.AccountLoaded))
+	}
+	if statedb.StorageLoaded != 0 {
+		storageReadEachMeter.Mark(statedb.StorageReads.Nanoseconds() / int64(statedb.StorageLoaded))
+	}
+	triedbCommitTimer.Update(statedb.TrieDBCommits) // Trie database commits are complete, we can mark them
 
 	blockWriteTimer.Update(time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits)
 	blockInsertTimer.UpdateSince(start)
