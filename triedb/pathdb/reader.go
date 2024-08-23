@@ -19,6 +19,7 @@ package pathdb
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -111,21 +112,33 @@ type stateReader struct {
 //
 // No error will be returned if the requested account is not found in database
 func (r *stateReader) Account(hash common.Hash) (*types.SlimAccount, error) {
+	defer func(start time.Time) {
+		readerAccountTimer.UpdateSince(start)
+	}(time.Now())
+
+	ss := time.Now()
 	l := r.db.tree.lookupAccount(hash, r.state)
 	if l == nil {
 		return nil, errors.New("account is not found")
 	}
+	readerAccountLookupTimer.UpdateSince(ss)
+
+	ss = time.Now()
 	blob, err := l.account(hash, 0)
 	if err != nil {
 		return nil, err
 	}
+	readerAccountBlobTimer.UpdateSince(ss)
+
 	if len(blob) == 0 {
 		return nil, nil
 	}
+	ss = time.Now()
 	account := new(types.SlimAccount)
 	if err := rlp.DecodeBytes(blob, account); err != nil {
 		panic(err)
 	}
+	readerAccountDecodeTimer.UpdateSince(ss)
 	return account, nil
 }
 
@@ -137,11 +150,21 @@ func (r *stateReader) Account(hash common.Hash) (*types.SlimAccount, error) {
 // - the returned storage data is not a copy, please don't modify it
 // - no error will be returned if the requested slot is not found in database
 func (r *stateReader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
+	defer func(start time.Time) {
+		readerStorageTimer.UpdateSince(start)
+	}(time.Now())
+
+	ss := time.Now()
 	l := r.db.tree.lookupStorage(accountHash, storageHash, r.state)
 	if l == nil {
 		return nil, errors.New("storage is not found")
 	}
-	return l.storage(accountHash, storageHash, 0)
+	readerStorageLookupTimer.UpdateSince(ss)
+
+	ss = time.Now()
+	blob, err := l.storage(accountHash, storageHash, 0)
+	readerStorageBlobTimer.UpdateSince(ss)
+	return blob, err
 }
 
 // StateReader returns a reader that allows access to the state data associated

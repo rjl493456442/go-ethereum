@@ -86,6 +86,15 @@ var (
 	cleanStorageReadTimer     = metrics.NewRegisteredResettingTimer("pathdb/clean/storage/read/time", nil)
 	diskAccountReadTimer      = metrics.NewRegisteredResettingTimer("pathdb/disk/account/read/time", nil)
 	diskStorageReadTimer      = metrics.NewRegisteredResettingTimer("pathdb/disk/storage/read/time", nil)
+
+	readerAccountTimer       = metrics.NewRegisteredResettingTimer("pathdb/reader/account/total/read/time", nil)
+	readerAccountLookupTimer = metrics.NewRegisteredResettingTimer("pathdb/reader/account/lookup/read/time", nil)
+	readerAccountBlobTimer   = metrics.NewRegisteredResettingTimer("pathdb/reader/account/blob/read/time", nil)
+	readerAccountDecodeTimer = metrics.NewRegisteredResettingTimer("pathdb/reader/account/decode/read/time", nil)
+
+	readerStorageTimer       = metrics.NewRegisteredResettingTimer("pathdb/reader/storage/total/read/time", nil)
+	readerStorageLookupTimer = metrics.NewRegisteredResettingTimer("pathdb/reader/storage/lookup/read/time", nil)
+	readerStorageBlobTimer   = metrics.NewRegisteredResettingTimer("pathdb/reader/storage/blob/read/time", nil)
 )
 
 // Metrics in generation
