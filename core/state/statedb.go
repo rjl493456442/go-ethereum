@@ -600,10 +600,10 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 	if s.snap != nil {
 		start := time.Now()
 		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
-		s.SnapshotAccountReads += time.Since(start)
-		s.AccountLoaded++
 		if err == nil {
 			if acc == nil {
+				s.SnapshotAccountReads += time.Since(start)
+				s.AccountLoaded++
 				return nil
 			}
 			data = &types.StateAccount{
@@ -619,6 +619,8 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 				data.Root = types.EmptyRootHash
 			}
 		}
+		s.SnapshotAccountReads += time.Since(start)
+		s.AccountLoaded++
 	}
 	// If snapshot unavailable or reading from it failed, load from the database
 	if data == nil {
