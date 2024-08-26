@@ -642,7 +642,7 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 	for _, path := range t.tracer.deletedNodes() {
 		nodes.AddNode([]byte(path), trienode.NewDeleted())
 	}
-	t.root = newCommitter(nodes, t.tracer, collectLeaf).Commit(t.root)
+	t.root = newCommitter(nodes, t.tracer, collectLeaf, t.owner == (common.Hash{})).Commit(t.root)
 	return rootHash, nodes
 }
 

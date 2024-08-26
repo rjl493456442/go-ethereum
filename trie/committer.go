@@ -18,9 +18,20 @@ package trie
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+)
+
+var (
+	commiterEncodeTimer          = metrics.NewRegisteredResettingTimer("trie/committer/encode/total/time", nil)
+	commiterReferenceTimer       = metrics.NewRegisteredResettingTimer("trie/committer/reference/total/time", nil)
+	commiterEncodeSingleTimer    = metrics.NewRegisteredResettingTimer("trie/committer/encode/single/time", nil)
+	commiterReferenceSingleTimer = metrics.NewRegisteredResettingTimer("trie/committer/reference/single/time", nil)
+	commiterNodeMeter            = metrics.NewRegisteredMeter("trie/committer/node/meter", nil)
+	commiterElapsedTimer         = metrics.NewRegisteredResettingTimer("trie/committer/elapsed/time", nil)
 )
 
 // committer is the tool used for the trie Commit operation. The committer will
@@ -30,20 +41,43 @@ type committer struct {
 	nodes       *trienode.NodeSet
 	tracer      *tracer
 	collectLeaf bool
+	trackStats  bool
+
+	encodeTime    time.Duration
+	encodeN       int
+	referenceTime time.Duration
+	referenceN    int
+	totalNodeN    int
 }
 
 // newCommitter creates a new committer or picks one from the pool.
-func newCommitter(nodeset *trienode.NodeSet, tracer *tracer, collectLeaf bool) *committer {
+func newCommitter(nodeset *trienode.NodeSet, tracer *tracer, collectLeaf bool, trackStats bool) *committer {
 	return &committer{
 		nodes:       nodeset,
 		tracer:      tracer,
 		collectLeaf: collectLeaf,
+		trackStats:  trackStats,
 	}
 }
 
 // Commit collapses a node down into a hash node.
 func (c *committer) Commit(n node) hashNode {
-	return c.commit(nil, n).(hashNode)
+	s := time.Now()
+	h := c.commit(nil, n).(hashNode)
+	if c.trackStats {
+		commiterEncodeTimer.Update(c.encodeTime)
+		commiterReferenceTimer.Update(c.referenceTime)
+
+		if c.encodeN > 0 {
+			commiterEncodeSingleTimer.Update(c.encodeTime / time.Duration(c.encodeN))
+		}
+		if c.referenceN > 0 {
+			commiterReferenceSingleTimer.Update(c.referenceTime / time.Duration(c.referenceN))
+		}
+		commiterNodeMeter.Mark(int64(c.totalNodeN))
+		commiterElapsedTimer.UpdateSince(s)
+	}
+	return h
 }
 
 // commit collapses a node down into a hash node and returns it.
@@ -123,6 +157,9 @@ func (c *committer) store(path []byte, n node) node {
 	// Larger nodes are replaced by their hash and stored in the database.
 	var hash, _ = n.cache()
 
+	if c.trackStats {
+		c.totalNodeN++
+	}
 	// This was not generated - must be a small node stored in the parent.
 	// In theory, we should check if the node is leaf here (embedded node
 	// usually is leaf node). But small value (less than 32bytes) is not
@@ -139,15 +176,33 @@ func (c *committer) store(path []byte, n node) node {
 	}
 	// Collect the dirty node to nodeset for return.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.New(nhash, nodeToBytes(n)))
 
+	if c.trackStats {
+		ss := time.Now()
+		c.nodes.AddNode(path, trienode.New(nhash, nodeToBytes(n)))
+		c.encodeTime += time.Since(ss)
+		c.encodeN++
+	} else {
+		c.nodes.AddNode(path, trienode.New(nhash, nodeToBytes(n)))
+	}
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key
 	// length of leaves should be exactly same.
 	if c.collectLeaf {
-		if sn, ok := n.(*shortNode); ok {
-			if val, ok := sn.Val.(valueNode); ok {
-				c.nodes.AddLeaf(nhash, val)
+		if c.trackStats {
+			ss := time.Now()
+			if sn, ok := n.(*shortNode); ok {
+				if val, ok := sn.Val.(valueNode); ok {
+					c.nodes.AddLeaf(nhash, val)
+				}
+			}
+			c.referenceTime += time.Since(ss)
+			c.referenceN++
+		} else {
+			if sn, ok := n.(*shortNode); ok {
+				if val, ok := sn.Val.(valueNode); ok {
+					c.nodes.AddLeaf(nhash, val)
+				}
 			}
 		}
 	}
