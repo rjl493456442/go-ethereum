@@ -32,6 +32,9 @@ var (
 	commiterReferenceSingleTimer = metrics.NewRegisteredResettingTimer("trie/committer/reference/single/time", nil)
 	commiterNodeMeter            = metrics.NewRegisteredMeter("trie/committer/node/meter", nil)
 	commiterElapsedTimer         = metrics.NewRegisteredResettingTimer("trie/committer/elapsed/time", nil)
+	commiterCopyTimer            = metrics.NewRegisteredResettingTimer("trie/committer/copy/time", nil)
+	commiterEncodeKeyTimer       = metrics.NewRegisteredResettingTimer("trie/committer/enckey/time", nil)
+	commiterIterationKeyTimer    = metrics.NewRegisteredResettingTimer("trie/committer/iteration/time", nil)
 )
 
 // committer is the tool used for the trie Commit operation. The committer will
@@ -48,6 +51,9 @@ type committer struct {
 	referenceTime time.Duration
 	referenceN    int
 	totalNodeN    int
+	copyTime      time.Duration
+	encodeKey     time.Duration
+	recurTime     time.Duration
 }
 
 // newCommitter creates a new committer or picks one from the pool.
@@ -76,6 +82,10 @@ func (c *committer) Commit(n node) hashNode {
 		}
 		commiterNodeMeter.Mark(int64(c.totalNodeN))
 		commiterElapsedTimer.UpdateSince(s)
+
+		commiterCopyTimer.Update(c.copyTime)
+		commiterIterationKeyTimer.Update(c.recurTime)
+		commiterEncodeKeyTimer.Update(c.encodeKey)
 	}
 	return h
 }
@@ -91,8 +101,11 @@ func (c *committer) commit(path []byte, n node) node {
 	switch cn := n.(type) {
 	case *shortNode:
 		// Commit child
+		ss := time.Now()
 		collapsed := cn.copy()
-
+		if c.trackStats {
+			c.copyTime += time.Since(ss)
+		}
 		// If the child is fullNode, recursively commit,
 		// otherwise it can only be hashNode or valueNode.
 		if _, ok := cn.Val.(*fullNode); ok {
@@ -100,7 +113,11 @@ func (c *committer) commit(path []byte, n node) node {
 		}
 		// The key needs to be copied, since we're adding it to the
 		// modified nodeset.
+		ss = time.Now()
 		collapsed.Key = hexToCompact(cn.Key)
+		if c.trackStats {
+			c.encodeKey += time.Since(ss)
+		}
 		hashedNode := c.store(path, collapsed)
 		if hn, ok := hashedNode.(hashNode); ok {
 			return hn
@@ -108,7 +125,12 @@ func (c *committer) commit(path []byte, n node) node {
 		return collapsed
 	case *fullNode:
 		hashedKids := c.commitChildren(path, cn)
+
+		ss := time.Now()
 		collapsed := cn.copy()
+		if c.trackStats {
+			c.copyTime += time.Since(ss)
+		}
 		collapsed.Children = hashedKids
 
 		hashedNode := c.store(path, collapsed)
@@ -127,6 +149,8 @@ func (c *committer) commit(path []byte, n node) node {
 // commitChildren commits the children of the given fullnode
 func (c *committer) commitChildren(path []byte, n *fullNode) [17]node {
 	var children [17]node
+	var recurTime time.Duration
+	ss := time.Now()
 	for i := 0; i < 16; i++ {
 		child := n.Children[i]
 		if child == nil {
@@ -142,11 +166,16 @@ func (c *committer) commitChildren(path []byte, n *fullNode) [17]node {
 		// Commit the child recursively and store the "hashed" value.
 		// Note the returned node can be some embedded nodes, so it's
 		// possible the type is not hashNode.
+		s := time.Now()
 		children[i] = c.commit(append(path, byte(i)), child)
+		recurTime += time.Since(s)
 	}
 	// For the 17th child, it's possible the type is valuenode.
 	if n.Children[16] != nil {
 		children[16] = n.Children[16]
+	}
+	if c.trackStats {
+		c.recurTime += time.Since(ss) - recurTime
 	}
 	return children
 }
