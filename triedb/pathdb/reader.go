@@ -17,7 +17,6 @@
 package pathdb
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -53,6 +52,8 @@ type reader struct {
 	db          *Database
 	state       common.Hash
 	noHashCheck bool
+
+	layer layer
 }
 
 // Node implements database.Reader interface, retrieving the node with specified
@@ -64,11 +65,11 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 	}(time.Now())
 
 	// TODO(rjl493456442) make sure the referenced state is still alive
-	l := r.db.tree.lookupNode(owner, path, r.state)
-	if l == nil {
-		return nil, errors.New("node is not found")
-	}
-	blob, got, loc, err := l.node(owner, path, 0)
+	//l := r.db.tree.lookupNode(owner, path, r.state)
+	//if l == nil {
+	//	return nil, errors.New("node is not found")
+	//}
+	blob, got, loc, err := r.layer.node(owner, path, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -98,12 +99,14 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 
 // Reader retrieves a layer belonging to the given state root.
 func (db *Database) Reader(root common.Hash) (database.Reader, error) {
-	if db.tree.get(root) == nil {
+	layer := db.tree.get(root)
+	if layer == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
 	return &reader{
 		db:          db,
 		state:       root,
 		noHashCheck: db.isVerkle,
+		layer:       layer,
 	}, nil
 }
