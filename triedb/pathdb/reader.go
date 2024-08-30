@@ -17,6 +17,7 @@
 package pathdb
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -65,11 +66,11 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 	}(time.Now())
 
 	// TODO(rjl493456442) make sure the referenced state is still alive
-	//l := r.db.tree.lookupNode(owner, path, r.state)
-	//if l == nil {
-	//	return nil, errors.New("node is not found")
-	//}
-	blob, got, loc, err := r.layer.node(owner, path, 0)
+	l := r.db.tree.lookupNode(owner, path, r.state)
+	if l == nil {
+		return nil, errors.New("node is not found")
+	}
+	blob, got, loc, err := l.node(owner, path, 0)
 	if err != nil {
 		return nil, err
 	}
