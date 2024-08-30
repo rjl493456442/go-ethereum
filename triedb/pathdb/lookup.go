@@ -150,6 +150,9 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 				if !found {
 					return fmt.Errorf("failed to delete lookup %x %v", hash, []byte(path))
 				}
+				if len(subset[path]) == 0 {
+					delete(subset, path)
+				}
 			}
 			if len(subset) == 0 {
 				lock.Lock()
