@@ -60,6 +60,9 @@ func TestIterator(t *testing.T) {
 		trie.MustUpdate([]byte(val.k), []byte(val.v))
 	}
 	root, nodes := trie.Commit(false)
+	nodes.ForEachWithOrder(func(path string, n *trienode.Node) {
+		fmt.Println("n", n.Hash.Hex(), n.Blob, []byte(path))
+	})
 	db.Update(root, types.EmptyRootHash, trienode.NewWithNodeSet(nodes))
 
 	trie, _ = New(TrieID(root), db)
