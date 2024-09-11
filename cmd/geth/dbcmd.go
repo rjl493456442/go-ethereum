@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/signal"
@@ -83,6 +84,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbInspectDeleteJournalCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -228,6 +230,16 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbInspectDeleteJournalCmd = &cli.Command{
+		Action:    inspectDeleteJournal,
+		Name:      "inspect-journal",
+		Usage:     "",
+		ArgsUsage: "",
+		Flags: flags.Merge([]cli.Flag{
+			utils.SyncModeFlag,
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "",
 	}
 )
 
@@ -929,4 +941,46 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+func inspectDeleteJournal(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	it := db.NewIterator(rawdb.StorageDeleteJournalPrefix, nil)
+	defer it.Release()
+
+	var (
+		unknown   int
+		deleted   int
+		maxDelete uint64
+		buffer    = crypto.NewKeccakState()
+	)
+	for it.Next() {
+		key := it.Key()
+		if len(key) != len(rawdb.StorageDeleteJournalPrefix)+common.AddressLength+common.HashLength {
+			unknown++
+			continue
+		}
+		count := binary.BigEndian.Uint64(it.Value())
+		if count > maxDelete {
+			maxDelete = count
+		}
+
+		offset := len(rawdb.StorageDeleteJournalPrefix)
+		addr := common.BytesToAddress(key[offset : offset+common.AddressLength])
+		offset += common.AddressLength
+		hash := common.BytesToHash(key[offset : offset+common.HashLength])
+
+		blob := rawdb.ReadStorageSnapshot(db, crypto.HashData(buffer, addr.Bytes()), hash)
+		if len(blob) > 0 {
+			continue // exists
+		}
+		deleted += 1 // truly deleted
+	}
+	log.Info("Inspected storage delete journal", "total", deleted, "max-delete", maxDelete, "unknown", unknown)
+	return nil
 }

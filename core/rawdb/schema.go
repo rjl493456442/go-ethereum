@@ -117,6 +117,8 @@ var (
 	TrieNodeStoragePrefix = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
 	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
 
+	StorageDeleteJournalPrefix = []byte("X")
+
 	// VerklePrefix is the database prefix for Verkle trie data, which includes:
 	// (a) Trie nodes
 	// (b) In-memory trie node journal
@@ -283,6 +285,14 @@ func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	n := copy(buf, TrieNodeStoragePrefix)
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], path)
+	return buf
+}
+
+func storageDeleteJournalKey(addr common.Address, slot common.Hash) []byte {
+	buf := make([]byte, len(StorageDeleteJournalPrefix)+common.AddressLength+common.HashLength)
+	n := copy(buf, StorageDeleteJournalPrefix)
+	n += copy(buf[n:], addr.Bytes())
+	copy(buf[n:], slot.Bytes())
 	return buf
 }
 

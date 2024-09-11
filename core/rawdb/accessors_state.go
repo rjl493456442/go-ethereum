@@ -264,3 +264,23 @@ func WriteStateHistory(db ethdb.AncientWriter, id uint64, meta []byte, accountIn
 		return nil
 	})
 }
+
+func ReadStorageDeleteJournal(db ethdb.KeyValueReader, address common.Address, storageHash common.Hash) uint64 {
+	data, _ := db.Get(storageDeleteJournalKey(address, storageHash))
+	if len(data) == 0 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(data) // let it panic if the data less than 8 bytes
+}
+
+func WriteStorageDeleteJournal(db ethdb.KeyValueWriter, address common.Address, storageHash common.Hash, number uint64) {
+	if err := db.Put(storageDeleteJournalKey(address, storageHash), encodeBlockNumber(number)); err != nil {
+		log.Crit("Failed to store storage delete journal", "err", err)
+	}
+}
+
+func DeleteStorageDeleteJournal(db ethdb.KeyValueWriter, address common.Address, storageHash common.Hash) {
+	if err := db.Delete(storageDeleteJournalKey(address, storageHash)); err != nil {
+		log.Crit("Failed to delete storage delete journal", "err", err)
+	}
+}

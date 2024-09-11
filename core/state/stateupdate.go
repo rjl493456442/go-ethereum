@@ -32,6 +32,7 @@ type contractCode struct {
 type accountDelete struct {
 	address        common.Address         // address is the unique account identifier
 	origin         []byte                 // origin is the original value of account data in slim-RLP encoding.
+	storagesDelete []common.Hash          // list of deleted storage slots
 	storagesOrigin map[common.Hash][]byte // storagesOrigin stores the original values of mutated slots in prefix-zero-trimmed RLP format.
 }
 
@@ -49,15 +50,16 @@ type accountUpdate struct {
 // execution. It contains information about mutated contract codes, accounts,
 // and storage slots, along with their original values.
 type stateUpdate struct {
-	originRoot     common.Hash                               // hash of the state before applying mutation
-	root           common.Hash                               // hash of the state after applying mutation
-	destructs      map[common.Hash]struct{}                  // destructs contains the list of destructed accounts
-	accounts       map[common.Hash][]byte                    // accounts stores mutated accounts in 'slim RLP' encoding
-	accountsOrigin map[common.Address][]byte                 // accountsOrigin stores the original values of mutated accounts in 'slim RLP' encoding
-	storages       map[common.Hash]map[common.Hash][]byte    // storages stores mutated slots in 'prefix-zero-trimmed' RLP format
-	storagesOrigin map[common.Address]map[common.Hash][]byte // storagesOrigin stores the original values of mutated slots in 'prefix-zero-trimmed' RLP format
-	codes          map[common.Address]contractCode           // codes contains the set of dirty codes
-	nodes          *trienode.MergedNodeSet                   // Aggregated dirty nodes caused by state changes
+	originRoot     common.Hash                                 // hash of the state before applying mutation
+	root           common.Hash                                 // hash of the state after applying mutation
+	destructs      map[common.Hash]struct{}                    // destructs contains the list of destructed accounts
+	accounts       map[common.Hash][]byte                      // accounts stores mutated accounts in 'slim RLP' encoding
+	accountsOrigin map[common.Address][]byte                   // accountsOrigin stores the original values of mutated accounts in 'slim RLP' encoding
+	storages       map[common.Hash]map[common.Hash][]byte      // storages stores mutated slots in 'prefix-zero-trimmed' RLP format
+	storagesOrigin map[common.Address]map[common.Hash][]byte   // storagesOrigin stores the original values of mutated slots in 'prefix-zero-trimmed' RLP format
+	storagesDelete map[common.Address]map[common.Hash]struct{} // list of deleted storage slots
+	codes          map[common.Address]contractCode             // codes contains the set of dirty codes
+	nodes          *trienode.MergedNodeSet                     // Aggregated dirty nodes caused by state changes
 }
 
 // empty returns a flag indicating the state transition is empty or not.
@@ -75,6 +77,7 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		accountsOrigin = make(map[common.Address][]byte)
 		storages       = make(map[common.Hash]map[common.Hash][]byte)
 		storagesOrigin = make(map[common.Address]map[common.Hash][]byte)
+		storagesDelete = make(map[common.Address]map[common.Hash]struct{})
 		codes          = make(map[common.Address]contractCode)
 	)
 	// Due to the fact that some accounts could be destructed and resurrected
@@ -85,6 +88,12 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		accountsOrigin[addr] = op.origin
 		if len(op.storagesOrigin) > 0 {
 			storagesOrigin[addr] = op.storagesOrigin
+		}
+		if len(op.storagesDelete) > 0 {
+			storagesDelete[addr] = make(map[common.Hash]struct{})
+			for _, hash := range op.storagesDelete {
+				storagesDelete[addr][hash] = struct{}{}
+			}
 		}
 	}
 	// Aggregate account updates then.
@@ -104,6 +113,22 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		// only be tracked if it's not present yet.
 		if len(op.storages) > 0 {
 			storages[addrHash] = op.storages
+
+			deletes := storagesDelete[addr]
+			if deletes == nil {
+				deletes = make(map[common.Hash]struct{})
+				storagesDelete[addr] = deletes
+			}
+			for hash, val := range op.storages {
+				if len(val) == 0 {
+					deletes[hash] = struct{}{}
+				} else {
+					delete(deletes, hash)
+				}
+			}
+			if len(deletes) == 0 {
+				delete(storagesDelete, addr)
+			}
 		}
 		if len(op.storagesOrigin) > 0 {
 			origin := storagesOrigin[addr]
@@ -127,6 +152,7 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		accountsOrigin: accountsOrigin,
 		storages:       storages,
 		storagesOrigin: storagesOrigin,
+		storagesDelete: storagesDelete,
 		codes:          codes,
 		nodes:          nodes,
 	}

@@ -29,4 +29,8 @@ var (
 	storageTriesUpdatedMeter = metrics.NewRegisteredMeter("state/update/storagenodes", nil)
 	accountTrieDeletedMeter  = metrics.NewRegisteredMeter("state/delete/accountnodes", nil)
 	storageTriesDeletedMeter = metrics.NewRegisteredMeter("state/delete/storagenodes", nil)
+
+	trackStorageDeletionJournalTimer = metrics.NewRegisteredResettingTimer("state/journal/storagedelete/time", nil)
+	trackStorageDeletionTotalGauge   = metrics.NewRegisteredGauge("state/journal/storagedelete/total", nil)
+	trackStorageDeletionUniqueGauge  = metrics.NewRegisteredGauge("state/journal/storagedelete/unique", nil)
 )

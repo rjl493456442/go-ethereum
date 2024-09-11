@@ -158,6 +158,8 @@ type StateDB struct {
 	StorageLoaded  int          // Number of storage slots retrieved from the database during the state transition
 	StorageUpdated atomic.Int64 // Number of storage slots updated during the state transition
 	StorageDeleted atomic.Int64 // Number of storage slots deleted during the state transition
+
+	recordDelete bool
 }
 
 // New creates a new state from a given trie.
@@ -933,14 +935,15 @@ func (s *StateDB) clearJournalAndRefund() {
 // of a specific account. It leverages the associated state snapshot for fast
 // storage iteration and constructs trie node deletion markers by creating
 // stack trie with iterated slots.
-func (s *StateDB) fastDeleteStorage(snaps *snapshot.Tree, addrHash common.Hash, root common.Hash) (map[common.Hash][]byte, *trienode.NodeSet, error) {
+func (s *StateDB) fastDeleteStorage(snaps *snapshot.Tree, addrHash common.Hash, root common.Hash) ([]common.Hash, map[common.Hash][]byte, *trienode.NodeSet, error) {
 	iter, err := snaps.StorageIterator(s.originalRoot, addrHash, common.Hash{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer iter.Release()
 
 	var (
+		paths []common.Hash
 		nodes = trienode.NewNodeSet(addrHash)
 		slots = make(map[common.Hash][]byte)
 	)
@@ -950,41 +953,44 @@ func (s *StateDB) fastDeleteStorage(snaps *snapshot.Tree, addrHash common.Hash, 
 	for iter.Next() {
 		slot := common.CopyBytes(iter.Slot())
 		if err := iter.Error(); err != nil { // error might occur after Slot function
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		slots[iter.Hash()] = slot
+		paths = append(paths, iter.Hash())
 
 		if err := stack.Update(iter.Hash().Bytes(), slot); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	if err := iter.Error(); err != nil { // error might occur during iteration
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if stack.Hash() != root {
-		return nil, nil, fmt.Errorf("snapshot is not matched, exp %x, got %x", root, stack.Hash())
+		return nil, nil, nil, fmt.Errorf("snapshot is not matched, exp %x, got %x", root, stack.Hash())
 	}
-	return slots, nodes, nil
+	return paths, slots, nodes, nil
 }
 
 // slowDeleteStorage serves as a less-efficient alternative to "fastDeleteStorage,"
 // employed when the associated state snapshot is not available. It iterates the
 // storage slots along with all internal trie nodes via trie directly.
-func (s *StateDB) slowDeleteStorage(addr common.Address, addrHash common.Hash, root common.Hash) (map[common.Hash][]byte, *trienode.NodeSet, error) {
+func (s *StateDB) slowDeleteStorage(addr common.Address, addrHash common.Hash, root common.Hash) ([]common.Hash, map[common.Hash][]byte, *trienode.NodeSet, error) {
 	tr, err := s.db.OpenStorageTrie(s.originalRoot, addr, root, s.trie)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open storage trie, err: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to open storage trie, err: %w", err)
 	}
 	it, err := tr.NodeIterator(nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open storage iterator, err: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to open storage iterator, err: %w", err)
 	}
 	var (
+		paths []common.Hash
 		nodes = trienode.NewNodeSet(addrHash)
 		slots = make(map[common.Hash][]byte)
 	)
 	for it.Next(true) {
 		if it.Leaf() {
+			paths = append(paths, common.BytesToHash(it.LeafKey()))
 			slots[common.BytesToHash(it.LeafKey())] = common.CopyBytes(it.LeafBlob())
 			continue
 		}
@@ -994,18 +1000,19 @@ func (s *StateDB) slowDeleteStorage(addr common.Address, addrHash common.Hash, r
 		nodes.AddNode(it.Path(), trienode.NewDeleted())
 	}
 	if err := it.Error(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return slots, nodes, nil
+	return paths, slots, nodes, nil
 }
 
 // deleteStorage is designed to delete the storage trie of a designated account.
 // The function will make an attempt to utilize an efficient strategy if the
 // associated state snapshot is reachable; otherwise, it will resort to a less
 // efficient approach.
-func (s *StateDB) deleteStorage(addr common.Address, addrHash common.Hash, root common.Hash) (map[common.Hash][]byte, *trienode.NodeSet, error) {
+func (s *StateDB) deleteStorage(addr common.Address, addrHash common.Hash, root common.Hash) ([]common.Hash, map[common.Hash][]byte, *trienode.NodeSet, error) {
 	var (
 		err   error
+		paths []common.Hash
 		slots map[common.Hash][]byte
 		nodes *trienode.NodeSet
 	)
@@ -1014,15 +1021,15 @@ func (s *StateDB) deleteStorage(addr common.Address, addrHash common.Hash, root 
 	// one just in case.
 	snaps := s.db.Snapshot()
 	if snaps != nil {
-		slots, nodes, err = s.fastDeleteStorage(snaps, addrHash, root)
+		paths, slots, nodes, err = s.fastDeleteStorage(snaps, addrHash, root)
 	}
 	if snaps == nil || err != nil {
-		slots, nodes, err = s.slowDeleteStorage(addr, addrHash, root)
+		paths, slots, nodes, err = s.slowDeleteStorage(addr, addrHash, root)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return slots, nodes, nil
+	return paths, slots, nodes, nil
 }
 
 // handleDestruction processes all destruction markers and deletes the account
@@ -1073,10 +1080,11 @@ func (s *StateDB) handleDestruction() (map[common.Hash]*accountDelete, []*trieno
 			continue
 		}
 		// Remove storage slots belonging to the account.
-		slots, set, err := s.deleteStorage(addr, addrHash, prev.Root)
+		paths, slots, set, err := s.deleteStorage(addr, addrHash, prev.Root)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to delete storage, err: %w", err)
 		}
+		op.storagesDelete = paths
 		op.storagesOrigin = slots
 
 		// Aggregate the associated trie node changes.
@@ -1246,6 +1254,35 @@ func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
 	return newStateUpdate(origin, root, deletes, updates, nodes), nil
 }
 
+func (s *StateDB) deleteJournal(update *stateUpdate) {
+	if !s.recordDelete {
+		return
+	}
+	var (
+		count  int
+		unique int
+		start  = time.Now()
+		db     = s.db.TrieDB().Disk()
+		batch  = db.NewBatch()
+	)
+	for addr, deletes := range update.storagesDelete {
+		for hash := range deletes {
+			n := rawdb.ReadStorageDeleteJournal(db, addr, hash)
+			if n == 0 {
+				unique++
+			}
+			rawdb.WriteStorageDeleteJournal(batch, addr, hash, n+1)
+		}
+		count += len(deletes)
+	}
+	if err := batch.Write(); err != nil {
+		panic(err)
+	}
+	trackStorageDeletionJournalTimer.UpdateSince(start)
+	trackStorageDeletionTotalGauge.Update(int64(count))
+	trackStorageDeletionUniqueGauge.Update(int64(unique))
+}
+
 // commitAndFlush is a wrapper of commit which also commits the state mutations
 // to the configured data stores.
 func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateUpdate, error) {
@@ -1289,6 +1326,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 			s.TrieDBCommits += time.Since(start)
 		}
 	}
+	s.deleteJournal(ret)
 	s.reader, _ = s.db.Reader(s.originalRoot)
 	return ret, err
 }
@@ -1417,4 +1455,8 @@ func (s *StateDB) Witness() *stateless.Witness {
 
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
+}
+
+func (s *StateDB) EnableDeleteRecording() {
+	s.recordDelete = true
 }

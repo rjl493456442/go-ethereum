@@ -1891,6 +1891,7 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	}
 
 	// Process block using the parent state as reference point
+	statedb.EnableDeleteRecording()
 	pstart := time.Now()
 	res, err := bc.processor.Process(block, statedb, bc.vmConfig)
 	if err != nil {
