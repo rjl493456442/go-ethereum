@@ -1259,11 +1259,11 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 		return
 	}
 	var (
-		count  int
-		unique int
 		start  = time.Now()
 		db     = s.db.TrieDB().Disk()
 		batch  = db.NewBatch()
+		unique = rawdb.ReadStorageDeleteJournalUnique(db)
+		total  = rawdb.ReadStorageDeleteJournalTotal(db)
 	)
 	for addr, deletes := range update.storagesDelete {
 		for hash := range deletes {
@@ -1273,13 +1273,15 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 			}
 			rawdb.WriteStorageDeleteJournal(batch, addr, hash, n+1)
 		}
-		count += len(deletes)
+		total += uint64(len(deletes))
 	}
+	rawdb.WriteStorageDeleteJournalUnique(batch, unique)
+	rawdb.WriteStorageDeleteJournalTotal(batch, total)
 	if err := batch.Write(); err != nil {
 		panic(err)
 	}
 	trackStorageDeletionJournalTimer.UpdateSince(start)
-	trackStorageDeletionTotalGauge.Update(int64(count))
+	trackStorageDeletionTotalGauge.Update(int64(total))
 	trackStorageDeletionUniqueGauge.Update(int64(unique))
 }
 

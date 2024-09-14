@@ -117,7 +117,9 @@ var (
 	TrieNodeStoragePrefix = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
 	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
 
-	StorageDeleteJournalPrefix = []byte("X")
+	StorageDeleteJournalPrefix    = []byte("X")
+	storageDeleteJournalUniqueKey = []byte("storageDeleteJournalUniqueKey")
+	storageDeleteJournalTotalKey  = []byte("storageDeleteJournalTotalKey")
 
 	// VerklePrefix is the database prefix for Verkle trie data, which includes:
 	// (a) Trie nodes

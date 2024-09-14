@@ -17,6 +17,7 @@
 package rawdb
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"time"
 
@@ -185,5 +186,31 @@ func ReadTransitionStatus(db ethdb.KeyValueReader) []byte {
 func WriteTransitionStatus(db ethdb.KeyValueWriter, data []byte) {
 	if err := db.Put(transitionStatusKey, data); err != nil {
 		log.Crit("Failed to store the eth2 transition status", "err", err)
+	}
+}
+
+func ReadStorageDeleteJournalUnique(db ethdb.KeyValueReader) uint64 {
+	data, _ := db.Get(storageDeleteJournalUniqueKey)
+	return binary.BigEndian.Uint64(data)
+}
+
+func WriteStorageDeleteJournalUnique(db ethdb.KeyValueWriter, number uint64) {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], number)
+	if err := db.Put(storageDeleteJournalUniqueKey, buf[:]); err != nil {
+		log.Crit("Failed to store the storage delete journal unique", "err", err)
+	}
+}
+
+func ReadStorageDeleteJournalTotal(db ethdb.KeyValueReader) uint64 {
+	data, _ := db.Get(storageDeleteJournalTotalKey)
+	return binary.BigEndian.Uint64(data)
+}
+
+func WriteStorageDeleteJournalTotal(db ethdb.KeyValueWriter, number uint64) {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], number)
+	if err := db.Put(storageDeleteJournalTotalKey, buf[:]); err != nil {
+		log.Crit("Failed to store the storage delete journal total", "err", err)
 	}
 }
