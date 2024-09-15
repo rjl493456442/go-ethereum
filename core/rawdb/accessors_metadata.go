@@ -191,6 +191,9 @@ func WriteTransitionStatus(db ethdb.KeyValueWriter, data []byte) {
 
 func ReadStorageDeleteJournalUnique(db ethdb.KeyValueReader) uint64 {
 	data, _ := db.Get(storageDeleteJournalUniqueKey)
+	if len(data) == 0 {
+		return 0
+	}
 	return binary.BigEndian.Uint64(data)
 }
 
@@ -204,6 +207,9 @@ func WriteStorageDeleteJournalUnique(db ethdb.KeyValueWriter, number uint64) {
 
 func ReadStorageDeleteJournalTotal(db ethdb.KeyValueReader) uint64 {
 	data, _ := db.Get(storageDeleteJournalTotalKey)
+	if len(data) == 0 {
+		return 0
+	}
 	return binary.BigEndian.Uint64(data)
 }
 
