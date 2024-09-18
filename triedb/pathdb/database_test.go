@@ -151,6 +151,10 @@ func newTester(t *testing.T, historyLimit uint64, isVerkle bool, layers int) *te
 		}
 		obj.roots = append(obj.roots, root)
 	}
+	dl := db.tree.bottom()
+	if dl.frozen != nil {
+		dl.frozen.waitFlush()
+	}
 	return obj
 }
 
