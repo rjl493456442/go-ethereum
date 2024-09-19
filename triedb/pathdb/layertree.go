@@ -133,7 +133,7 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		}
 		// Block until the frozen buffer is fully flushed
 		if base.frozen != nil {
-			if err := base.frozen.flushed(); err != nil {
+			if err := base.frozen.waitFlush(); err != nil {
 				return err
 			}
 		}

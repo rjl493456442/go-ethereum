@@ -245,12 +245,14 @@ func (b *nodebuffer) flush(db ethdb.KeyValueStore, clean *fastcache.Cache, id ui
 		commitNodesMeter.Mark(int64(nodes))
 		commitTimeTimer.UpdateSince(start)
 		log.Info("Persisted pathdb nodes", "nodes", nodes, "bytes", common.StorageSize(size), "elapsed", common.PrettyDuration(time.Since(start)))
+
+		// The content in the frozen buffer is kept for consequent state access
 	}()
 }
 
-// flushed blocks until the buffer is fully flushed and also returns the memorized
-// error which occurs within the flushing.
-func (b *nodebuffer) flushed() error {
+// waitFlush blocks until the buffer has been fully flushed and returns any
+// stored errors that occurred during the process.
+func (b *nodebuffer) waitFlush() error {
 	<-b.done
 	return b.flushErr
 }

@@ -343,7 +343,7 @@ func (db *Database) Journal(root common.Hash) error {
 	}
 	disk := db.tree.bottom()
 	if disk.frozen != nil {
-		if err := disk.frozen.flushed(); err != nil {
+		if err := disk.frozen.waitFlush(); err != nil {
 			return err
 		}
 	}

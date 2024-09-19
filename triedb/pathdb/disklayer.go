@@ -140,6 +140,11 @@ func (dl *diskLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 	} else {
 		blob = rawdb.ReadStorageTrieNode(dl.db.diskdb, owner, path)
 	}
+	// Store the resolved data in the clean cache. The background buffer flusher
+	// may also write to the clean cache concurrently, but two writers cannot
+	// write the same item with different content. If the item already exists,
+	// it will be found in the frozen buffer, eliminating the need to check the
+	// database.
 	if dl.cleans != nil && len(blob) > 0 {
 		dl.cleans.Set(key, blob)
 		cleanWriteMeter.Mark(int64(len(blob)))
@@ -208,7 +213,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	if combined.full() || force {
 		// Wait until the previous frozen buffer is fully flushed
 		if dl.frozen != nil {
-			if err := dl.frozen.flushed(); err != nil {
+			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
 		}
@@ -221,7 +226,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 		// Block until the frozen buffer is fully flushed out if the oldest history
 		// surpasses the persisted state ID.
 		if persistedID < oldest {
-			if err := dl.frozen.flushed(); err != nil {
+			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
 		}
@@ -278,10 +283,12 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 	} else {
 		// Block until the frozen buffer is fully flushed
 		if dl.frozen != nil {
-			if err := dl.frozen.flushed(); err != nil {
+			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
-			dl.frozen = nil // unset the frozen buffer
+			// Unset the frozen buffer if it exists, otherwise these "reverted"
+			// states will still be accessible after revert in frozen buffer.
+			dl.frozen = nil
 		}
 		batch := dl.db.diskdb.NewBatch()
 		writeNodes(batch, nodes, dl.cleans)

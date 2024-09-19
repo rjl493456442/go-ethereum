@@ -442,7 +442,7 @@ func (db *Database) Close() error {
 	// Release the memory held by clean cache.
 	disk := db.tree.bottom()
 	if disk.frozen != nil {
-		if err := disk.frozen.flushed(); err != nil {
+		if err := disk.frozen.waitFlush(); err != nil {
 			return err
 		}
 	}
