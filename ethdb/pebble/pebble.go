@@ -105,6 +105,19 @@ func (d *Database) onCompactionBegin(info pebble.CompactionInfo) {
 		d.nonLevel0Comp.Add(1)
 	}
 	d.activeComp++
+
+	var input string
+	var level string
+	for i, l := range info.Input {
+		if i == 0 {
+			input += fmt.Sprintf("L: %d", l.Level)
+			level += l.String()
+		} else {
+			input += fmt.Sprintf("\tL: %d", l.Level)
+			level += fmt.Sprintf("\t%s", l.String())
+		}
+	}
+	log.Info("Pebble compaction is started", "reason", info.Reason, "input", input, "level", level)
 }
 
 func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
@@ -114,17 +127,23 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		panic("should not happen")
 	}
 	d.activeComp--
+
+	log.Info("Pebble compaction is completed", "elapsed", common.PrettyDuration(time.Since(d.compStartTime)), "output", info.Output.String())
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
 	d.writeDelayStartTime = time.Now()
 	d.writeDelayCount.Add(1)
 	d.writeStalled.Store(true)
+
+	log.Info("Pebble write stall begins")
 }
 
 func (d *Database) onWriteStallEnd() {
 	d.writeDelayTime.Add(int64(time.Since(d.writeDelayStartTime)))
 	d.writeStalled.Store(false)
+
+	log.Info("Pebble write stall ends")
 }
 
 // panicLogger is just a noop logger to disable Pebble's internal logger.
