@@ -1935,6 +1935,9 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	if statedb.StorageLoaded != 0 {
 		storageReadSingleTimer.Update(statedb.StorageReads / time.Duration(statedb.StorageLoaded))
 	}
+	stateReadTime := statedb.AccountReads + statedb.StorageReads
+	stateReadN := statedb.AccountLoaded + statedb.StorageLoaded
+
 	accountUpdateTimer.Update(statedb.AccountUpdates)             // Account updates are complete(in validation)
 	storageUpdateTimer.Update(statedb.StorageUpdates)             // Storage updates are complete(in validation)
 	accountHashTimer.Update(statedb.AccountHashes)                // Account hashes are complete(in validation)
@@ -1975,8 +1978,8 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 		status:   status,
 
 		evmTime:        evmTime,
-		stateReadTime:  statedb.AccountReads + statedb.StorageReads,
-		stateReadN:     statedb.AccountLoaded + statedb.StorageLoaded,
+		stateReadTime:  stateReadTime,
+		stateReadN:     stateReadN,
 		trieUpdate:     trieUpdate,
 		chainWriteTime: chainWrite,
 	}, nil
