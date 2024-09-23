@@ -213,6 +213,16 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		quitChan:     make(chan chan error),
 		writeOptions: &pebble.WriteOptions{Sync: false},
 	}
+	printSubLevel := func(msg string) {
+		if db.db == nil {
+			return
+		}
+		stats := db.db.Metrics()
+		if stats == nil {
+			return
+		}
+		log.Info("SubLevels", "message", msg, "number", stats.Levels[0].Sublevels)
+	}
 	opt := &pebble.Options{
 		// Pebble has a single combined cache area and the write
 		// buffers are taken from this too. Assign all available
@@ -230,6 +240,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		// according to https://github.com/cockroachdb/pebble/blob/master/options.go#L738-L742
 		// and to https://github.com/cockroachdb/pebble/blob/master/db.go#L1892-L1903.
 		MemTableStopWritesThreshold: memTableLimit,
+		L0StopWritesThreshold:       1000,
 
 		// The default compaction concurrency(1 thread),
 		// Here use all available CPUs for faster compaction.
@@ -256,6 +267,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 			WriteStallEnd:   db.onWriteStallEnd,
 			FlushBegin: func(info pebble.FlushInfo) {
 				log.Info("Flush begin", "reason", info.Reason, "files", info.Input, "megabytes", info.InputBytes/1024/1024)
+				printSubLevel("flush-begin")
 			},
 			FlushEnd: func(info pebble.FlushInfo) {
 				var output string
@@ -267,6 +279,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 					}
 				}
 				log.Info("Flush end", "reason", info.Reason, "output", output)
+				printSubLevel("flush-end")
 			},
 			WALCreated: func(info pebble.WALCreateInfo) {
 				log.Info("WAL created", "number", info.FileNum)
