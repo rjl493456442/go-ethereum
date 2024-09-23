@@ -68,6 +68,7 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 		context := []interface{}{
 			"number", end.Number(), "hash", end.Hash(),
 			"blocks", st.processed, "txs", txs, "mgas", float64(st.usedGas) / 1000000,
+			"stateReadN", st.stateReadN,
 			"stateRead", common.PrettyDuration(st.stateReadTime), "stateReadAverage", common.PrettyDuration(stateAvg),
 			"chainWrite", common.PrettyDuration(st.chainWriteTime), "evmTime", common.PrettyDuration(st.evmTime),
 			"trieUpdate", common.PrettyDuration(st.trieUpdate),
