@@ -223,6 +223,15 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		}
 		log.Info("SubLevels", "message", msg, "number", stats.Levels[0].Sublevels)
 	}
+	printCh := make(chan string, 100)
+	go func() {
+		for {
+			select {
+			case msg := <-printCh:
+				printSubLevel(msg)
+			}
+		}
+	}()
 	opt := &pebble.Options{
 		// Pebble has a single combined cache area and the write
 		// buffers are taken from this too. Assign all available
@@ -267,7 +276,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 			WriteStallEnd:   db.onWriteStallEnd,
 			FlushBegin: func(info pebble.FlushInfo) {
 				log.Info("Flush begin", "reason", info.Reason, "files", info.Input, "megabytes", info.InputBytes/1024/1024)
-				printSubLevel("flush-begin")
+				printCh <- "begin"
 			},
 			FlushEnd: func(info pebble.FlushInfo) {
 				var output string
@@ -279,7 +288,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 					}
 				}
 				log.Info("Flush end", "reason", info.Reason, "output", output)
-				printSubLevel("flush-end")
+				printCh <- "end"
 			},
 			WALCreated: func(info pebble.WALCreateInfo) {
 				log.Info("WAL created", "number", info.FileNum)
