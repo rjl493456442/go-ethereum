@@ -62,7 +62,7 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 
 		var stateAvg time.Duration
 		if st.stateReadN > 0 {
-			stateAvg = stateAvg / time.Duration(st.stateReadN)
+			stateAvg = st.stateReadTime / time.Duration(st.stateReadN)
 		}
 		// Assemble the log context and send it to the logger
 		context := []interface{}{
