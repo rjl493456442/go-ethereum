@@ -252,6 +252,26 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 			CompactionEnd:   db.onCompactionEnd,
 			WriteStallBegin: db.onWriteStallBegin,
 			WriteStallEnd:   db.onWriteStallEnd,
+			FlushBegin: func(info pebble.FlushInfo) {
+				log.Info("Flush begin", "reason", info.Reason, "files", info.Input, "megabytes", info.InputBytes/1024/1024)
+			},
+			FlushEnd: func(info pebble.FlushInfo) {
+				var output string
+				for i, l := range info.Output {
+					if i == 0 {
+						output += fmt.Sprintf("S: %d", l.Size)
+					} else {
+						output += fmt.Sprintf("\tS: %d", l.Size)
+					}
+				}
+				log.Info("Flush end", "reason", info.Reason, "output", info.Output)
+			},
+			WALCreated: func(info pebble.WALCreateInfo) {
+				log.Info("WAL created", "number", info.FileNum)
+			},
+			WALDeleted: func(info pebble.WALDeleteInfo) {
+				log.Info("WAL deleted", "number", info.FileNum)
+			},
 		},
 		Logger: panicLogger{}, // TODO(karalabe): Delete when this is upstreamed in Pebble
 	}
