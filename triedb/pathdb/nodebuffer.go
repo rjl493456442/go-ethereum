@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -261,7 +262,15 @@ func (b *nodebuffer) waitFlush() error {
 // Note this function will also inject all the newly written nodes
 // into clean cache.
 func writeNodes(batch ethdb.Batch, nodes map[common.Hash]map[string]*trienode.Node, clean *fastcache.Cache) (total int) {
-	for owner, subset := range nodes {
+	// Perform deletes in sorted order to make the touched trie nodes deterministic
+	var owners []common.Hash
+	for hash := range nodes {
+		owners = append(owners, hash)
+	}
+	slices.SortFunc(owners, func(a, b common.Hash) int { return a.Cmp(b) })
+
+	for _, owner := range owners {
+		subset := nodes[owner]
 		for path, n := range subset {
 			if n.IsDeleted() {
 				if owner == (common.Hash{}) {
