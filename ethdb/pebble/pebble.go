@@ -106,9 +106,6 @@ func (d *Database) onCompactionBegin(info pebble.CompactionInfo) {
 	}
 	d.activeComp++
 
-	if info.Reason == "move" {
-		return
-	}
 	var input string
 	var level string
 	for i, l := range info.Input {
@@ -131,9 +128,6 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	}
 	d.activeComp--
 
-	if info.Reason == "move" {
-		return
-	}
 	log.Info("Pebble compaction is completed", "elapsed", common.PrettyDuration(time.Since(d.compStartTime)), "output", info.Output.String())
 }
 

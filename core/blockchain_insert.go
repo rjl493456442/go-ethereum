@@ -31,6 +31,12 @@ type insertStats struct {
 	usedGas                    uint64
 	lastIndex                  int
 	startTime                  mclock.AbsTime
+
+	evmTime        time.Duration
+	stateReadTime  time.Duration
+	stateReadN     int
+	trieUpdate     time.Duration
+	chainWriteTime time.Duration
 }
 
 // statsReportLimit is the time limit during import and export after which we
@@ -54,10 +60,17 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 		}
 		end := chain[index]
 
+		var stateAvg time.Duration
+		if st.stateReadN > 0 {
+			stateAvg = stateAvg / time.Duration(st.stateReadN)
+		}
 		// Assemble the log context and send it to the logger
 		context := []interface{}{
 			"number", end.Number(), "hash", end.Hash(),
 			"blocks", st.processed, "txs", txs, "mgas", float64(st.usedGas) / 1000000,
+			"stateRead", common.PrettyDuration(st.stateReadTime), "stateReadAverage", common.PrettyDuration(stateAvg),
+			"chainWrite", common.PrettyDuration(st.chainWriteTime), "evmTime", common.PrettyDuration(st.evmTime),
+			"trieUpdate", common.PrettyDuration(st.trieUpdate),
 			"elapsed", common.PrettyDuration(elapsed), "mgasps", float64(st.usedGas) * 1000 / float64(elapsed),
 		}
 		if timestamp := time.Unix(int64(end.Time()), 0); time.Since(timestamp) > time.Minute {

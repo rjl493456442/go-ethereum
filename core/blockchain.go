@@ -1820,6 +1820,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 		stats.processed++
 		stats.usedGas += res.usedGas
 
+		stats.evmTime += res.evmTime
+		stats.stateReadTime += res.stateReadTime
+		stats.stateReadN += res.stateReadN
+		stats.trieUpdate += res.trieUpdate
+		stats.chainWriteTime += res.chainWriteTime
+
 		var snapDiffItems, snapBufItems common.StorageSize
 		if bc.snaps != nil {
 			snapDiffItems, snapBufItems = bc.snaps.Size()
@@ -1870,6 +1876,12 @@ type blockProcessingResult struct {
 	usedGas  uint64
 	procTime time.Duration
 	status   WriteStatus
+
+	evmTime        time.Duration
+	stateReadTime  time.Duration
+	stateReadN     int
+	trieUpdate     time.Duration
+	chainWriteTime time.Duration
 }
 
 // processBlock executes and validates the given block. If there was no error
@@ -1923,13 +1935,15 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	if statedb.StorageLoaded != 0 {
 		storageReadSingleTimer.Update(statedb.StorageReads / time.Duration(statedb.StorageLoaded))
 	}
-	accountUpdateTimer.Update(statedb.AccountUpdates)                                 // Account updates are complete(in validation)
-	storageUpdateTimer.Update(statedb.StorageUpdates)                                 // Storage updates are complete(in validation)
-	accountHashTimer.Update(statedb.AccountHashes)                                    // Account hashes are complete(in validation)
-	triehash := statedb.AccountHashes                                                 // The time spent on tries hashing
-	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates                     // The time spent on tries update
-	blockExecutionTimer.Update(ptime - (statedb.AccountReads + statedb.StorageReads)) // The time spent on EVM processing
-	blockValidationTimer.Update(vtime - (triehash + trieUpdate))                      // The time spent on block validation
+	accountUpdateTimer.Update(statedb.AccountUpdates)             // Account updates are complete(in validation)
+	storageUpdateTimer.Update(statedb.StorageUpdates)             // Storage updates are complete(in validation)
+	accountHashTimer.Update(statedb.AccountHashes)                // Account hashes are complete(in validation)
+	triehash := statedb.AccountHashes                             // The time spent on tries hashing
+	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates // The time spent on tries update
+
+	evmTime := ptime - (statedb.AccountReads + statedb.StorageReads)
+	blockExecutionTimer.Update(evmTime)                          // The time spent on EVM processing
+	blockValidationTimer.Update(vtime - (triehash + trieUpdate)) // The time spent on block validation
 
 	// Write the block to the chain and get the status.
 	var (
@@ -1951,10 +1965,21 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	snapshotCommitTimer.Update(statedb.SnapshotCommits) // Snapshot commits are complete, we can mark them
 	triedbCommitTimer.Update(statedb.TrieDBCommits)     // Trie database commits are complete, we can mark them
 
-	blockWriteTimer.Update(time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits)
+	chainWrite := time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits
+	blockWriteTimer.Update(chainWrite)
 	blockInsertTimer.UpdateSince(start)
 
-	return &blockProcessingResult{usedGas: res.GasUsed, procTime: proctime, status: status}, nil
+	return &blockProcessingResult{
+		usedGas:  res.GasUsed,
+		procTime: proctime,
+		status:   status,
+
+		evmTime:        evmTime,
+		stateReadTime:  statedb.AccountReads + statedb.StorageReads,
+		stateReadN:     statedb.AccountLoaded + statedb.StorageLoaded,
+		trieUpdate:     trieUpdate,
+		chainWriteTime: chainWrite,
+	}, nil
 }
 
 // insertSideChain is called when an import batch hits upon a pruned ancestor
