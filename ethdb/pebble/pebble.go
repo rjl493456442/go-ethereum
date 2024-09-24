@@ -456,7 +456,12 @@ func (d *Database) Stat() (string, error) {
 			size = levelMetrics.Size
 		}
 	}
-	return fmt.Sprintf("%d/%d/%d/%d/%d", compRead, compRead, subLevel, files, size), nil
+	return fmt.Sprintf("%d/%d/%d/%d/%d/%d/%d/%d/%d",
+		compRead, compRead, subLevel, files, size,
+		stats.TableCache.Size,
+		stats.TableCache.Count,
+		stats.TableCache.Hits, stats.TableCache.Misses,
+	), nil
 }
 
 // Compact flattens the underlying data store for the given key range. In essence,

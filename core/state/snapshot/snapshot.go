@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -637,6 +638,9 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 		triedb:     base.triedb,
 		genMarker:  base.genMarker,
 		genPending: base.genPending,
+
+		accountStats: base.accountStats.copy(),
+		storageStats: base.storageStats.copy(),
 	}
 	// If snapshot generation hasn't finished yet, port over all the starts and
 	// continue where the previous round left off.
@@ -871,4 +875,48 @@ func (t *Tree) Size() (diffs common.StorageSize, buf common.StorageSize) {
 		}
 	}
 	return size, 0
+}
+
+type Stats struct {
+	AccountDiskHits  int
+	AccountCleanHits int
+	AccountDiffHits  int
+	AccountDiskTime  time.Duration
+	AccountMisses    int
+	AccountFinds     int
+
+	StorageDiskHits  int
+	StorageCleanHits int
+	StorageDiffHits  int
+	StorageDiskTime  time.Duration
+	StorageMisses    int
+	StorageFinds     int
+}
+
+func (t *Tree) Stats() *Stats {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	layer := t.disklayer()
+	if layer == nil {
+		return nil
+	}
+	account := layer.accountStats.copy()
+	storage := layer.storageStats.copy()
+	return &Stats{
+		AccountDiskHits:  account.diskHits,
+		AccountCleanHits: account.cleanHits,
+		AccountDiffHits:  account.diffHits,
+		AccountDiskTime:  account.diskTime,
+		AccountMisses:    account.misses,
+		AccountFinds:     account.finds,
+
+		StorageDiskHits:  storage.diskHits,
+		StorageCleanHits: storage.cleanHits,
+		StorageDiffHits:  storage.diffHits,
+		StorageDiskTime:  storage.diskTime,
+		StorageMisses:    storage.misses,
+		StorageFinds:     storage.finds,
+	}
+
 }

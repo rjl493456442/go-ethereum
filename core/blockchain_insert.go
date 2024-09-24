@@ -64,8 +64,16 @@ func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, s
 			subLevel int
 			files    int
 			size     int
+
+			cacheSize  int
+			cacheTotal int
+			cacheHit   int
+			cacheMiss  int
+
+			cacheHitDiff  int
+			cacheMissDiff int
 		)
-		fmt.Sscanf(stats, "%d/%d/%d/%d/%d", &compRead, &compWrite, &subLevel, &files, &size)
+		fmt.Sscanf(stats, "%d/%d/%d/%d/%d/%d/%d/%d/%d", &compRead, &compWrite, &subLevel, &files, &size, &cacheSize, &cacheTotal, &cacheHit, &cacheMiss)
 
 		if compRead != 0 && compWrite != 0 {
 			if bc.compRead != 0 && bc.compWrite != 0 {
@@ -75,6 +83,12 @@ func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, s
 			bc.compRead = compRead
 			bc.compWrite = compWrite
 		}
+		cacheHitDiff = cacheHit - bc.cacheHits
+		cacheMissDiff = cacheMiss - bc.cacheMiss
+
+		bc.cacheHits = cacheHit
+		bc.cacheMiss = cacheMiss
+
 		// Count the number of transactions in this segment
 		var txs int
 		for _, block := range chain[st.lastIndex : index+1] {
@@ -96,6 +110,9 @@ func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, s
 			"trieUpdate", common.PrettyDuration(st.trieUpdate),
 			"subLevel", subLevel, "files", files, "size", common.StorageSize(size),
 			"elapsed", common.PrettyDuration(elapsed), "mgasps", float64(st.usedGas) * 1000 / float64(elapsed),
+		}
+		if cacheHitDiff > 0 && cacheMissDiff > 0 {
+			context = append(context, "cacheHit", cacheHitDiff, "cacheMiss", cacheMissDiff, "hitRate", float64(cacheHitDiff)/float64(cacheMissDiff+cacheHitDiff))
 		}
 		if compReadDiff > 0 && compWriteDiff > 0 {
 			context = append(context, "compRead", common.StorageSize(compReadDiff))

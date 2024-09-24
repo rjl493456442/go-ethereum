@@ -210,12 +210,16 @@ type BlockChain struct {
 	chainConfig *params.ChainConfig // Chain & network configuration
 	cacheConfig *CacheConfig        // Cache configuration for pruning
 
-	db        ethdb.Database                   // Low level persistent database to store final content in
-	snaps     *snapshot.Tree                   // Snapshot tree for fast trie leaf access
-	triegc    *prque.Prque[int64, common.Hash] // Priority queue mapping block numbers to tries to gc
-	gcproc    time.Duration                    // Accumulates canonical block processing for trie dumping
+	db     ethdb.Database                   // Low level persistent database to store final content in
+	snaps  *snapshot.Tree                   // Snapshot tree for fast trie leaf access
+	triegc *prque.Prque[int64, common.Hash] // Priority queue mapping block numbers to tries to gc
+	gcproc time.Duration                    // Accumulates canonical block processing for trie dumping
+
 	compRead  uint64
 	compWrite uint64
+
+	cacheHits int
+	cacheMiss int
 
 	lastWrite     uint64           // Last block when the state was flushed
 	flushInterval atomic.Int64     // Time interval (processing time) after which to flush a state

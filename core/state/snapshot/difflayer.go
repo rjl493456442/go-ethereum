@@ -312,6 +312,8 @@ func (dl *diffLayer) accountRLP(hash common.Hash, depth int) ([]byte, error) {
 		snapshotDirtyAccountHitDepthHist.Update(int64(depth))
 		snapshotDirtyAccountReadMeter.Mark(int64(len(data)))
 		snapshotBloomAccountTrueHitMeter.Mark(1)
+		dl.origin.accountStats.update(locDiff, 0)
+		dl.origin.accountStats.find()
 		return data, nil
 	}
 	// If the account is known locally, but deleted, return it
@@ -320,6 +322,8 @@ func (dl *diffLayer) accountRLP(hash common.Hash, depth int) ([]byte, error) {
 		snapshotDirtyAccountHitDepthHist.Update(int64(depth))
 		snapshotDirtyAccountInexMeter.Mark(1)
 		snapshotBloomAccountTrueHitMeter.Mark(1)
+		dl.origin.accountStats.update(locDiff, 0)
+		dl.origin.accountStats.miss()
 		return nil, nil
 	}
 	// Account unknown to this diff, resolve from parent
@@ -382,10 +386,14 @@ func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 		if data, ok := storage[storageHash]; ok {
 			snapshotDirtyStorageHitMeter.Mark(1)
 			snapshotDirtyStorageHitDepthHist.Update(int64(depth))
+
+			dl.origin.storageStats.update(locDiff, 0)
 			if n := len(data); n > 0 {
 				snapshotDirtyStorageReadMeter.Mark(int64(n))
+				dl.origin.storageStats.find()
 			} else {
 				snapshotDirtyStorageInexMeter.Mark(1)
+				dl.origin.storageStats.miss()
 			}
 			snapshotBloomStorageTrueHitMeter.Mark(1)
 			return data, nil
@@ -393,6 +401,9 @@ func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 	}
 	// If the account is known locally, but deleted, return an empty slot
 	if _, ok := dl.destructSet[accountHash]; ok {
+		dl.origin.storageStats.update(locDiff, 0)
+		dl.origin.storageStats.miss()
+
 		snapshotDirtyStorageHitMeter.Mark(1)
 		snapshotDirtyStorageHitDepthHist.Update(int64(depth))
 		snapshotDirtyStorageInexMeter.Mark(1)
