@@ -443,12 +443,20 @@ func (d *Database) Stat() (string, error) {
 		compWrite int64
 		compRead  int64
 		stats     = d.db.Metrics()
+		subLevel  int32
+		files     int64
+		size      int64
 	)
-	for _, levelMetrics := range stats.Levels {
+	for i, levelMetrics := range stats.Levels {
 		compRead += int64(levelMetrics.BytesRead)
 		compWrite += int64(levelMetrics.BytesCompacted)
+		if i == 0 {
+			subLevel = levelMetrics.Sublevels
+			files = levelMetrics.NumFiles
+			size = levelMetrics.Size
+		}
 	}
-	return fmt.Sprintf("%d/%d", compRead, compRead), nil
+	return fmt.Sprintf("%d/%d/%d/%d/%d", compRead, compRead, subLevel, files, size), nil
 }
 
 // Compact flattens the underlying data store for the given key range. In essence,

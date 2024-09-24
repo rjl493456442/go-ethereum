@@ -60,8 +60,12 @@ func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, s
 			compWrite     uint64
 			compReadDiff  int64
 			compWriteDiff int64
+
+			subLevel int
+			files    int
+			size     int
 		)
-		fmt.Sscanf(stats, "%d/%d", &compRead, &compWrite)
+		fmt.Sscanf(stats, "%d/%d/%d/%d/%d", &compRead, &compWrite, &subLevel, &files, &size)
 
 		if compRead != 0 && compWrite != 0 {
 			if bc.compRead != 0 && bc.compWrite != 0 {
@@ -90,11 +94,12 @@ func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, s
 			"stateRead", common.PrettyDuration(st.stateReadTime), "stateReadAverage", common.PrettyDuration(stateAvg),
 			"chainWrite", common.PrettyDuration(st.chainWriteTime), "evmTime", common.PrettyDuration(st.evmTime),
 			"trieUpdate", common.PrettyDuration(st.trieUpdate),
+			"subLevel", subLevel, "files", files, "size", common.StorageSize(size),
 			"elapsed", common.PrettyDuration(elapsed), "mgasps", float64(st.usedGas) * 1000 / float64(elapsed),
 		}
 		if compReadDiff > 0 && compWriteDiff > 0 {
-			context = append(context, "compRead", compReadDiff/1024/1024)
-			context = append(context, "compWrite", compWriteDiff/1024/1024)
+			context = append(context, "compRead", common.StorageSize(compReadDiff))
+			context = append(context, "compWrite", common.StorageSize(compWriteDiff))
 		}
 		if timestamp := time.Unix(int64(end.Time()), 0); time.Since(timestamp) > time.Minute {
 			context = append(context, []interface{}{"age", common.PrettyAge(timestamp)}...)
