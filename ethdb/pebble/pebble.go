@@ -215,7 +215,12 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		if stats == nil {
 			return
 		}
-		log.Info("SubLevels", "message", msg, "number", stats.Levels[0].Sublevels)
+		for d, l := range stats.Levels {
+			if l.NumFiles == 0 {
+				continue
+			}
+			log.Info("Pebble level", "level", d, "file", l.NumFiles, "sublevel", l.Sublevels, "size(mb)", l.Size/1024/1024, "score", l.Score, "writeAmp", l.WriteAmp())
+		}
 	}
 	printCh := make(chan string, 100)
 	go func() {
