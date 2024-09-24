@@ -18,9 +18,6 @@ package snapshot
 
 import (
 	"bytes"
-	"sync"
-	"time"
-
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -28,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/triedb"
+	"sync"
 )
 
 // diskLayer is a low level persistent snapshot built on top of a key-value store.
@@ -126,23 +124,23 @@ func (dl *diskLayer) AccountRLP(hash common.Hash) ([]byte, error) {
 	if blob, found := dl.cache.HasGet(nil, hash[:]); found {
 		snapshotCleanAccountHitMeter.Mark(1)
 		snapshotCleanAccountReadMeter.Mark(int64(len(blob)))
-		dl.accountStats.update(locClean, 0)
-		if len(blob) == 0 {
-			dl.accountStats.miss()
-		} else {
-			dl.accountStats.find()
-		}
+		//dl.accountStats.update(locClean, 0)
+		//if len(blob) == 0 {
+		//	dl.accountStats.miss()
+		//} else {
+		//	dl.accountStats.find()
+		//}
 		return blob, nil
 	}
 	// Cache doesn't contain account, pull from disk and cache for later
-	ss := time.Now()
+	//ss := time.Now()
 	blob := rawdb.ReadAccountSnapshot(dl.diskdb, hash)
-	dl.accountStats.update(locDisk, time.Since(ss))
-	if len(blob) == 0 {
-		dl.accountStats.miss()
-	} else {
-		dl.accountStats.find()
-	}
+	//dl.accountStats.update(locDisk, time.Since(ss))
+	//if len(blob) == 0 {
+	//	dl.accountStats.miss()
+	//} else {
+	//	dl.accountStats.find()
+	//}
 
 	dl.cache.Set(hash[:], blob)
 	snapshotCleanAccountMissMeter.Mark(1)
@@ -179,23 +177,23 @@ func (dl *diskLayer) Storage(accountHash, storageHash common.Hash) ([]byte, erro
 	if blob, found := dl.cache.HasGet(nil, key); found {
 		snapshotCleanStorageHitMeter.Mark(1)
 		snapshotCleanStorageReadMeter.Mark(int64(len(blob)))
-		dl.storageStats.update(locClean, 0)
-		if len(blob) == 0 {
-			dl.storageStats.miss()
-		} else {
-			dl.storageStats.find()
-		}
+		//dl.storageStats.update(locClean, 0)
+		//if len(blob) == 0 {
+		//	dl.storageStats.miss()
+		//} else {
+		//	dl.storageStats.find()
+		//}
 		return blob, nil
 	}
 	// Cache doesn't contain storage slot, pull from disk and cache for later
-	ss := time.Now()
+	//ss := time.Now()
 	blob := rawdb.ReadStorageSnapshot(dl.diskdb, accountHash, storageHash)
-	dl.storageStats.update(locDisk, time.Since(ss))
-	if len(blob) == 0 {
-		dl.storageStats.miss()
-	} else {
-		dl.storageStats.find()
-	}
+	//dl.storageStats.update(locDisk, time.Since(ss))
+	//if len(blob) == 0 {
+	//	dl.storageStats.miss()
+	//} else {
+	//	dl.storageStats.find()
+	//}
 
 	dl.cache.Set(key, blob)
 	snapshotCleanStorageMissMeter.Mark(1)
