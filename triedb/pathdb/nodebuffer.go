@@ -238,6 +238,7 @@ func (b *nodebuffer) flush(db ethdb.KeyValueStore, clean *fastcache.Cache, id ui
 
 		// Flush all mutations in a single batch
 		size := batch.ValueSize()
+		batchTime := time.Since(start)
 		if err := batch.Write(); err != nil {
 			b.flushErr = err
 			return
@@ -245,7 +246,7 @@ func (b *nodebuffer) flush(db ethdb.KeyValueStore, clean *fastcache.Cache, id ui
 		commitBytesMeter.Mark(int64(size))
 		commitNodesMeter.Mark(int64(nodes))
 		commitTimeTimer.UpdateSince(start)
-		log.Info("Persisted pathdb nodes", "nodes", nodes, "bytes", common.StorageSize(size), "elapsed", common.PrettyDuration(time.Since(start)))
+		log.Info("Persisted pathdb nodes", "nodes", nodes, "bytes", common.StorageSize(size), "batchTime", common.PrettyDuration(batchTime), "elapsed", common.PrettyDuration(time.Since(start)))
 
 		// The content in the frozen buffer is kept for consequent state access
 	}()
