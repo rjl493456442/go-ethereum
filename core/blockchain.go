@@ -210,15 +210,18 @@ type BlockChain struct {
 	chainConfig *params.ChainConfig // Chain & network configuration
 	cacheConfig *CacheConfig        // Cache configuration for pruning
 
-	db            ethdb.Database                   // Low level persistent database to store final content in
-	snaps         *snapshot.Tree                   // Snapshot tree for fast trie leaf access
-	triegc        *prque.Prque[int64, common.Hash] // Priority queue mapping block numbers to tries to gc
-	gcproc        time.Duration                    // Accumulates canonical block processing for trie dumping
-	lastWrite     uint64                           // Last block when the state was flushed
-	flushInterval atomic.Int64                     // Time interval (processing time) after which to flush a state
-	triedb        *triedb.Database                 // The database handler for maintaining trie nodes.
-	statedb       *state.CachingDB                 // State database to reuse between imports (contains state cache)
-	txIndexer     *txIndexer                       // Transaction indexer, might be nil if not enabled
+	db        ethdb.Database                   // Low level persistent database to store final content in
+	snaps     *snapshot.Tree                   // Snapshot tree for fast trie leaf access
+	triegc    *prque.Prque[int64, common.Hash] // Priority queue mapping block numbers to tries to gc
+	gcproc    time.Duration                    // Accumulates canonical block processing for trie dumping
+	compRead  uint64
+	compWrite uint64
+
+	lastWrite     uint64           // Last block when the state was flushed
+	flushInterval atomic.Int64     // Time interval (processing time) after which to flush a state
+	triedb        *triedb.Database // The database handler for maintaining trie nodes.
+	statedb       *state.CachingDB // State database to reuse between imports (contains state cache)
+	txIndexer     *txIndexer       // Transaction indexer, might be nil if not enabled
 
 	hc            *HeaderChain
 	rmLogsFeed    event.Feed
@@ -1831,7 +1834,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			snapDiffItems, snapBufItems = bc.snaps.Size()
 		}
 		trieDiffNodes, trieBufNodes, _ := bc.triedb.Size()
-		stats.report(chain, it.index, snapDiffItems, snapBufItems, trieDiffNodes, trieBufNodes, setHead)
+		stats.report(bc, chain, it.index, snapDiffItems, snapBufItems, trieDiffNodes, trieBufNodes, setHead)
 
 		if !setHead {
 			// After merge we expect few side chains. Simply count

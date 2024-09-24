@@ -17,6 +17,7 @@
 package core
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -45,7 +46,7 @@ const statsReportLimit = 8 * time.Second
 
 // report prints statistics if some number of blocks have been processed
 // or more than a few seconds have passed since the last message.
-func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, snapBufItems, trieDiffNodes, triebufNodes common.StorageSize, setHead bool) {
+func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, snapDiffItems, snapBufItems, trieDiffNodes, triebufNodes common.StorageSize, setHead bool) {
 	// Fetch the timings for the batch
 	var (
 		now     = mclock.Now()
@@ -53,6 +54,23 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 	)
 	// If we're at the last block of the batch or report period reached, log
 	if index == len(chain)-1 || elapsed >= statsReportLimit {
+		var (
+			stats, _      = bc.db.Stat()
+			compRead      uint64
+			compWrite     uint64
+			compReadDiff  int64
+			compWriteDiff int64
+		)
+		fmt.Sscanf(stats, "%d/%d", &compRead, &compWrite)
+
+		if compRead != 0 && compWrite != 0 {
+			if bc.compRead != 0 && bc.compWrite != 0 {
+				compReadDiff = int64(compRead) - int64(bc.compWrite)
+				compWriteDiff = int64(compWrite) - int64(bc.compWrite)
+			}
+			bc.compRead = compRead
+			bc.compWrite = compWrite
+		}
 		// Count the number of transactions in this segment
 		var txs int
 		for _, block := range chain[st.lastIndex : index+1] {
@@ -73,6 +91,10 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 			"chainWrite", common.PrettyDuration(st.chainWriteTime), "evmTime", common.PrettyDuration(st.evmTime),
 			"trieUpdate", common.PrettyDuration(st.trieUpdate),
 			"elapsed", common.PrettyDuration(elapsed), "mgasps", float64(st.usedGas) * 1000 / float64(elapsed),
+		}
+		if compReadDiff > 0 && compWriteDiff > 0 {
+			context = append(context, "compRead", compReadDiff/1024/1024)
+			context = append(context, "compWrite", compWriteDiff/1024/1024)
 		}
 		if timestamp := time.Unix(int64(end.Time()), 0); time.Since(timestamp) > time.Minute {
 			context = append(context, []interface{}{"age", common.PrettyAge(timestamp)}...)

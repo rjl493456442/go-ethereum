@@ -438,7 +438,16 @@ func upperBound(prefix []byte) (limit []byte) {
 // Stat returns the internal metrics of Pebble in a text format. It's a developer
 // method to read everything there is to read, independent of Pebble version.
 func (d *Database) Stat() (string, error) {
-	return d.db.Metrics().String(), nil
+	var (
+		compWrite int64
+		compRead  int64
+		stats     = d.db.Metrics()
+	)
+	for _, levelMetrics := range stats.Levels {
+		compRead += int64(levelMetrics.BytesRead)
+		compWrite += int64(levelMetrics.BytesCompacted)
+	}
+	return fmt.Sprintf("%d/%d", compRead, compRead), nil
 }
 
 // Compact flattens the underlying data store for the given key range. In essence,
