@@ -235,7 +235,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		// Pebble has a single combined cache area and the write
 		// buffers are taken from this too. Assign all available
 		// memory allowance for cache.
-		Cache:        pebble.NewCache(int64(cache * 1024 * 1024)),
+		Cache:        pebble.NewCache(int64(5 * cache * 1024 * 1024)),
 		MaxOpenFiles: handles,
 
 		// The size of memory table(as well as the write buffer).
