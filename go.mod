@@ -147,3 +147,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
+
+replace github.com/cockroachdb/pebble v1.1.2 => github.com/rjl493456442/pebble debug-info
+
