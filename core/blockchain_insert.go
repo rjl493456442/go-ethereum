@@ -109,6 +109,7 @@ func (st *insertStats) report(bc *BlockChain, chain []*types.Block, index int, s
 			"chainWrite", common.PrettyDuration(st.chainWriteTime), "evmTime", common.PrettyDuration(st.evmTime),
 			"trieUpdate", common.PrettyDuration(st.trieUpdate),
 			"subLevel", subLevel, "files", files, "size", common.StorageSize(size),
+			"blockcache", common.StorageSize(cacheSize), "blockcacheItem", cacheTotal,
 			"elapsed", common.PrettyDuration(elapsed), "mgasps", float64(st.usedGas) * 1000 / float64(elapsed),
 		}
 		if cacheHitDiff > 0 && cacheMissDiff > 0 {

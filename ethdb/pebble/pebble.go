@@ -458,9 +458,9 @@ func (d *Database) Stat() (string, error) {
 	}
 	return fmt.Sprintf("%d/%d/%d/%d/%d/%d/%d/%d/%d",
 		compRead, compRead, subLevel, files, size,
-		stats.TableCache.Size,
-		stats.TableCache.Count,
-		stats.TableCache.Hits, stats.TableCache.Misses,
+		stats.BlockCache.Size,
+		stats.BlockCache.Count,
+		stats.BlockCache.Hits, stats.BlockCache.Misses,
 	), nil
 }
 
