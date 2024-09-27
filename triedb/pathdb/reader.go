@@ -157,5 +157,9 @@ func (db *Database) StateReader(root common.Hash) (database.StateReader, error) 
 	if layer == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	return &reader{layer: layer}, nil
+	return &reader{
+		db:    db,
+		layer: layer,
+		state: root,
+	}, nil
 }
