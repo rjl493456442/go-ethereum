@@ -72,8 +72,8 @@ type Database struct {
 	seekCompGauge       metrics.Gauge // Gauge for tracking the number of table compaction caused by read opt
 	manualMemAllocGauge metrics.Gauge // Gauge for tracking amount of non-managed memory currently allocated
 
-	readBytes        metrics.Meter
-	readBytesInCache metrics.Meter
+	readBytes        metrics.ResettingTimer
+	readBytesInCache metrics.ResettingTimer
 	readBytesTimer   metrics.ResettingTimer
 
 	levelsGauge []metrics.Gauge // Gauge for tracking the number of tables in levels
@@ -259,8 +259,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	db.seekCompGauge = metrics.GetOrRegisterGauge(namespace+"compact/seek", nil)
 	db.manualMemAllocGauge = metrics.GetOrRegisterGauge(namespace+"memory/manualalloc", nil)
 
-	db.readBytes = metrics.GetOrRegisterMeter(namespace+"readbytes/total", nil)
-	db.readBytesInCache = metrics.GetOrRegisterMeter(namespace+"readbytes/cache", nil)
+	db.readBytes = metrics.NewRegisteredResettingTimer(namespace+"readbytes/total", nil)
+	db.readBytesInCache = metrics.NewRegisteredResettingTimer(namespace+"readbytes/cache", nil)
 	db.readBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"readbytes/duration", nil)
 
 	// Start up the metrics gathering and return
@@ -324,8 +324,8 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if err = closer.Close(); err != nil {
 		return nil, err
 	}
-	d.readBytes.Mark(int64(bytes))
-	d.readBytesInCache.Mark(int64(bytesInCache))
+	d.readBytes.Update(time.Duration(bytes))
+	d.readBytesInCache.Update(time.Duration(bytesInCache))
 	d.readBytesTimer.Update(bytesReadDuration)
 	return ret, nil
 }
