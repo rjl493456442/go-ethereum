@@ -188,9 +188,9 @@ func (batch *freezerTableBatch) commit() error {
 	if err != nil {
 		return err
 	}
-	if err := batch.t.head.Sync(); err != nil {
-		return err
-	}
+	//if err := batch.t.head.Sync(); err != nil {
+	//	return err
+	//}
 	dataSize := int64(len(batch.dataBuffer))
 	batch.dataBuffer = batch.dataBuffer[:0]
 
@@ -200,9 +200,9 @@ func (batch *freezerTableBatch) commit() error {
 	if err != nil {
 		return err
 	}
-	if err := batch.t.index.Sync(); err != nil {
-		return err
-	}
+	//if err := batch.t.index.Sync(); err != nil {
+	//	return err
+	//}
 	indexSize := int64(len(batch.indexBuffer))
 	batch.indexBuffer = batch.indexBuffer[:0]
 
