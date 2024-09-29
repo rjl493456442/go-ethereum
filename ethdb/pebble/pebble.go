@@ -72,9 +72,13 @@ type Database struct {
 	seekCompGauge       metrics.Gauge // Gauge for tracking the number of table compaction caused by read opt
 	manualMemAllocGauge metrics.Gauge // Gauge for tracking amount of non-managed memory currently allocated
 
-	readBytes        metrics.ResettingTimer
-	readBytesInCache metrics.ResettingTimer
-	readBytesTimer   metrics.ResettingTimer
+	readBytes             metrics.ResettingTimer
+	readBytesInCache      metrics.ResettingTimer
+	readBytesMeter        metrics.Meter
+	readBytesInCacheMeter metrics.Meter
+	readBytesTimer        metrics.ResettingTimer
+	readChunkTimer        metrics.ResettingTimer
+	readChunkN            metrics.ResettingTimer
 
 	levelsGauge []metrics.Gauge // Gauge for tracking the number of tables in levels
 
@@ -261,7 +265,11 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 
 	db.readBytes = metrics.NewRegisteredResettingTimer(namespace+"readbytes/total", nil)
 	db.readBytesInCache = metrics.NewRegisteredResettingTimer(namespace+"readbytes/cache", nil)
+	db.readBytesMeter = metrics.NewRegisteredMeter(namespace+"readbytes/total", nil)
+	db.readBytesInCacheMeter = metrics.NewRegisteredMeter(namespace+"readbytes/cache", nil)
 	db.readBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"readbytes/duration", nil)
+	db.readChunkTimer = metrics.NewRegisteredResettingTimer(namespace+"readchunks/duration", nil)
+	db.readChunkN = metrics.NewRegisteredResettingTimer(namespace+"readchunks/n", nil)
 
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
@@ -315,7 +323,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
-	dat, closer, bytes, bytesInCache, bytesReadDuration, err := d.db.GetWithStats(key)
+	dat, closer, bytes, bytesInCache, chunkRead, bytesReadDuration, err := d.db.GetWithStats(key)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +334,14 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	}
 	d.readBytes.Update(time.Duration(bytes))
 	d.readBytesInCache.Update(time.Duration(bytesInCache))
+	d.readBytesMeter.Mark(int64(bytes))
+	d.readBytesInCacheMeter.Mark(int64(bytesInCache))
 	d.readBytesTimer.Update(bytesReadDuration)
+
+	if chunkRead != 0 {
+		d.readChunkTimer.Update(bytesReadDuration / time.Duration(chunkRead))
+		d.readChunkN.Update(time.Duration(chunkRead))
+	}
 	return ret, nil
 }
 

@@ -148,4 +148,4 @@ require (
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/cockroachdb/pebble => github.com/rjl493456442/pebble v0.0.0-20240929073718-7d82c361b6b8
+replace github.com/cockroachdb/pebble => github.com/rjl493456442/pebble v0.0.0-20240929090858-1b960814cf22
