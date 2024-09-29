@@ -340,8 +340,8 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 
 	if chunkRead != 0 {
 		d.readChunkTimer.Update(bytesReadDuration / time.Duration(chunkRead))
-		d.readChunkN.Update(time.Duration(chunkRead))
 	}
+	d.readChunkN.Update(time.Duration(chunkRead))
 	return ret, nil
 }
 
