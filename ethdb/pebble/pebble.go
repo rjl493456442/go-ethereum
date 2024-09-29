@@ -72,6 +72,10 @@ type Database struct {
 	seekCompGauge       metrics.Gauge // Gauge for tracking the number of table compaction caused by read opt
 	manualMemAllocGauge metrics.Gauge // Gauge for tracking amount of non-managed memory currently allocated
 
+	readBytes        metrics.Meter
+	readBytesInCache metrics.Meter
+	readBytesTimer   metrics.ResettingTimer
+
 	levelsGauge []metrics.Gauge // Gauge for tracking the number of tables in levels
 
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
@@ -254,6 +258,10 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	db.seekCompGauge = metrics.GetOrRegisterGauge(namespace+"compact/seek", nil)
 	db.manualMemAllocGauge = metrics.GetOrRegisterGauge(namespace+"memory/manualalloc", nil)
 
+	db.readBytes = metrics.GetOrRegisterMeter(namespace+"readbytes/total", nil)
+	db.readBytesInCache = metrics.GetOrRegisterMeter(namespace+"readbytes/cache", nil)
+	db.readBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"readbytes/duration", nil)
+
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
 	return db, nil
@@ -306,7 +314,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
-	dat, closer, err := d.db.Get(key)
+	dat, closer, bytes, bytesInCache, bytesReadDuration, err := d.db.GetWithStats(key)
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +323,9 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if err = closer.Close(); err != nil {
 		return nil, err
 	}
+	d.readBytes.Mark(int64(bytes))
+	d.readBytesInCache.Mark(int64(bytesInCache))
+	d.readBytesTimer.Update(bytesReadDuration)
 	return ret, nil
 }
 
