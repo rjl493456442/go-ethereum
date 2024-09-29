@@ -265,8 +265,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 
 	db.readBytes = metrics.NewRegisteredResettingTimer(namespace+"readbytes/total", nil)
 	db.readBytesInCache = metrics.NewRegisteredResettingTimer(namespace+"readbytes/cache", nil)
-	db.readBytesMeter = metrics.NewRegisteredMeter(namespace+"readbytes/total", nil)
-	db.readBytesInCacheMeter = metrics.NewRegisteredMeter(namespace+"readbytes/cache", nil)
+	db.readBytesMeter = metrics.NewRegisteredMeter(namespace+"readbytes/totalmeter", nil)
+	db.readBytesInCacheMeter = metrics.NewRegisteredMeter(namespace+"readbytes/cachemeter", nil)
 	db.readBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"readbytes/duration", nil)
 	db.readChunkTimer = metrics.NewRegisteredResettingTimer(namespace+"readchunks/duration", nil)
 	db.readChunkN = metrics.NewRegisteredResettingTimer(namespace+"readchunks/n", nil)
