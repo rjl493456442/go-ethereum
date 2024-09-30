@@ -80,6 +80,14 @@ type Database struct {
 	readChunkTimer        metrics.ResettingTimer
 	readChunkN            metrics.ResettingTimer
 
+	compBytes             metrics.ResettingTimer
+	compBytesInCache      metrics.ResettingTimer
+	compBytesMeter        metrics.Meter
+	compBytesInCacheMeter metrics.Meter
+	compReadBytesTimer    metrics.ResettingTimer
+	compReadChunkTimer    metrics.ResettingTimer
+	compReadChunkN        metrics.ResettingTimer
+
 	levelsGauge []metrics.Gauge // Gauge for tracking the number of tables in levels
 
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
@@ -122,6 +130,17 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		panic("should not happen")
 	}
 	d.activeComp--
+
+	d.compBytes.Update(time.Duration(info.BytesRead))
+	d.compBytesInCache.Update(time.Duration(info.BytesCache))
+	d.compBytesMeter.Mark(int64(info.BytesRead))
+	d.compBytesInCacheMeter.Mark(int64(info.BytesCache))
+	d.compReadBytesTimer.Update(info.BlockLoadDuration)
+
+	if info.BlockLoad != 0 {
+		d.compReadChunkTimer.Update(info.BlockLoadDuration / time.Duration(info.BlockLoad))
+	}
+	d.readChunkN.Update(time.Duration(info.BlockLoad))
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
@@ -231,6 +250,14 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 		},
 		ReadOnly: readonly,
 		EventListener: &pebble.EventListener{
+			FlushEnd: func(info pebble.FlushInfo) {
+				log.Info("Flush done",
+					"tables", info.Input, "bytes", common.StorageSize(info.InputBytes),
+					"files", len(info.Output), "duration", common.PrettyDuration(info.TotalDuration),
+					"bytesRead", common.StorageSize(info.BytesRead), "bytesCache", common.StorageSize(info.BytesCache),
+					"blockLoad", info.BlockLoad, "blockLoadDuration", common.PrettyDuration(info.BlockLoadDuration),
+				)
+			},
 			CompactionBegin: db.onCompactionBegin,
 			CompactionEnd:   db.onCompactionEnd,
 			WriteStallBegin: db.onWriteStallBegin,
@@ -270,6 +297,14 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	db.readBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"readbytes/duration", nil)
 	db.readChunkTimer = metrics.NewRegisteredResettingTimer(namespace+"readchunks/duration", nil)
 	db.readChunkN = metrics.NewRegisteredResettingTimer(namespace+"readchunks/n", nil)
+
+	db.compBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/readbytes/total", nil)
+	db.compBytesInCache = metrics.NewRegisteredResettingTimer(namespace+"comp/readbytes/cache", nil)
+	db.compBytesMeter = metrics.NewRegisteredMeter(namespace+"comp/readbytes/totalmeter", nil)
+	db.compBytesInCacheMeter = metrics.NewRegisteredMeter(namespace+"comp/readbytes/cachemeter", nil)
+	db.compReadBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"comp/readbytes/duration", nil)
+	db.compReadChunkTimer = metrics.NewRegisteredResettingTimer(namespace+"comp/readchunks/duration", nil)
+	db.compReadChunkN = metrics.NewRegisteredResettingTimer(namespace+"comp/readchunks/n", nil)
 
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
