@@ -140,7 +140,7 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	if info.BlockLoad != 0 {
 		d.compReadChunkTimer.Update(info.BlockLoadDuration / time.Duration(info.BlockLoad))
 	}
-	d.readChunkN.Update(time.Duration(info.BlockLoad))
+	d.compReadChunkN.Update(time.Duration(info.BlockLoad))
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
