@@ -956,6 +956,8 @@ func inspectDeleteJournal(ctx *cli.Context) error {
 	var (
 		unknown   int
 		deleted   int
+		reset     int
+		total     int
 		maxDelete uint64
 		buffer    = crypto.NewKeccakState()
 	)
@@ -969,6 +971,7 @@ func inspectDeleteJournal(ctx *cli.Context) error {
 		if count > maxDelete {
 			maxDelete = count
 		}
+		total += 1
 
 		offset := len(rawdb.StorageDeleteJournalPrefix)
 		addr := common.BytesToAddress(key[offset : offset+common.AddressLength])
@@ -977,10 +980,11 @@ func inspectDeleteJournal(ctx *cli.Context) error {
 
 		blob := rawdb.ReadStorageSnapshot(db, crypto.HashData(buffer, addr.Bytes()), hash)
 		if len(blob) > 0 {
-			continue // exists
+			reset += 1
+			continue // storage is reset
 		}
 		deleted += 1 // truly deleted
 	}
-	log.Info("Inspected storage delete journal", "total", deleted, "max-delete", maxDelete, "unknown", unknown)
+	log.Info("Inspected storage delete journal", "reset", reset, "deleted", deleted, "total", total, "max-delete", maxDelete, "unknown", unknown)
 	return nil
 }
