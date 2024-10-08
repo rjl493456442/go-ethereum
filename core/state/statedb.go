@@ -1254,7 +1254,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
 	return newStateUpdate(origin, root, deletes, updates, nodes), nil
 }
 
-func (s *StateDB) deleteJournal(update *stateUpdate) {
+func (s *StateDB) deleteJournal(update *stateUpdate, block uint64) {
 	if !s.recordDelete {
 		return
 	}
@@ -1279,6 +1279,7 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 		}
 		total += uint64(len(deletes))
 		logDelete += len(deletes)
+		log.Info("Account with deleted storage", "block", block, "address", addr.Hex(), "number", len(deletes))
 	}
 	rawdb.WriteStorageDeleteJournalUnique(batch, unique)
 	rawdb.WriteStorageDeleteJournalTotal(batch, total)
@@ -1346,7 +1347,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateU
 			s.TrieDBCommits += time.Since(start)
 		}
 	}
-	s.deleteJournal(ret)
+	s.deleteJournal(ret, block)
 	s.reader, _ = s.db.Reader(s.originalRoot)
 	return ret, err
 }
