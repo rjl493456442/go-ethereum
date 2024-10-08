@@ -1290,7 +1290,11 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 	trackStorageDeletionUniqueGauge.Update(int64(unique))
 
 	for _, updates := range update.storages {
-		logUpdate += len(updates)
+		for _, slot := range updates {
+			if len(slot) != 0 {
+				logUpdate++
+			}
+		}
 	}
 	for _, subset := range update.nodes.Sets {
 		update, delete := subset.Size()

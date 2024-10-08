@@ -19,7 +19,6 @@ package state
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
@@ -81,8 +80,8 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		storagesDelete = make(map[common.Address]map[common.Hash]struct{})
 		codes          = make(map[common.Address]contractCode)
 
-		totalUpdate int
-		totalDelete int
+		//totalUpdate int
+		//totalDelete int
 	)
 	// Due to the fact that some accounts could be destructed and resurrected
 	// within the same block, the deletions must be aggregated first.
@@ -129,14 +128,14 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 				} else {
 					delete(deletes, hash)
 				}
-				if len(val) != 0 {
-					totalUpdate += 1
-				}
+				//if len(val) != 0 {
+				//	totalUpdate += 1
+				//}
 			}
 			if len(deletes) == 0 {
 				delete(storagesDelete, addr)
 			} else {
-				totalDelete += len(deletes)
+				//totalDelete += len(deletes)
 			}
 		}
 		if len(op.storagesOrigin) > 0 {
@@ -153,7 +152,7 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 			storagesOrigin[addr] = origin
 		}
 	}
-	log.Info("Aggregated state update", "slotDelete", totalDelete, "slotUpdate", totalUpdate)
+	//log.Info("Aggregated state update", "slotDelete", totalDelete, "slotUpdate", totalUpdate)
 	return &stateUpdate{
 		originRoot:     types.TrieRootHash(originRoot),
 		root:           types.TrieRootHash(root),
