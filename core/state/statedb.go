@@ -1264,6 +1264,10 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 		batch  = db.NewBatch()
 		unique = rawdb.ReadStorageDeleteJournalUnique(db)
 		total  = rawdb.ReadStorageDeleteJournalTotal(db)
+
+		logDelete int
+		logUpdate int
+		logNode   int
 	)
 	for addr, deletes := range update.storagesDelete {
 		for hash := range deletes {
@@ -1274,6 +1278,7 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 			rawdb.WriteStorageDeleteJournal(batch, addr, hash, n+1)
 		}
 		total += uint64(len(deletes))
+		logDelete += len(deletes)
 	}
 	rawdb.WriteStorageDeleteJournalUnique(batch, unique)
 	rawdb.WriteStorageDeleteJournalTotal(batch, total)
@@ -1283,6 +1288,15 @@ func (s *StateDB) deleteJournal(update *stateUpdate) {
 	trackStorageDeletionJournalTimer.UpdateSince(start)
 	trackStorageDeletionTotalGauge.Update(int64(total))
 	trackStorageDeletionUniqueGauge.Update(int64(unique))
+
+	for _, updates := range update.storages {
+		logUpdate += len(updates)
+	}
+	for _, subset := range update.nodes.Sets {
+		update, delete := subset.Size()
+		logNode += update + delete
+	}
+	log.Info("Inspected state transition", "slotUpdate", logUpdate, "slotDelete", logDelete, "accounts", len(update.accounts), "code", len(update.codes), "nodes", logNode)
 }
 
 // commitAndFlush is a wrapper of commit which also commits the state mutations
