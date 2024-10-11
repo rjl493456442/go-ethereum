@@ -81,7 +81,7 @@ func newTriePrefetcher(db Database, root common.Hash, namespace string, noreads 
 
 		accountLoadReadMeter:  metrics.GetOrRegisterMeter(prefix+"/account/load/read", nil),
 		accountLoadWriteMeter: metrics.GetOrRegisterMeter(prefix+"/account/load/write", nil),
-		accountLoadTimer:      metrics.NewRegisteredResettingTimer(prefix+"/account/load/time", nil),
+		accountLoadTimer:      metrics.GetOrRegisterResettingTimer(prefix+"/account/load/time", nil),
 		accountDupReadMeter:   metrics.GetOrRegisterMeter(prefix+"/account/dup/read", nil),
 		accountDupWriteMeter:  metrics.GetOrRegisterMeter(prefix+"/account/dup/write", nil),
 		accountDupCrossMeter:  metrics.GetOrRegisterMeter(prefix+"/account/dup/cross", nil),
@@ -89,7 +89,7 @@ func newTriePrefetcher(db Database, root common.Hash, namespace string, noreads 
 
 		storageLoadReadMeter:  metrics.GetOrRegisterMeter(prefix+"/storage/load/read", nil),
 		storageLoadWriteMeter: metrics.GetOrRegisterMeter(prefix+"/storage/load/write", nil),
-		storageLoadTimer:      metrics.NewRegisteredResettingTimer(prefix+"/storage/load/time", nil),
+		storageLoadTimer:      metrics.GetOrRegisterResettingTimer(prefix+"/storage/load/time", nil),
 		storageDupReadMeter:   metrics.GetOrRegisterMeter(prefix+"/storage/dup/read", nil),
 		storageDupWriteMeter:  metrics.GetOrRegisterMeter(prefix+"/storage/dup/write", nil),
 		storageDupCrossMeter:  metrics.GetOrRegisterMeter(prefix+"/storage/dup/cross", nil),
