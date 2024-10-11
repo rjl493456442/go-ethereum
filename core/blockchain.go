@@ -1953,15 +1953,15 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	if statedb.StorageLoaded != 0 {
 		storageReadSingleTimer.Update(statedb.StorageReads / time.Duration(statedb.StorageLoaded))
 	}
-	accountUpdateTimer.Update(statedb.AccountUpdates)                                 // Account updates are complete(in validation)
+	accountUpdateTimer.Update(statedb.AccountUpdates - statedb.PrefetcherWait)        // Account updates are complete(in validation)
 	storageUpdateTimer.Update(statedb.StorageUpdates)                                 // Storage updates are complete(in validation)
 	accountHashTimer.Update(statedb.AccountHashes)                                    // Account hashes are complete(in validation)
 	triehash := statedb.AccountHashes                                                 // The time spent on tries hashing
 	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates                     // The time spent on tries update
 	blockExecutionTimer.Update(ptime - (statedb.AccountReads + statedb.StorageReads)) // The time spent on EVM processing
 	prefetchWaitTimer.Update(statedb.PrefetcherWait)
-	blockValidationTimer.Update(vtime - (triehash + trieUpdate) - statedb.PrefetcherWait) // The time spent on block validation
-	blockCrossValidationTimer.Update(xvtime)                                              // The time spent on stateless cross validation
+	blockValidationTimer.Update(vtime - (triehash + trieUpdate)) // The time spent on block validation
+	blockCrossValidationTimer.Update(xvtime)                     // The time spent on stateless cross validation
 
 	// Write the block to the chain and get the status.
 	var (
