@@ -777,13 +777,11 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// If there was a trie prefetcher operating, terminate it async so that the
 	// individual storage tries can be updated as soon as the disk load finishes.
 	if s.prefetcher != nil {
-		start := time.Now()
 		s.prefetcher.terminate(true)
 		defer func() {
 			s.prefetcher.report()
 			s.prefetcher = nil // Pre-byzantium, unset any used up prefetcher
 		}()
-		s.PrefetcherWait = time.Since(start)
 	}
 	// Process all storage updates concurrently. The state object update root
 	// method will internally call a blocking trie fetch from the prefetcher,
@@ -870,6 +868,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		} else {
 			s.trie = trie
 		}
+		s.PrefetcherWait = time.Since(start)
 	}
 	// Perform updates before deletions.  This prevents resolution of unnecessary trie nodes
 	// in circumstances similar to the following:
