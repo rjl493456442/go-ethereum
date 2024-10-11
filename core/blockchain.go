@@ -77,6 +77,7 @@ var (
 
 	snapshotCommitTimer = metrics.NewRegisteredResettingTimer("chain/snapshot/commits", nil)
 	triedbCommitTimer   = metrics.NewRegisteredResettingTimer("chain/triedb/commits", nil)
+	prefetchWaitTimer   = metrics.NewRegisteredResettingTimer("chain/prefetch/wait", nil)
 
 	blockInsertTimer          = metrics.NewRegisteredResettingTimer("chain/inserts", nil)
 	blockValidationTimer      = metrics.NewRegisteredResettingTimer("chain/validation", nil)
@@ -1958,8 +1959,9 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	triehash := statedb.AccountHashes                                                 // The time spent on tries hashing
 	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates                     // The time spent on tries update
 	blockExecutionTimer.Update(ptime - (statedb.AccountReads + statedb.StorageReads)) // The time spent on EVM processing
-	blockValidationTimer.Update(vtime - (triehash + trieUpdate))                      // The time spent on block validation
-	blockCrossValidationTimer.Update(xvtime)                                          // The time spent on stateless cross validation
+	prefetchWaitTimer.Update(statedb.PrefetcherWait)
+	blockValidationTimer.Update(vtime - (triehash + trieUpdate) - statedb.PrefetcherWait) // The time spent on block validation
+	blockCrossValidationTimer.Update(xvtime)                                              // The time spent on stateless cross validation
 
 	// Write the block to the chain and get the status.
 	var (

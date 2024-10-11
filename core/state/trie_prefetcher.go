@@ -19,6 +19,7 @@ package state
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -55,6 +56,7 @@ type triePrefetcher struct {
 	accountDupWriteMeter  metrics.Meter
 	accountDupCrossMeter  metrics.Meter
 	accountWasteMeter     metrics.Meter
+	accountLoadTimer      metrics.ResettingTimer
 
 	storageLoadReadMeter  metrics.Meter
 	storageLoadWriteMeter metrics.Meter
@@ -62,6 +64,7 @@ type triePrefetcher struct {
 	storageDupWriteMeter  metrics.Meter
 	storageDupCrossMeter  metrics.Meter
 	storageWasteMeter     metrics.Meter
+	storageLoadTimer      metrics.ResettingTimer
 }
 
 func newTriePrefetcher(db Database, root common.Hash, namespace string, noreads bool) *triePrefetcher {
@@ -78,6 +81,7 @@ func newTriePrefetcher(db Database, root common.Hash, namespace string, noreads 
 
 		accountLoadReadMeter:  metrics.GetOrRegisterMeter(prefix+"/account/load/read", nil),
 		accountLoadWriteMeter: metrics.GetOrRegisterMeter(prefix+"/account/load/write", nil),
+		accountLoadTimer:      metrics.NewRegisteredResettingTimer(prefix+"/account/load/time", nil),
 		accountDupReadMeter:   metrics.GetOrRegisterMeter(prefix+"/account/dup/read", nil),
 		accountDupWriteMeter:  metrics.GetOrRegisterMeter(prefix+"/account/dup/write", nil),
 		accountDupCrossMeter:  metrics.GetOrRegisterMeter(prefix+"/account/dup/cross", nil),
@@ -85,6 +89,7 @@ func newTriePrefetcher(db Database, root common.Hash, namespace string, noreads 
 
 		storageLoadReadMeter:  metrics.GetOrRegisterMeter(prefix+"/storage/load/read", nil),
 		storageLoadWriteMeter: metrics.GetOrRegisterMeter(prefix+"/storage/load/write", nil),
+		storageLoadTimer:      metrics.NewRegisteredResettingTimer(prefix+"/storage/load/time", nil),
 		storageDupReadMeter:   metrics.GetOrRegisterMeter(prefix+"/storage/dup/read", nil),
 		storageDupWriteMeter:  metrics.GetOrRegisterMeter(prefix+"/storage/dup/write", nil),
 		storageDupCrossMeter:  metrics.GetOrRegisterMeter(prefix+"/storage/dup/cross", nil),
@@ -120,7 +125,10 @@ func (p *triePrefetcher) report() {
 		if fetcher.root == p.root {
 			p.accountLoadReadMeter.Mark(int64(len(fetcher.seenRead)))
 			p.accountLoadWriteMeter.Mark(int64(len(fetcher.seenWrite)))
-
+			total := len(fetcher.seenRead) + len(fetcher.seenWrite)
+			if total > 0 {
+				p.accountLoadTimer.Update(fetcher.readTime / time.Duration(total))
+			}
 			p.accountDupReadMeter.Mark(int64(fetcher.dupsRead))
 			p.accountDupWriteMeter.Mark(int64(fetcher.dupsWrite))
 			p.accountDupCrossMeter.Mark(int64(fetcher.dupsCross))
@@ -133,7 +141,10 @@ func (p *triePrefetcher) report() {
 		} else {
 			p.storageLoadReadMeter.Mark(int64(len(fetcher.seenRead)))
 			p.storageLoadWriteMeter.Mark(int64(len(fetcher.seenWrite)))
-
+			total := len(fetcher.seenRead) + len(fetcher.seenWrite)
+			if total > 0 {
+				p.storageLoadTimer.Update(fetcher.readTime / time.Duration(total))
+			}
 			p.storageDupReadMeter.Mark(int64(fetcher.dupsRead))
 			p.storageDupWriteMeter.Mark(int64(fetcher.dupsWrite))
 			p.storageDupCrossMeter.Mark(int64(fetcher.dupsCross))
@@ -237,6 +248,7 @@ type subfetcher struct {
 
 	seenRead  map[string]struct{} // Tracks the entries already loaded via read operations
 	seenWrite map[string]struct{} // Tracks the entries already loaded via write operations
+	readTime  time.Duration       // Total time spent on resolving states
 
 	dupsRead  int // Number of duplicate preload tasks via reads only
 	dupsWrite int // Number of duplicate preload tasks via writes only
@@ -399,11 +411,14 @@ func (sf *subfetcher) loop() {
 						continue
 					}
 				}
+				start := time.Now()
 				if len(task.key) == common.AddressLength {
 					sf.trie.GetAccount(common.BytesToAddress(task.key))
 				} else {
 					sf.trie.GetStorage(sf.addr, task.key)
 				}
+				sf.readTime += time.Since(start)
+
 				if task.read {
 					sf.seenRead[key] = struct{}{}
 				} else {
