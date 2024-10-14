@@ -79,6 +79,7 @@ type Database struct {
 	readBytesTimer        metrics.ResettingTimer
 	readChunkTimer        metrics.ResettingTimer
 	readChunkN            metrics.ResettingTimer
+	readChunkHistgram     metrics.Histogram
 
 	compBytes             metrics.ResettingTimer
 	compBytesInCache      metrics.ResettingTimer
@@ -87,6 +88,7 @@ type Database struct {
 	compReadBytesTimer    metrics.ResettingTimer
 	compReadChunkTimer    metrics.ResettingTimer
 	compReadChunkN        metrics.ResettingTimer
+	compReadHistgram      metrics.Histogram
 
 	levelsGauge []metrics.Gauge // Gauge for tracking the number of tables in levels
 
@@ -141,6 +143,9 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		d.compReadChunkTimer.Update(info.BlockLoadDuration / time.Duration(info.BlockLoad))
 	}
 	d.compReadChunkN.Update(time.Duration(info.BlockLoad))
+	for _, x := range info.Durations {
+		d.compReadHistgram.Update(x.Nanoseconds())
+	}
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
@@ -297,6 +302,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	db.readBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"readbytes/duration", nil)
 	db.readChunkTimer = metrics.NewRegisteredResettingTimer(namespace+"readchunks/duration", nil)
 	db.readChunkN = metrics.NewRegisteredResettingTimer(namespace+"readchunks/n", nil)
+	db.readChunkHistgram = metrics.NewRegisteredHistogram(namespace+"readchunks/histgram", nil, metrics.NewExpDecaySample(1028, 0.015))
 
 	db.compBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/readbytes/total", nil)
 	db.compBytesInCache = metrics.NewRegisteredResettingTimer(namespace+"comp/readbytes/cache", nil)
@@ -305,6 +311,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	db.compReadBytesTimer = metrics.NewRegisteredResettingTimer(namespace+"comp/readbytes/duration", nil)
 	db.compReadChunkTimer = metrics.NewRegisteredResettingTimer(namespace+"comp/readchunks/duration", nil)
 	db.compReadChunkN = metrics.NewRegisteredResettingTimer(namespace+"comp/readchunks/n", nil)
+	db.compReadHistgram = metrics.NewRegisteredHistogram(namespace+"comp/histgram", nil, metrics.NewExpDecaySample(1028, 0.015))
 
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
@@ -358,7 +365,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
-	dat, closer, bytes, bytesInCache, chunkRead, bytesReadDuration, err := d.db.GetWithStats(key)
+	dat, closer, bytes, bytesInCache, chunkRead, bytesReadDuration, durations, err := d.db.GetWithStats(key)
 	if err != nil {
 		return nil, err
 	}
@@ -377,6 +384,9 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 		d.readChunkTimer.Update(bytesReadDuration / time.Duration(chunkRead))
 	}
 	d.readChunkN.Update(time.Duration(chunkRead))
+	for _, x := range durations {
+		d.readChunkHistgram.Update(x.Nanoseconds())
+	}
 	return ret, nil
 }
 
