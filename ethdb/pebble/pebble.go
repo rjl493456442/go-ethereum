@@ -143,9 +143,22 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		d.compReadChunkTimer.Update(info.BlockLoadDuration / time.Duration(info.BlockLoad))
 	}
 	d.compReadChunkN.Update(time.Duration(info.BlockLoad))
+
+	var maxT time.Duration
+	var minT time.Duration
+	var sumT time.Duration
+	var avgT time.Duration
 	for _, x := range info.Durations {
+		maxT = max(maxT, x)
+		minT = min(minT, x)
+		sumT += x
 		d.compReadHistgram.Update(x.Nanoseconds())
 	}
+	if len(info.Durations) > 0 {
+		avgT = sumT / time.Duration(len(info.Durations))
+	}
+	log.Info("Compaction stats", "bytes", common.StorageSize(info.BytesRead-info.BytesCache), "blocks", info.BlockLoad, "total", common.PrettyDuration(info.BlockLoadDuration),
+		"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
