@@ -75,6 +75,9 @@ func (s *readSample) report(msg string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	if len(s.data) == 0 {
+		return
+	}
 	//if time.Since(s.last) > time.Second*3 {
 	//	s.last = time.Now()
 	//}
@@ -83,6 +86,9 @@ func (s *readSample) report(msg string) {
 	var sumT time.Duration
 	var avgT time.Duration
 	for _, x := range s.data {
+		if x == 0 {
+			continue
+		}
 		maxT = max(maxT, x)
 		minT = min(minT, x)
 		sumT += x
@@ -641,8 +647,8 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		case <-timer.C:
 			timer.Reset(refresh)
 			// Timeout, gather a new set of stats
-			d.readSample.report("read sample")
-			d.compSample.report("compaction sample")
+			d.readSample.report("read stats")
+			d.compSample.report("compaction stats")
 		}
 	}
 	errc <- nil
