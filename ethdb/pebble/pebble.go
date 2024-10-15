@@ -51,6 +51,51 @@ const (
 	degradationWarnInterval = time.Minute
 )
 
+type readSample struct {
+	data []time.Duration
+	last time.Time
+	lock sync.RWMutex
+}
+
+func (s *readSample) add(d time.Duration) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.data = append(s.data, d)
+}
+
+func (s *readSample) addList(data []time.Duration) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.data = append(s.data, data...)
+}
+
+func (s *readSample) report(msg string) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	//if time.Since(s.last) > time.Second*3 {
+	//	s.last = time.Now()
+	//}
+	var maxT time.Duration
+	var minT time.Duration
+	var sumT time.Duration
+	var avgT time.Duration
+	for _, x := range s.data {
+		maxT = max(maxT, x)
+		minT = min(minT, x)
+		sumT += x
+	}
+	if len(s.data) > 0 {
+		avgT = sumT / time.Duration(len(s.data))
+	}
+	log.Info(msg, "sample", len(s.data), "total", common.PrettyDuration(sumT),
+		"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
+
+	s.data = nil
+}
+
 // Database is a persistent key-value store based on the pebble storage engine.
 // Apart from basic data storage functionality it also supports batch writes and
 // iterating over the keyspace in binary-alphabetical order.
@@ -80,6 +125,7 @@ type Database struct {
 	readChunkTimer        metrics.ResettingTimer
 	readChunkN            metrics.ResettingTimer
 	readChunkHistgram     metrics.Histogram
+	readSample            *readSample
 
 	compBytes             metrics.ResettingTimer
 	compBytesInCache      metrics.ResettingTimer
@@ -89,6 +135,7 @@ type Database struct {
 	compReadChunkTimer    metrics.ResettingTimer
 	compReadChunkN        metrics.ResettingTimer
 	compReadHistgram      metrics.Histogram
+	compSample            *readSample
 
 	levelsGauge []metrics.Gauge // Gauge for tracking the number of tables in levels
 
@@ -143,22 +190,20 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		d.compReadChunkTimer.Update(info.BlockLoadDuration / time.Duration(info.BlockLoad))
 	}
 	d.compReadChunkN.Update(time.Duration(info.BlockLoad))
+	d.compSample.addList(info.Durations)
 
-	var maxT time.Duration
-	var minT time.Duration
-	var sumT time.Duration
-	var avgT time.Duration
 	for _, x := range info.Durations {
-		maxT = max(maxT, x)
-		minT = min(minT, x)
-		sumT += x
 		d.compReadHistgram.Update(x.Nanoseconds())
 	}
-	if len(info.Durations) > 0 {
-		avgT = sumT / time.Duration(len(info.Durations))
-	}
-	log.Info("Compaction stats", "bytes", common.StorageSize(info.BytesRead-info.BytesCache), "blocks", info.BlockLoad, "total", common.PrettyDuration(info.BlockLoadDuration),
-		"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
+	//var maxT time.Duration
+	//var minT time.Duration
+	//var sumT time.Duration
+	//var avgT time.Duration
+	//if len(info.Durations) > 0 {
+	//	avgT = sumT / time.Duration(len(info.Durations))
+	//}
+	//log.Info("Compaction stats", "bytes", common.StorageSize(info.BytesRead-info.BytesCache), "blocks", info.BlockLoad, "total", common.PrettyDuration(info.BlockLoadDuration),
+	//	"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
@@ -228,6 +273,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	}
 	_ = ephemeral
 	db := &Database{
+		readSample:   &readSample{last: time.Now()},
+		compSample:   &readSample{last: time.Now()},
 		fn:           file,
 		log:          logger,
 		quitChan:     make(chan chan error),
@@ -400,6 +447,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	for _, x := range durations {
 		d.readChunkHistgram.Update(x.Nanoseconds())
 	}
+	d.readSample.addList(durations)
 	return ret, nil
 }
 
@@ -593,6 +641,8 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		case <-timer.C:
 			timer.Reset(refresh)
 			// Timeout, gather a new set of stats
+			d.readSample.report("read sample")
+			d.compSample.report("compaction sample")
 		}
 	}
 	errc <- nil
