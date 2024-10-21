@@ -23,8 +23,10 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -192,8 +194,6 @@ func (s *stateSet) check() uint64 {
 // the deleted ones.
 //
 // Note, the returned slice is not a copy, so do not modify it.
-//
-//nolint:unused
 func (s *stateSet) accountList() []common.Hash {
 	// If an old list already exists, return it
 	s.lock.RLock()
@@ -229,8 +229,6 @@ func (s *stateSet) accountList() []common.Hash {
 // not empty but the flag is true.
 //
 // Note, the returned slice is not a copy, so do not modify it.
-//
-//nolint:unused
 func (s *stateSet) storageList(accountHash common.Hash) ([]common.Hash, bool) {
 	s.lock.RLock()
 	_, destructed := s.destructSet[accountHash]
@@ -543,6 +541,11 @@ func (s *stateSet) decode(r *rlp.Stream) error {
 	return nil
 }
 
+// write flushes state mutations into the provided database batch as a whole.
+func (s *stateSet) write(db ethdb.KeyValueStore, batch ethdb.Batch, genMarker []byte, clean *fastcache.Cache) (int, int) {
+	return writeStates(db, batch, genMarker, s.destructSet, s.accountData, s.storageData, clean)
+}
+
 // reset clears all cached state data, including any optional sorted lists that
 // may have been generated.
 func (s *stateSet) reset() {
@@ -556,8 +559,6 @@ func (s *stateSet) reset() {
 }
 
 // dbsize returns the approximate size for db write.
-//
-//nolint:unused
 func (s *stateSet) dbsize() int {
 	m := (len(s.destructSet) + len(s.accountData)) * len(rawdb.SnapshotAccountPrefix)
 	for _, slots := range s.storageData {
