@@ -192,8 +192,6 @@ func (s *stateSet) check() uint64 {
 // the deleted ones.
 //
 // Note, the returned slice is not a copy, so do not modify it.
-//
-//nolint:unused
 func (s *stateSet) accountList() []common.Hash {
 	// If an old list already exists, return it
 	s.lock.RLock()
@@ -229,8 +227,6 @@ func (s *stateSet) accountList() []common.Hash {
 // not empty but the flag is true.
 //
 // Note, the returned slice is not a copy, so do not modify it.
-//
-//nolint:unused
 func (s *stateSet) storageList(accountHash common.Hash) ([]common.Hash, bool) {
 	s.lock.RLock()
 	_, destructed := s.destructSet[accountHash]
