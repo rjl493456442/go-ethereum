@@ -139,15 +139,12 @@ func TestAccountIteratorBasics(t *testing.T) {
 	it := newDiffAccountIterator(common.Hash{}, states, nil)
 	verifyIterator(t, 100, it, verifyNothing) // Nil is allowed for single layer iterator
 
-	// TODO reenable these tests once the persistent state iteration
-	// is implemented.
-
-	//db := rawdb.NewMemoryDatabase()
-	//batch := db.NewBatch()
-	//states.write(db, batch, nil, nil)
-	//batch.Write()
-	//it = newDiskAccountIterator(db, common.Hash{})
-	//verifyIterator(t, 100, it, verifyNothing) // Nil is allowed for single layer iterator
+	db := rawdb.NewMemoryDatabase()
+	batch := db.NewBatch()
+	states.write(db, batch, nil, nil)
+	batch.Write()
+	it = newDiskAccountIterator(db, common.Hash{})
+	verifyIterator(t, 100, it, verifyNothing) // Nil is allowed for single layer iterator
 }
 
 // TestStorageIteratorBasics tests some simple single-layer(diff and disk) iteration for storage
@@ -182,17 +179,14 @@ func TestStorageIteratorBasics(t *testing.T) {
 		verifyIterator(t, 100, it, verifyNothing) // Nil is allowed for single layer iterator
 	}
 
-	// TODO reenable these tests once the persistent state iteration
-	// is implemented.
-
-	//db := rawdb.NewMemoryDatabase()
-	//batch := db.NewBatch()
-	//states.write(db, batch, nil, nil)
-	//batch.Write()
-	//for account := range accounts {
-	//	it := newDiskStorageIterator(db, account, common.Hash{})
-	//	verifyIterator(t, 100-nilStorage[account], it, verifyNothing) // Nil is allowed for single layer iterator
-	//}
+	db := rawdb.NewMemoryDatabase()
+	batch := db.NewBatch()
+	states.write(db, batch, nil, nil)
+	batch.Write()
+	for account := range accounts {
+		it := newDiskStorageIterator(db, account, common.Hash{})
+		verifyIterator(t, 100-nilStorage[account], it, verifyNothing) // Nil is allowed for single layer iterator
+	}
 }
 
 type testIterator struct {
@@ -268,7 +262,7 @@ func TestAccountIteratorTraversal(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	// Stack three diff layers on top with various overlaps
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 0, trienode.NewMergedNodeSet(),
@@ -291,19 +285,16 @@ func TestAccountIteratorTraversal(t *testing.T) {
 	verifyIterator(t, 7, it, verifyAccount)
 	it.Release()
 
-	// TODO reenable these tests once the persistent state iteration
-	// is implemented.
-
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	//db.tree.cap(common.HexToHash("0x04"), 2)
+	db.tree.cap(common.HexToHash("0x04"), 2)
 
-	//head = db.tree.get(common.HexToHash("0x04"))
-	//verifyIterator(t, 7, head.(*diffLayer).newBinaryAccountIterator(), verifyAccount)
-	//
-	//it, _ = db.AccountIterator(common.HexToHash("0x04"), common.Hash{})
-	//verifyIterator(t, 7, it, verifyAccount)
-	//it.Release()
+	head = db.tree.get(common.HexToHash("0x04"))
+	verifyIterator(t, 7, head.(*diffLayer).newBinaryAccountIterator(), verifyAccount)
+
+	it, _ = db.AccountIterator(common.HexToHash("0x04"), common.Hash{})
+	verifyIterator(t, 7, it, verifyAccount)
+	it.Release()
 }
 
 func TestStorageIteratorTraversal(t *testing.T) {
@@ -311,7 +302,7 @@ func TestStorageIteratorTraversal(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	// Stack three diff layers on top with various overlaps
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 0, trienode.NewMergedNodeSet(),
@@ -334,17 +325,14 @@ func TestStorageIteratorTraversal(t *testing.T) {
 	verifyIterator(t, 6, it, verifyStorage)
 	it.Release()
 
-	// TODO reenable these tests once the persistent state iteration
-	// is implemented.
-
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	//db.tree.cap(common.HexToHash("0x04"), 2)
-	//verifyIterator(t, 6, head.(*diffLayer).newBinaryStorageIterator(common.HexToHash("0xaa")), verifyStorage)
-	//
-	//it, _ = db.StorageIterator(common.HexToHash("0x04"), common.HexToHash("0xaa"), common.Hash{})
-	//verifyIterator(t, 6, it, verifyStorage)
-	//it.Release()
+	db.tree.cap(common.HexToHash("0x04"), 2)
+	verifyIterator(t, 6, head.(*diffLayer).newBinaryStorageIterator(common.HexToHash("0xaa")), verifyStorage)
+
+	it, _ = db.StorageIterator(common.HexToHash("0x04"), common.HexToHash("0xaa"), common.Hash{})
+	verifyIterator(t, 6, it, verifyStorage)
+	it.Release()
 }
 
 // TestAccountIteratorTraversalValues tests some multi-layer iteration, where we
@@ -587,7 +575,7 @@ func TestAccountIteratorFlattening(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	// Create a stack of diffs on top
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 1, trienode.NewMergedNodeSet(),
@@ -614,7 +602,7 @@ func TestAccountIteratorSeek(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 1, trienode.NewMergedNodeSet(),
 		NewStateSetWithOrigin(nil, randomAccountSet("0xaa", "0xee", "0xff", "0xf0"), nil, nil, nil))
@@ -672,7 +660,7 @@ func TestStorageIteratorSeek(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	// Stack three diff layers on top with various overlaps
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 1, trienode.NewMergedNodeSet(),
@@ -730,7 +718,7 @@ func TestAccountIteratorDeletions(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	// Stack three diff layers on top with various overlaps
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 1, trienode.NewMergedNodeSet(),
@@ -771,7 +759,7 @@ func TestStorageIteratorDeletions(t *testing.T) {
 		WriteBufferSize: 0,
 	}
 	db := New(rawdb.NewMemoryDatabase(), config, false)
-	// db.WaitGeneration()
+	db.WaitGeneration()
 
 	// Stack three diff layers on top with various overlaps
 	db.Update(common.HexToHash("0x02"), types.EmptyRootHash, 1, trienode.NewMergedNodeSet(),
