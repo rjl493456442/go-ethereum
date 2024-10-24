@@ -241,6 +241,7 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	}
 	d.compReadChunkN.Update(time.Duration(info.BlockLoad))
 	d.compSample.addList(info.Durations)
+	d.compSample.addTypes(info.Types, info.TypesInCache)
 
 	for _, x := range info.Durations {
 		d.compReadHistgram.Update(x.Nanoseconds())
