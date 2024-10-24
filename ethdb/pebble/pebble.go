@@ -55,15 +55,8 @@ type readSample struct {
 	data         []time.Duration
 	types        []int
 	typesInCache []int
-	last         time.Time
+	count        int
 	lock         sync.RWMutex
-}
-
-func (s *readSample) add(d time.Duration) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.data = append(s.data, d)
 }
 
 func (s *readSample) addList(data []time.Duration) {
@@ -71,6 +64,7 @@ func (s *readSample) addList(data []time.Duration) {
 	defer s.lock.Unlock()
 
 	s.data = append(s.data, data...)
+	s.count++
 }
 
 func (s *readSample) addTypes(types []int, typesInCache []int) {
@@ -88,9 +82,6 @@ func (s *readSample) report(msg string) {
 	if len(s.data) == 0 {
 		return
 	}
-	//if time.Since(s.last) > time.Second*3 {
-	//	s.last = time.Now()
-	//}
 	var maxT time.Duration
 	var minT time.Duration
 	var sumT time.Duration
@@ -133,7 +124,7 @@ func (s *readSample) report(msg string) {
 			dataCache++
 		}
 	}
-	if len(s.data) == 0 {
+	if s.count == 0 {
 		log.Info(msg,
 			"sample", len(s.data), "total", common.PrettyDuration(sumT),
 			"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT),
@@ -144,12 +135,15 @@ func (s *readSample) report(msg string) {
 			"sample", len(s.data), "total", common.PrettyDuration(sumT),
 			"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT),
 			"filter", filter, "filterCache", filterCache, "index", index, "indexCache", indexCache, "data", data, "dataCache", dataCache,
-			"filterAvg", filter/len(s.data), "filterCacheAvg", filterCache/len(s.data),
-			"indexAvg", index/len(s.data), "indexCacheAvg", indexCache/len(s.data),
-			"dataAvg", data/len(s.data), "dataCacheAvg", dataCache/len(s.data),
+			"filterAvg", filter/s.count, "filterCacheAvg", filterCache/s.count,
+			"indexAvg", index/s.count, "indexCacheAvg", indexCache/s.count,
+			"dataAvg", data/s.count, "dataCacheAvg", dataCache/s.count,
 		)
 	}
 	s.data = nil
+	s.types = nil
+	s.typesInCache = nil
+	s.count = 0
 }
 
 // Database is a persistent key-value store based on the pebble storage engine.
@@ -329,8 +323,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 	}
 	_ = ephemeral
 	db := &Database{
-		readSample:   &readSample{last: time.Now()},
-		compSample:   &readSample{last: time.Now()},
+		readSample:   &readSample{},
+		compSample:   &readSample{},
 		fn:           file,
 		log:          logger,
 		quitChan:     make(chan chan error),
