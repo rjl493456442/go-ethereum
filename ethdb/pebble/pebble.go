@@ -52,9 +52,11 @@ const (
 )
 
 type readSample struct {
-	data []time.Duration
-	last time.Time
-	lock sync.RWMutex
+	data         []time.Duration
+	types        []int
+	typesInCache []int
+	last         time.Time
+	lock         sync.RWMutex
 }
 
 func (s *readSample) add(d time.Duration) {
@@ -69,6 +71,14 @@ func (s *readSample) addList(data []time.Duration) {
 	defer s.lock.Unlock()
 
 	s.data = append(s.data, data...)
+}
+
+func (s *readSample) addTypes(types []int, typesInCache []int) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.types = append(s.types, types...)
+	s.typesInCache = append(s.typesInCache, typesInCache...)
 }
 
 func (s *readSample) report(msg string) {
@@ -96,9 +106,49 @@ func (s *readSample) report(msg string) {
 	if len(s.data) > 0 {
 		avgT = sumT / time.Duration(len(s.data))
 	}
-	log.Info(msg, "sample", len(s.data), "total", common.PrettyDuration(sumT),
-		"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
-
+	var (
+		filter, filterCache int
+		index, indexCache   int
+		data, dataCache     int
+	)
+	for _, x := range s.types {
+		if x == 1 {
+			index++
+		}
+		if x == 2 {
+			filter++
+		}
+		if x == 6 {
+			data++
+		}
+	}
+	for _, x := range s.typesInCache {
+		if x == 1 {
+			indexCache++
+		}
+		if x == 2 {
+			filterCache++
+		}
+		if x == 6 {
+			dataCache++
+		}
+	}
+	if len(s.data) == 0 {
+		log.Info(msg,
+			"sample", len(s.data), "total", common.PrettyDuration(sumT),
+			"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT),
+			"filter", filter, "filterCache", filterCache, "index", index, "indexCache", indexCache, "data", data, "dataCache", dataCache,
+		)
+	} else {
+		log.Info(msg,
+			"sample", len(s.data), "total", common.PrettyDuration(sumT),
+			"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT),
+			"filter", filter, "filterCache", filterCache, "index", index, "indexCache", indexCache, "data", data, "dataCache", dataCache,
+			"filterAvg", filter/len(s.data), "filterCacheAvg", filterCache/len(s.data),
+			"indexAvg", index/len(s.data), "indexCacheAvg", indexCache/len(s.data),
+			"dataAvg", data/len(s.data), "dataCacheAvg", dataCache/len(s.data),
+		)
+	}
 	s.data = nil
 }
 
@@ -431,7 +481,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
-	dat, closer, bytes, bytesInCache, chunkRead, bytesReadDuration, durations, err := d.db.GetWithStats(key)
+	dat, closer, bytes, bytesInCache, chunkRead, bytesReadDuration, durations, types, typesInCache, err := d.db.GetWithStats(key)
 	if err != nil {
 		return nil, err
 	}
@@ -454,6 +504,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 		d.readChunkHistgram.Update(x.Nanoseconds())
 	}
 	d.readSample.addList(durations)
+	d.readSample.addTypes(types, typesInCache)
 	return ret, nil
 }
 
