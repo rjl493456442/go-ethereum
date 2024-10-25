@@ -246,15 +246,24 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	for _, x := range info.Durations {
 		d.compReadHistgram.Update(x.Nanoseconds())
 	}
-	//var maxT time.Duration
-	//var minT time.Duration
-	//var sumT time.Duration
-	//var avgT time.Duration
-	//if len(info.Durations) > 0 {
-	//	avgT = sumT / time.Duration(len(info.Durations))
-	//}
-	//log.Info("Compaction stats", "bytes", common.StorageSize(info.BytesRead-info.BytesCache), "blocks", info.BlockLoad, "total", common.PrettyDuration(info.BlockLoadDuration),
-	//	"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
+	var maxT time.Duration
+	var minT time.Duration
+	var sumT time.Duration
+	var avgT time.Duration
+	if len(info.Durations) > 0 {
+		avgT = sumT / time.Duration(len(info.Durations))
+	}
+	var sourceA string
+	if len(info.Input) > 0 {
+		sourceA = info.Input[0].String()
+	}
+	var sourceB string
+	if len(info.Input) > 1 {
+		sourceB = info.Input[1].String()
+	}
+	log.Info("Compaction stats", "sourceA", sourceA, "sourceB", sourceB,
+		"bytes", common.StorageSize(info.BytesRead-info.BytesCache), "blocks", info.BlockLoad, "total", common.PrettyDuration(info.BlockLoadDuration),
+		"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
