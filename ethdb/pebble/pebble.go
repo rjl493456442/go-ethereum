@@ -90,7 +90,11 @@ func (s *readSample) report(msg string) {
 			continue
 		}
 		maxT = max(maxT, x)
-		minT = min(minT, x)
+		if minT == 0 {
+			minT = x
+		} else {
+			minT = min(minT, x)
+		}
 		sumT += x
 	}
 	if len(s.data) > 0 {
@@ -127,16 +131,20 @@ func (s *readSample) report(msg string) {
 		log.Info(msg,
 			"sample", len(s.data), "total", common.PrettyDuration(sumT),
 			"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT),
-			"filter", filter, "filterCache", filterCache, "index", index, "indexCache", indexCache, "data", data, "dataCache", dataCache,
+			"filter", filter, "filterCache", filterCache,
+			"index", index, "indexCache", indexCache,
+			"data", data, "dataCache", dataCache,
 		)
 	} else {
 		log.Info(msg,
 			"sample", len(s.data), "total", common.PrettyDuration(sumT),
 			"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT),
-			"filter", filter, "filterCache", filterCache, "index", index, "indexCache", indexCache, "data", data, "dataCache", dataCache,
-			"filterAvg", filter/s.count, "filterCacheAvg", filterCache/s.count,
-			"indexAvg", index/s.count, "indexCacheAvg", indexCache/s.count,
-			"dataAvg", data/s.count, "dataCacheAvg", dataCache/s.count,
+			"filter", filter, "filterCache", filterCache,
+			"index", index, "indexCache", indexCache,
+			"data", data, "dataCache", dataCache,
+			"filterAvg", float64(filter)/float64(s.count), "filterCacheAvg", float64(filterCache)/float64(s.count),
+			"indexAvg", float64(index)/float64(s.count), "indexCacheAvg", float64(indexCache)/float64(s.count),
+			"dataAvg", float64(data)/float64(s.count), "dataCacheAvg", float64(dataCache)/float64(s.count),
 		)
 	}
 	s.data = nil
