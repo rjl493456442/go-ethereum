@@ -359,7 +359,9 @@ func New(file string, cache int, handles int, namespace string, readonly bool, e
 
 		// The default compaction concurrency(1 thread),
 		// Here use all available CPUs for faster compaction.
-		MaxConcurrentCompactions: 1,
+		MaxConcurrentCompactions: func() int {
+			return 1
+		},
 
 		// Per-level options. Options for at least one level must be specified. The
 		// options for the last level are used for all subsequent levels.
