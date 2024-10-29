@@ -249,6 +249,15 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	var minT time.Duration
 	var sumT time.Duration
 	var avgT time.Duration
+	for _, x := range info.Durations {
+		maxT = max(x, maxT)
+		if minT == 0 {
+			minT = x
+		} else {
+			minT = min(x, minT)
+		}
+		sumT += x
+	}
 	if len(info.Durations) > 0 {
 		avgT = sumT / time.Duration(len(info.Durations))
 	}
@@ -260,7 +269,7 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	if len(info.Input) > 1 {
 		sourceB = info.Input[1].String()
 	}
-	log.Info("Compaction stats", "sourceA", sourceA, "sourceB", sourceB,
+	log.Debug("Compaction stats", "sourceA", sourceA, "sourceB", sourceB,
 		"bytes", common.StorageSize(info.BytesRead-info.BytesCache), "blocks", info.BlockLoad, "total", common.PrettyDuration(info.BlockLoadDuration),
 		"max", common.PrettyDuration(maxT), "min", common.PrettyDuration(minT), "avg", common.PrettyDuration(avgT))
 }
