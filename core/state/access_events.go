@@ -48,12 +48,22 @@ type AccessEvents struct {
 	pointCache *utils.PointCache
 }
 
+// NewAccessEvents initializes the access event collector.
 func NewAccessEvents(pointCache *utils.PointCache) *AccessEvents {
+	// Don't panic for lazy users
+	if pointCache == nil {
+		pointCache = utils.NewPointCache(1024)
+	}
 	return &AccessEvents{
 		branches:   make(map[branchAccessKey]mode),
 		chunks:     make(map[chunkAccessKey]mode),
 		pointCache: pointCache,
 	}
+}
+
+// PointCache returns the LRU cache for evaluated address commitments.
+func (ae *AccessEvents) PointCache() *utils.PointCache {
+	return ae.pointCache
 }
 
 // Merge is used to merge the access events that were generated during the
@@ -117,7 +127,7 @@ func (ae *AccessEvents) ValueTransferGas(callerAddr, targetAddr common.Address) 
 	return gas
 }
 
-// ContractCreateCPreheck charges access costs before
+// ContractCreatePreCheckGas charges access costs before
 // a contract creation is initiated. It is just reads, because the
 // address collision is done before the transfer, and so no write
 // are guaranteed to happen at this point.

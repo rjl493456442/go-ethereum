@@ -147,7 +147,8 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		if current = eth.blockchain.GetBlockByNumber(next); current == nil {
 			return nil, nil, fmt.Errorf("block #%d not found", next)
 		}
-		_, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
+		// PointCache is not required as hash mode is not compatible with verkle.
+		_, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{}, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("processing block %d failed: %v", current.NumberU64(), err)
 		}
@@ -180,6 +181,9 @@ func (eth *Ethereum) pathState(block *types.Block) (*state.StateDB, func(), erro
 	// Check if the requested state is available in the live chain.
 	statedb, err := eth.blockchain.StateAt(block.Root())
 	if err == nil {
+		if eth.blockchain.Config().IsVerkle(block.Number(), block.Time()) {
+			statedb.InitAccessEvents(eth.blockchain.StateCache().PointCache())
+		}
 		return statedb, noopReleaser, nil
 	}
 	// TODO historic state is not supported in path-based scheme.

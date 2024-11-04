@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-verkle"
 	"github.com/holiman/uint256"
@@ -453,6 +454,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 	proofs := make([]*verkle.VerkleProof, 0, n)
 	keyvals := make([]verkle.StateDiff, 0, n)
 	cm := newChainMaker(parent, config, engine)
+	cache := utils.NewPointCache(1024)
 
 	genblock := func(i int, parent *types.Block, triedb *triedb.Database, statedb *state.StateDB) (*types.Block, types.Receipts) {
 		b := &BlockGen{i: i, cm: cm, parent: parent, statedb: statedb, engine: engine}
@@ -461,6 +463,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 		// TODO uncomment when proof generation is merged
 		// Save pre state for proof generation
 		// preState := statedb.Copy()
+		statedb.InitAccessEvents(cache)
 
 		// Pre-execution system calls.
 		if config.IsPrague(b.header.Number, b.header.Time) {

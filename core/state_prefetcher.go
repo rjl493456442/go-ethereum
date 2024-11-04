@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/trie/utils"
 )
 
 // statePrefetcher is a basic Prefetcher, which blindly executes a block on top
@@ -44,7 +45,7 @@ func newStatePrefetcher(config *params.ChainConfig, chain *HeaderChain) *statePr
 // Prefetch processes the state changes according to the Ethereum rules by running
 // the transaction messages using the statedb, but any changes are discarded. The
 // only goal is to pre-cache transaction signatures and state trie nodes.
-func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interrupt *atomic.Bool) {
+func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interrupt *atomic.Bool, pointCache *utils.PointCache) {
 	var (
 		header       = block.Header()
 		gaspool      = new(GasPool).AddGas(block.GasLimit())
@@ -52,6 +53,10 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		evm          = vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
 		signer       = types.MakeSigner(p.config, header.Number, header.Time)
 	)
+	// Construct the access event collector if verkle is activated
+	if p.config.IsVerkle(block.Number(), block.Time()) {
+		statedb.InitAccessEvents(pointCache)
+	}
 	// Iterate over and process the individual transactions
 	byzantium := p.config.IsByzantium(block.Number())
 	for i, tx := range block.Transactions() {

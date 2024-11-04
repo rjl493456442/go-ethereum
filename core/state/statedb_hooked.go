@@ -25,7 +25,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
 )
 
@@ -133,10 +132,6 @@ func (s *hookedStateDB) AddSlotToAccessList(addr common.Address, slot common.Has
 	s.inner.AddSlotToAccessList(addr, slot)
 }
 
-func (s *hookedStateDB) PointCache() *utils.PointCache {
-	return s.inner.PointCache()
-}
-
 func (s *hookedStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
 	s.inner.Prepare(rules, sender, coinbase, dest, precompiles, txAccesses)
 }
@@ -156,6 +151,7 @@ func (s *hookedStateDB) AddPreimage(hash common.Hash, bytes []byte) {
 func (s *hookedStateDB) Witness() *stateless.Witness {
 	return s.inner.Witness()
 }
+func (s *hookedStateDB) AccessEvents() *AccessEvents { return s.inner.AccessEvents() }
 
 func (s *hookedStateDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
 	prev := s.inner.SubBalance(addr, amount, reason)

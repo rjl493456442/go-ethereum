@@ -61,9 +61,6 @@ type Database interface {
 	// ContractCodeSize retrieves a particular contracts code's size.
 	ContractCodeSize(addr common.Address, codeHash common.Hash) (int, error)
 
-	// PointCache returns the cache holding points used in verkle tree key computation
-	PointCache() *utils.PointCache
-
 	// TrieDB returns the underlying trie database for managing trie nodes.
 	TrieDB() *triedb.Database
 

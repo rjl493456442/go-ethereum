@@ -1803,7 +1803,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 					// Disable tracing for prefetcher executions.
 					vmCfg := bc.vmConfig
 					vmCfg.Tracer = nil
-					bc.prefetcher.Prefetch(followup, throwaway, vmCfg, &followupInterrupt)
+					bc.prefetcher.Prefetch(followup, throwaway, vmCfg, &followupInterrupt, bc.statedb.PointCache())
 
 					blockPrefetchExecuteTimer.Update(time.Since(start))
 					if followupInterrupt.Load() {
@@ -1895,7 +1895,7 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 
 	// Process block using the parent state as reference point
 	pstart := time.Now()
-	res, err := bc.processor.Process(block, statedb, bc.vmConfig)
+	res, err := bc.processor.Process(block, statedb, bc.vmConfig, bc.statedb.PointCache())
 	if err != nil {
 		bc.reportBlock(block, res, err)
 		return nil, err
@@ -1926,7 +1926,7 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 		task := types.NewBlockWithHeader(context).WithBody(*block.Body())
 
 		// Run the stateless self-cross-validation
-		crossStateRoot, crossReceiptRoot, err := ExecuteStateless(bc.chainConfig, task, witness)
+		crossStateRoot, crossReceiptRoot, err := ExecuteStateless(bc.chainConfig, task, witness, bc.statedb.PointCache())
 		if err != nil {
 			return nil, fmt.Errorf("stateless self-validation failed: %v", err)
 		}

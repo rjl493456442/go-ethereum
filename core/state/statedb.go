@@ -181,9 +181,6 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
 	}
-	if db.TrieDB().IsVerkle() {
-		sdb.accessEvents = NewAccessEvents(db.PointCache())
-	}
 	return sdb, nil
 }
 
@@ -220,6 +217,12 @@ func (s *StateDB) StopPrefetcher() {
 		s.prefetcher.report()
 		s.prefetcher = nil
 	}
+}
+
+// InitAccessEvents initializes the access event collector. It's only required
+// in verkle manner.
+func (s *StateDB) InitAccessEvents(cache *utils.PointCache) {
+	s.accessEvents = NewAccessEvents(cache)
 }
 
 // setError remembers the first non-nil error it is called with.
@@ -1397,16 +1400,12 @@ func (s *StateDB) markUpdate(addr common.Address) {
 	s.mutations[addr].typ = update
 }
 
-// PointCache returns the point cache used by verkle tree.
-func (s *StateDB) PointCache() *utils.PointCache {
-	return s.db.PointCache()
-}
-
 // Witness retrieves the current state witness being collected.
 func (s *StateDB) Witness() *stateless.Witness {
 	return s.witness
 }
 
+// AccessEvents retrieves the current access events being collected.
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
 }

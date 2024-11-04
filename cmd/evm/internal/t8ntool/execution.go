@@ -41,6 +41,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
@@ -193,6 +194,9 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 			excessBlobGas = eip4844.CalcExcessBlobGas(*parentExcessBlobGas, *parentBlobGasUsed)
 			vmContext.BlobBaseFee = eip4844.CalcBlobFee(excessBlobGas)
 		}
+	}
+	if chainConfig.IsVerkle(new(big.Int).SetUint64(pre.Env.Number), pre.Env.Timestamp) {
+		statedb.InitAccessEvents(utils.NewPointCache(1024))
 	}
 	// If DAO is supported/enabled, we need to handle it here. In geth 'proper', it's
 	// done in StateProcessor.Process(block, ...), right before transactions are applied.

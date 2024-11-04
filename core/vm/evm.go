@@ -143,7 +143,7 @@ func (evm *EVM) SetPrecompiles(precompiles PrecompiledContracts) {
 // This is not threadsafe and should only be done very cautiously.
 func (evm *EVM) Reset(txCtx TxContext, statedb StateDB) {
 	if evm.chainRules.IsEIP4762 {
-		txCtx.AccessEvents = state.NewAccessEvents(statedb.PointCache())
+		txCtx.AccessEvents = state.NewAccessEvents(statedb.AccessEvents().PointCache())
 	}
 	evm.TxContext = txCtx
 	evm.StateDB = statedb

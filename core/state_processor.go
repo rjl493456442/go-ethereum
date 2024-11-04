@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/trie/utils"
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -53,7 +54,7 @@ func NewStateProcessor(config *params.ChainConfig, chain *HeaderChain) *StatePro
 // Process returns the receipts and logs accumulated during the process and
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
-func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (*ProcessResult, error) {
+func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config, pointCache *utils.PointCache) (*ProcessResult, error) {
 	var (
 		receipts    types.Receipts
 		usedGas     = new(uint64)
@@ -63,7 +64,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		allLogs     []*types.Log
 		gp          = new(GasPool).AddGas(block.GasLimit())
 	)
-
+	// Construct the access event collector if verkle is activated
+	if p.config.IsVerkle(block.Number(), block.Time()) {
+		statedb.InitAccessEvents(pointCache)
+	}
 	// Mutate the block and state according to any hard-fork specs
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
@@ -72,7 +76,6 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		context vm.BlockContext
 		signer  = types.MakeSigner(p.config, header.Number, header.Time)
 	)
-
 	// Apply pre-execution system calls.
 	context = NewEVMBlockContext(header, p.chain, nil)
 

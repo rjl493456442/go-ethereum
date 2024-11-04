@@ -378,7 +378,7 @@ func (bc *BlockChain) Processor() Processor {
 }
 
 // StateCache returns the caching database underpinning the blockchain instance.
-func (bc *BlockChain) StateCache() state.Database {
+func (bc *BlockChain) StateCache() *state.CachingDB {
 	return bc.statedb
 }
 
