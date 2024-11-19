@@ -18,7 +18,6 @@ package live
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/big"
 	"path/filepath"
@@ -96,7 +95,8 @@ func newSupplyTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		return nil, fmt.Errorf("failed to parse config: %v", err)
 	}
 	if config.Path == "" {
-		return nil, errors.New("supply tracer output path is required")
+		config.Path = "output"
+		//return nil, errors.New("supply tracer output path is required")
 	}
 
 	// Store traces in a rotating file
