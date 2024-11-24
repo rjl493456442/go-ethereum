@@ -1092,7 +1092,7 @@ func (s *StateDB) GetTrie() Trie {
 
 // commit gathers the state mutations accumulated along with the associated
 // trie changes, resetting all internal flags with the new state as the base.
-func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
+func (s *StateDB) commit(deleteEmptyObjects bool, block uint64) (*stateUpdate, error) {
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		return nil, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
@@ -1243,13 +1243,13 @@ func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
 
 	origin := s.originalRoot
 	s.originalRoot = root
-	return newStateUpdate(origin, root, deletes, updates, nodes), nil
+	return newStateUpdate(origin, root, deletes, updates, nodes, block), nil
 }
 
 // commitAndFlush is a wrapper of commit which also commits the state mutations
 // to the configured data stores.
 func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool) (*stateUpdate, error) {
-	ret, err := s.commit(deleteEmptyObjects)
+	ret, err := s.commit(deleteEmptyObjects, block)
 	if err != nil {
 		return nil, err
 	}

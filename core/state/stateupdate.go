@@ -19,6 +19,7 @@ package state
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
 )
@@ -69,7 +70,7 @@ func (sc *stateUpdate) empty() bool {
 // newStateUpdate constructs a state update object, representing the differences
 // between two states by performing state execution. It aggregates the given
 // account deletions and account updates to form a comprehensive state update.
-func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common.Hash]*accountDelete, updates map[common.Hash]*accountUpdate, nodes *trienode.MergedNodeSet) *stateUpdate {
+func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common.Hash]*accountDelete, updates map[common.Hash]*accountUpdate, nodes *trienode.MergedNodeSet, block uint64) *stateUpdate {
 	var (
 		destructs      = make(map[common.Hash]struct{})
 		accounts       = make(map[common.Hash][]byte)
@@ -87,6 +88,7 @@ func newStateUpdate(originRoot common.Hash, root common.Hash, deletes map[common
 		if len(op.storagesOrigin) > 0 {
 			storagesOrigin[addr] = op.storagesOrigin
 		}
+		log.Info("Account destruct", "address", addr.Hex(), "block", block)
 	}
 	// Aggregate account updates then.
 	for addrHash, op := range updates {
