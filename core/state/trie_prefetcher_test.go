@@ -74,30 +74,38 @@ func TestSchdeulerTerminationRaceCondition(t *testing.T) {
 	// loop() had already checked for an empty queue. Although probabilistic,
 	// this test reliably triggered at a rates of (~4 in 10k) and (~100 in 50k)
 	// on an Apple M3 Max chip.
-
 	t.Parallel()
-	db := filledStateDB()
-	skey := common.HexToHash("aaa")
 
-	// Maximise concurrency by synchronising all scheduling and termination.
-	start := make(chan struct{})
 	var (
+		db   = filledStateDB()
+		keys []common.Hash
+
+		// Maximise concurrency by synchronising all scheduling and termination.
+		start       = make(chan struct{})
 		wg          sync.WaitGroup
 		raceInduced atomic.Uint64
 	)
-
+	for i := 0; i < 10; i++ {
+		keys = append(keys, testrand.Hash())
+	}
 	const numTrials = 50_000
+
 	for i := 0; i < numTrials; i++ {
 		wg.Add(2)
 		fetcher := newSubfetcher(db.db, db.originalRoot, common.Hash{}, db.originalRoot, common.Address{})
 
-		var gotScheduleErr error
-		doneScheduling := make(chan struct{})
+		var (
+			scheduleErr error
+			scheduled   = make(chan struct{})
+		)
 		go func() {
 			defer wg.Done()
 			<-start
-			gotScheduleErr = fetcher.schedule(nil, []common.Hash{skey}, false)
-			close(doneScheduling)
+
+			for i := 0; i < len(keys) && scheduleErr == nil; i++ {
+				scheduleErr = fetcher.schedule(nil, []common.Hash{keys[i]}, false)
+			}
+			close(scheduled)
 		}()
 
 		go func() {
@@ -105,17 +113,16 @@ func TestSchdeulerTerminationRaceCondition(t *testing.T) {
 			<-start
 			fetcher.terminate(false /*async*/)
 
-			<-doneScheduling
-			if gotScheduleErr == nil && len(fetcher.tasks) > 0 {
+			<-scheduled
+			if scheduleErr == nil && len(fetcher.tasks) > 0 {
 				raceInduced.Add(1)
 			}
 		}()
 	}
-
 	close(start)
 	wg.Wait()
 	if got := raceInduced.Load(); got > 0 {
-		t.Errorf("In %d/%d concurrent trials %T.schedule() returned nil error but >0 tasks remain in queue after %[3]T.terminate([blocking]) returned", got, numTrials, &subfetcher{})
+		t.Errorf("%d/%d concurrent trials schedule returned nil error but >0 tasks remain in queue after termination", got, numTrials)
 	}
 }
 

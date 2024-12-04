@@ -18,7 +18,6 @@ package state
 
 import (
 	"errors"
-	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -231,9 +230,8 @@ type subfetcher struct {
 	trie  Trie           // Trie being populated with nodes
 
 	tasks chan []*subfetcherTask // Queue items for retrieval
-
-	stop chan struct{} // Channel to interrupt processing
-	term chan struct{} // Channel to signal interruption
+	stop  chan struct{}          // Channel to interrupt processing
+	term  chan struct{}          // Channel to signal interruption
 
 	seenReadAddr  map[common.Address]struct{} // Tracks the accounts already loaded via read operations
 	seenWriteAddr map[common.Address]struct{} // Tracks the accounts already loaded via write operations
@@ -286,7 +284,6 @@ func (sf *subfetcher) schedule(addrs []common.Address, slots []common.Hash, read
 	for _, slot := range slots {
 		tasks = append(tasks, &subfetcherTask{read: read, slot: &slot})
 	}
-
 	select {
 	case sf.tasks <- tasks:
 		return nil
@@ -360,39 +357,12 @@ func (sf *subfetcher) openTrie() error {
 	return nil
 }
 
-// loop loads newly-scheduled trie tasks as they are received and loads them, stopping
-// when requested.
-func (sf *subfetcher) loop() {
-	// No matter how the loop stops, signal anyone waiting that it's terminated
-	defer close(sf.term)
+// process executes the provided prefetch tasks and notifies the subFetcher
+// by closing the given channel once all tasks have been fully executed.
+func (sf *subfetcher) process(tasks []*subfetcherTask, done chan struct{}) {
+	defer close(done)
 
-	if err := sf.openTrie(); err != nil {
-		return
-	}
-
-	work := make(chan *subfetcherTask)
-	go func() {
-		var wg sync.WaitGroup
-		for {
-			select {
-			case tasks := <-sf.tasks:
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for _, t := range tasks {
-						work <- t
-					}
-				}()
-
-			case <-sf.stop:
-				wg.Wait() // guarantee of no more sends on `work`
-				close(work)
-				return
-			}
-		}
-	}()
-
-	for task := range work {
+	for _, task := range tasks {
 		if task.addr != nil {
 			key := *task.addr
 			if task.read {
@@ -452,6 +422,49 @@ func (sf *subfetcher) loop() {
 				sf.seenWriteAddr[*task.addr] = struct{}{}
 			} else {
 				sf.seenWriteSlot[*task.slot] = struct{}{}
+			}
+		}
+	}
+}
+
+// loop loads newly-scheduled trie tasks as they are received and loads them, stopping
+// when requested.
+func (sf *subfetcher) loop() {
+	// No matter how the loop stops, signal anyone waiting that it's terminated
+	defer close(sf.term)
+
+	if err := sf.openTrie(); err != nil {
+		return
+	}
+	var (
+		done   chan struct{}     // Non-nil if background processor is active
+		buffer []*subfetcherTask // Buffered tasks waiting for processing
+	)
+	for {
+		select {
+		case tasks := <-sf.tasks:
+			if done == nil {
+				done = make(chan struct{})
+				go sf.process(tasks, done)
+			} else {
+				buffer = append(buffer, tasks...)
+			}
+		case <-done:
+			done = nil
+			if len(buffer) != 0 {
+				done = make(chan struct{})
+				tasks := buffer
+				buffer = nil
+				go sf.process(tasks, done)
+			}
+		case <-sf.stop:
+			if done == nil {
+				return
+			}
+			<-done
+
+			if len(buffer) == 0 {
+				return
 			}
 		}
 	}
