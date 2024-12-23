@@ -123,19 +123,26 @@ func CollectProcessMetrics(refresh time.Duration) {
 
 	// Define the various metrics to collect
 	var (
-		cpuSysLoad            = GetOrRegisterGauge("system/cpu/sysload", DefaultRegistry)
-		cpuSysWait            = GetOrRegisterGauge("system/cpu/syswait", DefaultRegistry)
-		cpuProcLoad           = GetOrRegisterGauge("system/cpu/procload", DefaultRegistry)
-		cpuSysLoadTotal       = GetOrRegisterCounterFloat64("system/cpu/sysload/total", DefaultRegistry)
-		cpuSysWaitTotal       = GetOrRegisterCounterFloat64("system/cpu/syswait/total", DefaultRegistry)
-		cpuProcLoadTotal      = GetOrRegisterCounterFloat64("system/cpu/procload/total", DefaultRegistry)
-		cpuThreads            = GetOrRegisterGauge("system/cpu/threads", DefaultRegistry)
-		cpuGoroutines         = GetOrRegisterGauge("system/cpu/goroutines", DefaultRegistry)
-		cpuSchedLatency       = getOrRegisterRuntimeHistogram("system/cpu/schedlatency", secondsToNs, nil)
-		memPauses             = getOrRegisterRuntimeHistogram("system/memory/pauses", secondsToNs, nil)
-		memAllocs             = GetOrRegisterMeter("system/memory/allocs", DefaultRegistry)
-		memFrees              = GetOrRegisterMeter("system/memory/frees", DefaultRegistry)
-		memTotal              = GetOrRegisterGauge("system/memory/held", DefaultRegistry)
+		cpuSysLoad       = GetOrRegisterGauge("system/cpu/sysload", DefaultRegistry)
+		cpuSysWait       = GetOrRegisterGauge("system/cpu/syswait", DefaultRegistry)
+		cpuProcLoad      = GetOrRegisterGauge("system/cpu/procload", DefaultRegistry)
+		cpuSysLoadTotal  = GetOrRegisterCounterFloat64("system/cpu/sysload/total", DefaultRegistry)
+		cpuSysWaitTotal  = GetOrRegisterCounterFloat64("system/cpu/syswait/total", DefaultRegistry)
+		cpuProcLoadTotal = GetOrRegisterCounterFloat64("system/cpu/procload/total", DefaultRegistry)
+		cpuThreads       = GetOrRegisterGauge("system/cpu/threads", DefaultRegistry)
+		cpuGoroutines    = GetOrRegisterGauge("system/cpu/goroutines", DefaultRegistry)
+		cpuSchedLatency  = getOrRegisterRuntimeHistogram("system/cpu/schedlatency", secondsToNs, nil)
+		memPauses        = getOrRegisterRuntimeHistogram("system/memory/pauses", secondsToNs, nil)
+
+		// GC
+		memAllocs = GetOrRegisterMeter("system/memory/allocs", DefaultRegistry)
+		memFrees  = GetOrRegisterMeter("system/memory/frees", DefaultRegistry)
+
+		memTotal    = GetOrRegisterGauge("system/memory/held", DefaultRegistry)
+		memReleased = GetOrRegisterGauge("system/memory/released", DefaultRegistry)
+		memUnused   = GetOrRegisterGauge("system/memory/unused", DefaultRegistry)
+		memFree     = GetOrRegisterGauge("system/memory/free", DefaultRegistry)
+
 		heapUsed              = GetOrRegisterGauge("system/memory/used", DefaultRegistry)
 		heapObjects           = GetOrRegisterGauge("system/memory/objects", DefaultRegistry)
 		diskReads             = GetOrRegisterMeter("system/disk/readcount", DefaultRegistry)
@@ -184,6 +191,10 @@ func CollectProcessMetrics(refresh time.Duration) {
 		memFrees.Mark(int64(rstats[now].GCFreedBytes - rstats[prev].GCFreedBytes))
 
 		memTotal.Update(int64(rstats[now].MemTotal))
+		memReleased.Update(int64(rstats[now].HeapReleased))
+		memUnused.Update(int64(rstats[now].HeapUnused))
+		memFree.Update(int64(rstats[now].HeapFree))
+
 		heapUsed.Update(int64(rstats[now].MemTotal - rstats[now].HeapUnused - rstats[now].HeapFree - rstats[now].HeapReleased))
 		heapObjects.Update(int64(rstats[now].HeapObjects))
 
