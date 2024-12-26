@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -796,6 +797,8 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		// need concurrency support within the trie itself. That's a TODO for a
 		// later time.
 		workers.SetLimit(1)
+	} else {
+		workers.SetLimit(runtime.NumCPU())
 	}
 	for addr, op := range s.mutations {
 		if op.applied || op.isDelete() {
@@ -1172,6 +1175,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool) (*stateUpdate, error) {
 		root    common.Hash
 		workers errgroup.Group
 	)
+	workers.SetLimit(runtime.NumCPU())
 	// Schedule the account trie first since that will be the biggest, so give
 	// it the most time to crunch.
 	//
