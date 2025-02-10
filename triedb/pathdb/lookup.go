@@ -48,6 +48,7 @@ func returnSlice(slice []common.Hash) {
 // lookup is an internal structure used to efficiently determine the layer in
 // which a state entry resides.
 type lookup struct {
+	nodes      map[common.Hash]map[string][]common.Hash
 	accounts   map[common.Hash][]common.Hash
 	storages   map[common.Hash]map[common.Hash][]common.Hash
 	descendant func(state common.Hash, ancestor common.Hash) bool
@@ -64,6 +65,7 @@ func newLookup(head layer, descendant func(state common.Hash, ancestor common.Ha
 		current = current.parentLayer()
 	}
 	l := &lookup{
+		nodes:      make(map[common.Hash]map[string][]common.Hash),
 		accounts:   make(map[common.Hash][]common.Hash),
 		storages:   make(map[common.Hash]map[common.Hash][]common.Hash),
 		descendant: descendant,
@@ -78,6 +80,36 @@ func newLookup(head layer, descendant func(state common.Hash, ancestor common.Ha
 		}
 	}
 	return l
+}
+
+// nodeTip traverses the layer list associated with the given node identifier in
+// reverse order to locate the first entry that either matches the specified
+// stateID or is a descendant of it.
+//
+// If found, the trie node data corresponding to the supplied stateID resides
+// in that layer. Otherwise, two scenarios are possible:
+//
+// The trie node remains unmodified from the current disk layer up to the state
+// layer specified by the stateID: fallback to the disk layer for data retrieval.
+// Or the layer specified by the stateID is stale: reject the data retrieval.
+func (l *lookup) nodeTip(owner common.Hash, path []byte, stateID common.Hash, base common.Hash) common.Hash {
+	subset, exists := l.nodes[owner]
+	if exists {
+		list := subset[string(path)]
+		for i := len(list) - 1; i >= 0; i-- {
+			if list[i] == stateID || l.descendant(stateID, list[i]) {
+				return list[i]
+			}
+		}
+	}
+	// No layer matching the stateID or its descendants was found. Use the
+	// current disk layer as a fallback.
+	if base == stateID || l.descendant(stateID, base) {
+		return base
+	}
+	// The layer associated with 'stateID' is not the descendant of the current
+	// disk layer, it's already stale, return nothing.
+	return common.Hash{}
 }
 
 // accountTip traverses the layer list associated with the given account in
@@ -185,6 +217,25 @@ func (l *lookup) addLayer(diff *diffLayer) {
 			}
 		}
 	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for accountHash, nodes := range diff.nodes.nodes {
+			subset := l.nodes[accountHash]
+			if subset == nil {
+				subset = make(map[string][]common.Hash)
+				l.nodes[accountHash] = subset
+			}
+			// Put the layer hash at the end of the list
+			for path := range nodes {
+				if _, exists := subset[path]; !exists {
+					subset[path] = getSlice()
+				}
+				subset[path] = append(subset[path], state)
+			}
+		}
+	}()
 	wg.Wait()
 }
 
@@ -273,6 +324,50 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 			}
 			if len(subset) == 0 {
 				delete(l.storages, accountHash)
+			}
+		}
+		return nil
+	})
+
+	wg.Go(func() error {
+		for accountHash, nodes := range diff.nodes.nodes {
+			subset := l.nodes[accountHash]
+			if subset == nil {
+				return fmt.Errorf("unknown node owner %x", accountHash)
+			}
+			for path := range nodes {
+				// Traverse the list from oldest to newest to quickly locate the ID
+				// of the stale layer.
+				var (
+					found bool
+					list  = subset[path]
+				)
+				for j := 0; j < len(list); j++ {
+					if list[j] == state {
+						if j == 0 {
+							list = list[1:]
+							if cap(list) > 1024 {
+								list = append(getSlice(), list...)
+							}
+						} else {
+							list = append(list[:j], list[j+1:]...)
+						}
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("node lookup is not found, %x %v", accountHash, []byte(path))
+				}
+				if len(list) != 0 {
+					subset[path] = list
+				} else {
+					returnSlice(subset[path])
+					delete(subset, path)
+				}
+			}
+			if len(subset) == 0 {
+				delete(l.nodes, accountHash)
 			}
 		}
 		return nil
