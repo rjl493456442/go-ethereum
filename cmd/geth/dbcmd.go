@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math/big"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/console/prompt"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -43,6 +45,9 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/olekukonko/tablewriter"
 	"github.com/urfave/cli/v2"
+	"gonum.org/v1/plot"
+	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/vg"
 )
 
 var (
@@ -83,6 +88,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbPlotCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -228,6 +234,13 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbPlotCmd = &cli.Command{
+		Action: plotStates,
+		Name:   "plot",
+		Flags: slices.Concat([]cli.Flag{
+			utils.SyncModeFlag,
+		}, utils.NetworkFlags, utils.DatabaseFlags),
 	}
 )
 
@@ -928,4 +941,122 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+type storageTicks struct{}
+
+func (storageTicks) Ticks(min, max float64) []plot.Tick {
+	ticks := plot.DefaultTicks{}.Ticks(min, max)
+	for i, tick := range ticks {
+		tick.Label = formatBytesToGB(tick.Value)
+		ticks[i] = tick
+	}
+	return ticks
+}
+
+func formatBytesToGB(value float64) string {
+	return common.StorageSize(value).String()
+}
+
+type gasUsedTicks struct{}
+
+func (gasUsedTicks) Ticks(min, max float64) []plot.Tick {
+	ticks := plot.DefaultTicks{}.Ticks(min, max)
+	for i, tick := range ticks {
+		tick.Label = formatTGas(tick.Value)
+		ticks[i] = tick
+	}
+	return ticks
+}
+
+func formatTGas(value float64) string {
+	return fmt.Sprintf("%.2fT", value)
+}
+
+func toTeraGas(n *big.Int) float64 {
+	div := new(big.Float).SetInt64(1000 * 1000 * 1000 * 1000)
+	res := new(big.Float).Quo(
+		new(big.Float).SetInt(n),
+		div,
+	)
+	f64, _ := res.Float64()
+	return f64
+}
+
+func plotLineChart(xLabel, yLabel string, title string, xTicker, yTicker plot.Ticker, records []*core.StateRecord, x func(record *core.StateRecord) float64, y func(r *core.StateRecord) float64) {
+	p := plot.New()
+	p.Title.Text = title
+	p.X.Label.Text = xLabel
+	p.Y.Label.Text = yLabel
+
+	var pLine plotter.XYs
+	for _, r := range records {
+		pLine = append(pLine, plotter.XY{
+			X: x(r),
+			Y: y(r),
+		})
+	}
+
+	line, err := plotter.NewLine(pLine)
+	if err != nil {
+		panic(err)
+	}
+	line.LineStyle.Width = vg.Points(2)
+	p.Add(line)
+
+	p.X.Tick.Marker = xTicker
+	p.Y.Tick.Marker = yTicker
+
+	// Save the plot to a PNG file
+	if err := p.Save(8*vg.Inch, 4*vg.Inch, fmt.Sprintf("%s.png", title)); err != nil {
+		panic(err)
+	}
+}
+
+func plotStates(ctx *cli.Context) error {
+	// Load the databases.
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	// TODO(rjl493456442) Aggregate the records into groups
+	records, err := core.ReadRecords(db)
+	if err != nil {
+		return err
+	}
+	plotLineChart("time", "state", "state-time", plot.TimeTicks{Format: "2006-01-02"}, storageTicks{}, records,
+		func(r *core.StateRecord) float64 {
+			return float64(r.Timestamp)
+		},
+		func(r *core.StateRecord) float64 {
+			return float64(r.AccountSize + r.StorageSize + r.CodeSizes)
+		},
+	)
+	plotLineChart("time", "trienode", "trienode-time", plot.TimeTicks{Format: "2006-01-02"}, storageTicks{}, records,
+		func(r *core.StateRecord) float64 {
+			return float64(r.Timestamp)
+		},
+		func(r *core.StateRecord) float64 {
+			return float64(r.TrienodeSize)
+		},
+	)
+	plotLineChart("gas", "state", "state-gas", gasUsedTicks{}, storageTicks{}, records,
+		func(r *core.StateRecord) float64 {
+			return toTeraGas(r.TotalGasUsed)
+		},
+		func(r *core.StateRecord) float64 {
+			return float64(r.AccountSize + r.StorageSize + r.CodeSizes)
+		},
+	)
+	plotLineChart("gas", "trienode", "trienode-gas", gasUsedTicks{}, storageTicks{}, records,
+		func(r *core.StateRecord) float64 {
+			return toTeraGas(r.TotalGasUsed)
+		},
+		func(r *core.StateRecord) float64 {
+			return float64(r.TrienodeSize)
+		},
+	)
+	return nil
 }

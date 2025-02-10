@@ -209,9 +209,9 @@ func (s *nodeSet) decode(r *rlp.Stream) error {
 		subset := make(map[string]*trienode.Node)
 		for _, n := range entry.Nodes {
 			if len(n.Blob) > 0 {
-				subset[string(n.Path)] = trienode.New(crypto.Keccak256Hash(n.Blob), n.Blob)
+				subset[string(n.Path)] = trienode.New(crypto.Keccak256Hash(n.Blob), n.Blob, nil)
 			} else {
-				subset[string(n.Path)] = trienode.NewDeleted()
+				subset[string(n.Path)] = trienode.NewDeleted(nil)
 			}
 		}
 		nodes[entry.Owner] = subset

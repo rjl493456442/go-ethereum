@@ -24,10 +24,10 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 )
 
-// contractCode represents a contract code with associated metadata.
-type contractCode struct {
-	hash common.Hash // hash is the cryptographic hash of the contract code.
-	blob []byte      // blob is the binary representation of the contract code.
+// ContractCode represents a contract code with associated metadata.
+type ContractCode struct {
+	Hash common.Hash // hash is the cryptographic hash of the contract code.
+	Blob []byte      // blob is the binary representation of the contract code.
 }
 
 // accountDelete represents an operation for deleting an Ethereum account.
@@ -49,7 +49,7 @@ type accountUpdate struct {
 	address  common.Address         // address is the unique account identifier
 	data     []byte                 // data is the slim-RLP encoded account data.
 	origin   []byte                 // origin is the original value of account data in slim-RLP encoding.
-	code     *contractCode          // code represents mutated contract code; nil means it's not modified.
+	code     *ContractCode          // code represents mutated contract code; nil means it's not modified.
 	storages map[common.Hash][]byte // storages stores mutated slots in prefix-zero-trimmed RLP format.
 
 	// storagesOriginByKey and storagesOriginByHash both store the original values
@@ -60,33 +60,33 @@ type accountUpdate struct {
 	storagesOriginByHash map[common.Hash][]byte
 }
 
-// stateUpdate represents the difference between two states resulting from state
+// StateUpdate represents the difference between two states resulting from state
 // execution. It contains information about mutated contract codes, accounts,
 // and storage slots, along with their original values.
-type stateUpdate struct {
-	originRoot     common.Hash               // hash of the state before applying mutation
-	root           common.Hash               // hash of the state after applying mutation
-	accounts       map[common.Hash][]byte    // accounts stores mutated accounts in 'slim RLP' encoding
-	accountsOrigin map[common.Address][]byte // accountsOrigin stores the original values of mutated accounts in 'slim RLP' encoding
+type StateUpdate struct {
+	OriginRoot     common.Hash               // hash of the state before applying mutation
+	Root           common.Hash               // hash of the state after applying mutation
+	Accounts       map[common.Hash][]byte    // accounts stores mutated accounts in 'slim RLP' encoding
+	AccountsOrigin map[common.Address][]byte // accountsOrigin stores the original values of mutated accounts in 'slim RLP' encoding
 
 	// storages stores mutated slots in 'prefix-zero-trimmed' RLP format.
 	// The value is keyed by account hash and **storage slot key hash**.
-	storages map[common.Hash]map[common.Hash][]byte
+	Storages map[common.Hash]map[common.Hash][]byte
 
 	// storagesOrigin stores the original values of mutated slots in
 	// 'prefix-zero-trimmed' RLP format.
 	// (a) the value is keyed by account hash and **storage slot key** if rawStorageKey is true;
 	// (b) the value is keyed by account hash and **storage slot key hash** if rawStorageKey is false;
-	storagesOrigin map[common.Address]map[common.Hash][]byte
-	rawStorageKey  bool
+	StoragesOrigin map[common.Address]map[common.Hash][]byte
+	RawStorageKey  bool
 
-	codes map[common.Address]contractCode // codes contains the set of dirty codes
-	nodes *trienode.MergedNodeSet         // Aggregated dirty nodes caused by state changes
+	Codes map[common.Address]ContractCode // codes contains the set of dirty codes
+	Nodes *trienode.MergedNodeSet         // Aggregated dirty nodes caused by state changes
 }
 
 // empty returns a flag indicating the state transition is empty or not.
-func (sc *stateUpdate) empty() bool {
-	return sc.originRoot == sc.root
+func (sc *StateUpdate) empty() bool {
+	return sc.OriginRoot == sc.Root
 }
 
 // newStateUpdate constructs a state update object by identifying the differences
@@ -95,13 +95,13 @@ func (sc *stateUpdate) empty() bool {
 //
 // rawStorageKey is a flag indicating whether to use the raw storage slot key or
 // the hash of the slot key for constructing state update object.
-func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash, deletes map[common.Hash]*accountDelete, updates map[common.Hash]*accountUpdate, nodes *trienode.MergedNodeSet) *stateUpdate {
+func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash, deletes map[common.Hash]*accountDelete, updates map[common.Hash]*accountUpdate, nodes *trienode.MergedNodeSet) *StateUpdate {
 	var (
 		accounts       = make(map[common.Hash][]byte)
 		accountsOrigin = make(map[common.Address][]byte)
 		storages       = make(map[common.Hash]map[common.Hash][]byte)
 		storagesOrigin = make(map[common.Address]map[common.Hash][]byte)
-		codes          = make(map[common.Address]contractCode)
+		codes          = make(map[common.Address]ContractCode)
 	)
 	// Since some accounts might be destroyed and recreated within the same
 	// block, deletions must be aggregated first.
@@ -161,29 +161,29 @@ func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash
 			}
 		}
 	}
-	return &stateUpdate{
-		originRoot:     originRoot,
-		root:           root,
-		accounts:       accounts,
-		accountsOrigin: accountsOrigin,
-		storages:       storages,
-		storagesOrigin: storagesOrigin,
-		rawStorageKey:  rawStorageKey,
-		codes:          codes,
-		nodes:          nodes,
+	return &StateUpdate{
+		OriginRoot:     originRoot,
+		Root:           root,
+		Accounts:       accounts,
+		AccountsOrigin: accountsOrigin,
+		Storages:       storages,
+		StoragesOrigin: storagesOrigin,
+		RawStorageKey:  rawStorageKey,
+		Codes:          codes,
+		Nodes:          nodes,
 	}
 }
 
-// stateSet converts the current stateUpdate object into a triedb.StateSet
-// object. This function extracts the necessary data from the stateUpdate
+// stateSet converts the current StateUpdate object into a triedb.StateSet
+// object. This function extracts the necessary data from the StateUpdate
 // struct and formats it into the StateSet structure consumed by the triedb
 // package.
-func (sc *stateUpdate) stateSet() *triedb.StateSet {
+func (sc *StateUpdate) stateSet() *triedb.StateSet {
 	return &triedb.StateSet{
-		Accounts:       sc.accounts,
-		AccountsOrigin: sc.accountsOrigin,
-		Storages:       sc.storages,
-		StoragesOrigin: sc.storagesOrigin,
-		RawStorageKey:  sc.rawStorageKey,
+		Accounts:       sc.Accounts,
+		AccountsOrigin: sc.AccountsOrigin,
+		Storages:       sc.Storages,
+		StoragesOrigin: sc.StoragesOrigin,
+		RawStorageKey:  sc.RawStorageKey,
 	}
 }

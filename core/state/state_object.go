@@ -432,9 +432,9 @@ func (s *stateObject) commit() (*accountUpdate, *trienode.NodeSet, error) {
 	}
 	// commit the contract code if it's modified
 	if s.dirtyCode {
-		op.code = &contractCode{
-			hash: common.BytesToHash(s.CodeHash()),
-			blob: s.code,
+		op.code = &ContractCode{
+			Hash: common.BytesToHash(s.CodeHash()),
+			Blob: s.code,
 		}
 		s.dirtyCode = false // reset the dirty flag
 	}

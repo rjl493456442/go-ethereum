@@ -29,8 +29,9 @@ import (
 // node hash. It is general enough that can be used to represent trie node
 // corresponding to different trie implementations.
 type Node struct {
-	Hash common.Hash // Node hash, empty for deleted node
-	Blob []byte      // Encoded node blob, nil for the deleted node
+	Hash   common.Hash // Node hash, empty for deleted node
+	Blob   []byte      // Encoded node blob, nil for the deleted node
+	Origin []byte      // Encoded node blob, nil for the non-existent node
 }
 
 // Size returns the total memory size used by this node.
@@ -44,12 +45,12 @@ func (n *Node) IsDeleted() bool {
 }
 
 // New constructs a node with provided node information.
-func New(hash common.Hash, blob []byte) *Node {
-	return &Node{Hash: hash, Blob: blob}
+func New(hash common.Hash, blob []byte, origin []byte) *Node {
+	return &Node{Hash: hash, Blob: blob, Origin: origin}
 }
 
 // NewDeleted constructs a node which is deleted.
-func NewDeleted() *Node { return New(common.Hash{}, nil) }
+func NewDeleted(origin []byte) *Node { return New(common.Hash{}, nil, origin) }
 
 // leaf represents a trie leaf node
 type leaf struct {

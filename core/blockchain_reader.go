@@ -427,6 +427,11 @@ func (bc *BlockChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Su
 	return bc.scope.Track(bc.chainHeadFeed.Subscribe(ch))
 }
 
+// SubscribeChainEventWithUpdate registers a subscription of ChainEventWithUpdate.
+func (bc *BlockChain) SubscribeChainEventWithUpdate(ch chan<- ChainEventWithUpdate) event.Subscription {
+	return bc.scope.Track(bc.chainWithUpdateFeed.Subscribe(ch))
+}
+
 // SubscribeLogsEvent registers a subscription of []*types.Log.
 func (bc *BlockChain) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscription {
 	return bc.scope.Track(bc.logsFeed.Subscribe(ch))

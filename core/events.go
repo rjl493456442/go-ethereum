@@ -17,6 +17,7 @@
 package core
 
 import (
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -32,4 +33,9 @@ type ChainEvent struct {
 
 type ChainHeadEvent struct {
 	Header *types.Header
+}
+
+type ChainEventWithUpdate struct {
+	Header *types.Header
+	Update *state.StateUpdate
 }
