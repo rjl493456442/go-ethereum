@@ -1053,16 +1053,16 @@ func stats(records []*core.StateRecord) {
 			startGas = records[0].TotalGasUsed
 		} else {
 			startDate = time.Unix(int64(timestamps[i-1]), 0)
-			startGas = records[i-1].TotalGasUsed
+			startGas = gasUsed[i-1]
 		}
 		endDate := time.Unix(int64(timestamps[i]), 0)
 		gasDiff := new(big.Int).Sub(gasUsed[i], startGas)
 		months := endDate.Sub(startDate).Hours() / 24 / 30
 
-		fmt.Printf("%s -> %s, state growth: %s, trienode growth: %s, gas used: %fTGas, state-speed: %s/month, %s/TGas, trienode-speed: %s/month, %s/TGas\n",
-			startDate.Format("2006-01-02 15:04:05"), endDate.Format("2006-01-02 15:04:05"),
+		fmt.Printf("[%s]->[%s], state growth: %s, trienode growth: %s, gas used: %.2fTGas, state-speed: %s/month, %s/TGas, trienode-speed: %s/month, %s/TGas\n",
+			startDate.Format("2006-01-02"), endDate.Format("2006-01-02"),
 			common.StorageSize(size), common.StorageSize(trienodeGrowth[i]),
-			toTeraGas(new(big.Int).Sub(records[i].TotalGasUsed, startGas)),
+			toTeraGas(gasDiff),
 			common.StorageSize(float64(size)/months),
 			common.StorageSize(float64(size)/toTeraGas(gasDiff)),
 			common.StorageSize(float64(trienodeGrowth[i])/months),
