@@ -160,6 +160,7 @@ require (
 	golang.org/x/image v0.21.0 // indirect
 	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/net v0.34.0 // indirect
+	gonum.org/v1/gonum v0.15.1 // indirect
 	gonum.org/v1/plot v0.15.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	rsc.io/pdf v0.1.1 // indirect

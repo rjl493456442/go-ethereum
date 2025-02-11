@@ -1013,6 +1013,63 @@ func plotLineChart(xLabel, yLabel string, title string, xTicker, yTicker plot.Ti
 	}
 }
 
+func timeSpan(x uint64, months int) uint64 {
+	span := months * 30 * 24 * 60 * 60
+	return x + uint64(span)
+}
+
+func stats(records []*core.StateRecord) {
+	if len(records) == 0 {
+		return
+	}
+	var (
+		last           = records[0]
+		stateGrowth    []uint64
+		trienodeGrowth []uint64
+		timestamps     []uint64
+		gasUsed        []*big.Int
+	)
+	for _, r := range records {
+		if r.Timestamp > timeSpan(last.Timestamp, 3) {
+			stateA := r.AccountSize + r.StorageSize + r.CodeSizes
+			stateB := last.AccountSize + last.StorageSize + last.CodeSizes
+
+			stateGrowth = append(stateGrowth, stateA-stateB)
+			trienodeGrowth = append(trienodeGrowth, r.TrienodeSize-last.TrienodeSize)
+
+			timestamps = append(timestamps, r.Timestamp)
+			gasUsed = append(gasUsed, r.TotalGasUsed)
+
+			last = r
+		}
+	}
+	for i, size := range stateGrowth {
+		var (
+			startGas  *big.Int
+			startDate time.Time
+		)
+		if i == 0 {
+			startDate = time.Unix(int64(records[0].Timestamp), 0)
+			startGas = records[0].TotalGasUsed
+		} else {
+			startDate = time.Unix(int64(timestamps[i-1]), 0)
+			startGas = records[i].TotalGasUsed
+		}
+		endDate := time.Unix(int64(timestamps[i]), 0)
+		gasDiff := new(big.Int).Sub(records[i].TotalGasUsed, startGas)
+		months := endDate.Sub(startDate).Hours() / 24 / 30
+
+		fmt.Printf("%s -> %s, state growth: %s, trienode growth: %s, gas used: %fTGas, state-speed: %s/month, %s/TGas, trienode-speed: %s/month, %s/TGas\n",
+			startDate.String(), endDate.String(),
+			common.StorageSize(size), common.StorageSize(trienodeGrowth[i]),
+			toTeraGas(new(big.Int).Sub(records[i].TotalGasUsed, startGas)),
+			common.StorageSize(float64(size)/months),
+			common.StorageSize(float64(size)/toTeraGas(gasDiff)),
+			common.StorageSize(float64(trienodeGrowth[i])/months),
+			common.StorageSize(float64(trienodeGrowth[i])/toTeraGas(gasDiff)))
+	}
+}
+
 func plotStates(ctx *cli.Context) error {
 	// Load the databases.
 	stack, _ := makeConfigNode(ctx)
@@ -1058,5 +1115,6 @@ func plotStates(ctx *cli.Context) error {
 			return float64(r.TrienodeSize)
 		},
 	)
+	stats(records)
 	return nil
 }
