@@ -1038,7 +1038,7 @@ func stats(records []*core.StateRecord) {
 			trienodeGrowth = append(trienodeGrowth, r.TrienodeSize-last.TrienodeSize)
 
 			timestamps = append(timestamps, r.Timestamp)
-			gasUsed = append(gasUsed, r.TotalGasUsed)
+			gasUsed = append(gasUsed, new(big.Int).Set(r.TotalGasUsed))
 
 			last = r
 		}
@@ -1060,7 +1060,7 @@ func stats(records []*core.StateRecord) {
 		months := endDate.Sub(startDate).Hours() / 24 / 30
 
 		fmt.Printf("%s -> %s, state growth: %s, trienode growth: %s, gas used: %fTGas, state-speed: %s/month, %s/TGas, trienode-speed: %s/month, %s/TGas\n",
-			startDate.String(), endDate.String(),
+			startDate.Format("2006-01-02 15:04:05"), endDate.Format("2006-01-02 15:04:05"),
 			common.StorageSize(size), common.StorageSize(trienodeGrowth[i]),
 			toTeraGas(new(big.Int).Sub(records[i].TotalGasUsed, startGas)),
 			common.StorageSize(float64(size)/months),
