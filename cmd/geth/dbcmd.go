@@ -1030,7 +1030,7 @@ func stats(records []*core.StateRecord) {
 		gasUsed        []*big.Int
 	)
 	for _, r := range records {
-		if r.Timestamp > timeSpan(last.Timestamp, 3) {
+		if r.Timestamp > timeSpan(last.Timestamp, 2) {
 			stateA := r.AccountSize + r.StorageSize + r.CodeSizes
 			stateB := last.AccountSize + last.StorageSize + last.CodeSizes
 
@@ -1053,10 +1053,10 @@ func stats(records []*core.StateRecord) {
 			startGas = records[0].TotalGasUsed
 		} else {
 			startDate = time.Unix(int64(timestamps[i-1]), 0)
-			startGas = records[i].TotalGasUsed
+			startGas = records[i-1].TotalGasUsed
 		}
 		endDate := time.Unix(int64(timestamps[i]), 0)
-		gasDiff := new(big.Int).Sub(records[i].TotalGasUsed, startGas)
+		gasDiff := new(big.Int).Sub(gasUsed[i], startGas)
 		months := endDate.Sub(startDate).Hours() / 24 / 30
 
 		fmt.Printf("%s -> %s, state growth: %s, trienode growth: %s, gas used: %fTGas, state-speed: %s/month, %s/TGas, trienode-speed: %s/month, %s/TGas\n",
