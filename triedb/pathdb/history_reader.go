@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -167,6 +168,9 @@ type historyReader struct {
 	disk    ethdb.KeyValueReader
 	freezer ethdb.AncientReader
 	readers map[string]*indexReaderWithLimitTag
+
+	historyLoads    int
+	historyLoadTime time.Duration
 }
 
 // newHistoryReader constructs the history reader with the supplied db.
@@ -181,10 +185,14 @@ func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *h
 // readAccountMetadata resolves the account metadata within the specified
 // state history.
 func (r *historyReader) readAccountMetadata(address common.Address, historyID uint64) ([]byte, error) {
+	s := time.Now()
 	blob := rawdb.ReadStateAccountIndex(r.freezer, historyID)
 	if len(blob)%accountIndexSize != 0 {
 		return nil, fmt.Errorf("account index is corrupted, historyID: %d", historyID)
 	}
+	r.historyLoads += 1
+	r.historyLoadTime += time.Since(s)
+
 	n := len(blob) / accountIndexSize
 
 	pos := sort.Search(n, func(i int) bool {
@@ -205,7 +213,11 @@ func (r *historyReader) readAccountMetadata(address common.Address, historyID ui
 // state history.
 func (r *historyReader) readStorageMetadata(storageKey common.Hash, storageHash common.Hash, historyID uint64, slotOffset, slotNumber int) ([]byte, error) {
 	// TODO(rj493456442) optimize it with partial read
+	s := time.Now()
 	blob := rawdb.ReadStateStorageIndex(r.freezer, historyID)
+	r.historyLoads += 1
+	r.historyLoadTime += time.Since(s)
+
 	if len(blob)%slotIndexSize != 0 {
 		return nil, fmt.Errorf("storage indices is corrupted, historyID: %d", historyID)
 	}
@@ -219,7 +231,11 @@ func (r *historyReader) readStorageMetadata(storageKey common.Hash, storageHash 
 		m      meta
 		target common.Hash
 	)
+	s = time.Now()
 	blob = rawdb.ReadStateHistoryMeta(r.freezer, historyID)
+	r.historyLoads += 1
+	r.historyLoadTime += time.Since(s)
+
 	if err := m.decode(blob); err != nil {
 		return nil, err
 	}
@@ -252,7 +268,11 @@ func (r *historyReader) readAccount(address common.Address, historyID uint64) ([
 	offset := int(binary.BigEndian.Uint32(metadata[common.AddressLength+1 : common.AddressLength+5])) // four bytes for the account data offset
 
 	// TODO(rj493456442) optimize it with partial read
+	s := time.Now()
 	data := rawdb.ReadStateAccountHistory(r.freezer, historyID)
+	r.historyLoads += 1
+	r.historyLoadTime += time.Since(s)
+
 	if len(data) < length+offset {
 		return nil, fmt.Errorf("account data is truncated, address: %#x, historyID: %d", address, historyID)
 	}
@@ -280,7 +300,11 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 	offset := int(binary.BigEndian.Uint32(slotMetadata[common.HashLength+1 : common.HashLength+5])) // four bytes for slot data offset
 
 	// TODO(rj493456442) optimize it with partial read
+	s := time.Now()
 	data := rawdb.ReadStateStorageHistory(r.freezer, historyID)
+	r.historyLoads += 1
+	r.historyLoadTime += time.Since(s)
+
 	if len(data) < offset+length {
 		return nil, errors.New("corrupted storage data")
 	}

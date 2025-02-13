@@ -210,6 +210,9 @@ func (r *HistoricalStateReader) Stats() {
 	if r.storages > 0 {
 		msg = append(msg, "storages", r.storages, "storage-avg", r.storageTime/time.Duration(r.storages))
 	}
+	if r.reader.historyLoads > 0 {
+		msg = append(msg, "history", r.reader.historyLoads, "history-avg", r.reader.historyLoadTime/time.Duration(r.reader.historyLoads))
+	}
 	log.Info("Historical state", msg...)
 }
 
