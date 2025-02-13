@@ -287,6 +287,8 @@ func (api *API) traceChain(start, end *types.Block, config *TraceConfig, closed 
 					}
 					task.results[i] = &txTraceResult{TxHash: tx.Hash(), Result: res}
 				}
+				task.statedb.DumpStats()
+
 				// Tracing state is used up, queue it for de-referencing. Note the
 				// state is the parent state of trace block, use block.number-1 as
 				// the state number.
