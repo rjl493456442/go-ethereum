@@ -1441,3 +1441,15 @@ func (s *StateDB) Witness() *stateless.Witness {
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
 }
+
+func (s *StateDB) DumpStats() {
+	r, ok := s.reader.(*reader)
+	if !ok {
+		return
+	}
+	hr, ok := r.StateReader.(*historicReader)
+	if !ok {
+		return
+	}
+	hr.reader.Stats()
+}

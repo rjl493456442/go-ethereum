@@ -192,6 +192,25 @@ type HistoricalStateReader struct {
 	db     *Database
 	reader *historyReader
 	id     uint64
+
+	accounts    int
+	storages    int
+	accountTime time.Duration
+	storageTime time.Duration
+}
+
+func (r *HistoricalStateReader) Stats() {
+	if r.accounts == 0 && r.storages == 0 {
+		return
+	}
+	var msg []interface{}
+	if r.accounts > 0 {
+		msg = append(msg, "accounts", r.accounts, "account-avg", r.accountTime/time.Duration(r.accounts))
+	}
+	if r.storages > 0 {
+		msg = append(msg, "storages", r.storages, "storage-avg", r.storageTime/time.Duration(r.storages))
+	}
+	log.Info("Historical state", msg...)
 }
 
 // HistoricReader constructs a reader for accessing the requested historic state.
@@ -222,6 +241,8 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 // - no error will be returned if the requested account is not found in database.
 func (r *HistoricalStateReader) AccountRLP(address common.Address) ([]byte, error) {
 	defer func(start time.Time) {
+		r.accounts += 1
+		r.accountTime += time.Since(start)
 		historicalAccountReadTimer.UpdateSince(start)
 	}(time.Now())
 
@@ -271,6 +292,8 @@ func (r *HistoricalStateReader) Account(address common.Address) (*types.SlimAcco
 // - no error will be returned if the requested slot is not found in database.
 func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash) ([]byte, error) {
 	defer func(start time.Time) {
+		r.storages += 1
+		r.storageTime += time.Since(start)
 		historicalStorageReadTimer.UpdateSince(start)
 	}(time.Now())
 

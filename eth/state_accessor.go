@@ -184,7 +184,9 @@ func (eth *Ethereum) pathState(block *types.Block) (*state.StateDB, func(), erro
 	}
 	statedb, err = eth.blockchain.HistoricState(block.Root())
 	if err == nil {
-		return statedb, noopReleaser, nil
+		return statedb, func() {
+			statedb.DumpStats()
+		}, nil
 	}
 	return nil, nil, errors.New("historical state is not available")
 }
