@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"image/color"
 	"math/big"
 	"os"
 	"os/signal"
@@ -1001,6 +1002,7 @@ func plotCombinedChart(records []*core.StateRecord) {
 		panic(err)
 	}
 	lineA.LineStyle.Width = vg.Points(2)
+	lineA.Color = color.RGBA{R: 255, G: 0, B: 0, A: 255} // Red
 	p.Add(lineA)
 	p.Legend.Add("Flat state", lineA)
 
@@ -1016,6 +1018,7 @@ func plotCombinedChart(records []*core.StateRecord) {
 		panic(err)
 	}
 	lineB.LineStyle.Width = vg.Points(2)
+	lineB.Color = color.RGBA{R: 0, G: 0, B: 255, A: 255} // Blue
 	p.Add(lineB)
 	p.Legend.Add("Trie nodes", lineB)
 
