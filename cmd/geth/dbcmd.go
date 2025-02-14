@@ -1002,6 +1002,7 @@ func plotCombinedChart(records []*core.StateRecord) {
 	}
 	lineA.LineStyle.Width = vg.Points(2)
 	p.Add(lineA)
+	p.Legend.Add("Flat state", lineA)
 
 	var triePoints plotter.XYs
 	for _, r := range records {
@@ -1016,6 +1017,7 @@ func plotCombinedChart(records []*core.StateRecord) {
 	}
 	lineB.LineStyle.Width = vg.Points(2)
 	p.Add(lineB)
+	p.Legend.Add("Trie nodes", lineB)
 
 	p.X.Tick.Marker = plot.TimeTicks{Format: "2006-01-02"}
 	p.Y.Tick.Marker = storageTicks{}
