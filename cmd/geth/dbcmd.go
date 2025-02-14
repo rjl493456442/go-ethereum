@@ -983,6 +983,49 @@ func toTeraGas(n *big.Int) float64 {
 	return f64
 }
 
+func plotCombinedChart(records []*core.StateRecord) {
+	p := plot.New()
+	p.Title.Text = "ethereum-state"
+	p.X.Label.Text = "time"
+	p.Y.Label.Text = "storage"
+
+	var statePoints plotter.XYs
+	for _, r := range records {
+		statePoints = append(statePoints, plotter.XY{
+			X: float64(r.Timestamp),
+			Y: float64(r.AccountSize + r.StorageSize + r.CodeSizes),
+		})
+	}
+	lineA, err := plotter.NewLine(statePoints)
+	if err != nil {
+		panic(err)
+	}
+	lineA.LineStyle.Width = vg.Points(2)
+	p.Add(lineA)
+
+	var triePoints plotter.XYs
+	for _, r := range records {
+		triePoints = append(triePoints, plotter.XY{
+			X: float64(r.Timestamp),
+			Y: float64(r.TrienodeSize),
+		})
+	}
+	lineB, err := plotter.NewLine(triePoints)
+	if err != nil {
+		panic(err)
+	}
+	lineB.LineStyle.Width = vg.Points(2)
+	p.Add(lineB)
+
+	p.X.Tick.Marker = plot.TimeTicks{Format: "2006-01-02"}
+	p.Y.Tick.Marker = storageTicks{}
+
+	// Save the plot to a PNG file
+	if err := p.Save(8*vg.Inch, 4*vg.Inch, fmt.Sprintf("ethereum-state.png")); err != nil {
+		panic(err)
+	}
+}
+
 func plotLineChart(xLabel, yLabel string, title string, xTicker, yTicker plot.Ticker, records []*core.StateRecord, x func(record *core.StateRecord) float64, y func(r *core.StateRecord) float64) {
 	p := plot.New()
 	p.Title.Text = title
@@ -1099,22 +1142,23 @@ func plotStates(ctx *cli.Context) error {
 			return float64(r.TrienodeSize)
 		},
 	)
-	plotLineChart("gas", "state", "state-gas", gasUsedTicks{}, storageTicks{}, records,
-		func(r *core.StateRecord) float64 {
-			return toTeraGas(r.TotalGasUsed)
-		},
-		func(r *core.StateRecord) float64 {
-			return float64(r.AccountSize + r.StorageSize + r.CodeSizes)
-		},
-	)
-	plotLineChart("gas", "trienode", "trienode-gas", gasUsedTicks{}, storageTicks{}, records,
-		func(r *core.StateRecord) float64 {
-			return toTeraGas(r.TotalGasUsed)
-		},
-		func(r *core.StateRecord) float64 {
-			return float64(r.TrienodeSize)
-		},
-	)
+	plotCombinedChart(records)
+	//plotLineChart("gas", "state", "state-gas", gasUsedTicks{}, storageTicks{}, records,
+	//	func(r *core.StateRecord) float64 {
+	//		return toTeraGas(r.TotalGasUsed)
+	//	},
+	//	func(r *core.StateRecord) float64 {
+	//		return float64(r.AccountSize + r.StorageSize + r.CodeSizes)
+	//	},
+	//)
+	//plotLineChart("gas", "trienode", "trienode-gas", gasUsedTicks{}, storageTicks{}, records,
+	//	func(r *core.StateRecord) float64 {
+	//		return toTeraGas(r.TotalGasUsed)
+	//	},
+	//	func(r *core.StateRecord) float64 {
+	//		return float64(r.TrienodeSize)
+	//	},
+	//)
 	stats(records)
 	return nil
 }
