@@ -29,6 +29,8 @@ import (
 type insertStats struct {
 	queued, processed, ignored int
 	usedGas                    uint64
+	accessItems                int
+	accessList                 int
 	lastIndex                  int
 	startTime                  mclock.AbsTime
 }
@@ -58,6 +60,8 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 		context := []interface{}{
 			"number", end.Number(), "hash", end.Hash(),
 			"blocks", st.processed, "txs", txs, "mgas", float64(st.usedGas) / 1000000,
+			"accessItems", st.accessItems, "accessList", st.accessList,
+			"accessItems/tx", float64(st.accessItems / txs), "accessList/tx", float64(st.accessList / txs),
 			"elapsed", common.PrettyDuration(elapsed), "mgasps", float64(st.usedGas) * 1000 / float64(elapsed),
 		}
 		if timestamp := time.Unix(int64(end.Time()), 0); time.Since(timestamp) > time.Minute {

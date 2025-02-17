@@ -1827,6 +1827,8 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		// Report the import stats before returning the various results
 		stats.processed++
 		stats.usedGas += res.usedGas
+		stats.accessItems += res.accessItems
+		stats.accessList += res.accessList
 
 		var snapDiffItems, snapBufItems common.StorageSize
 		if bc.snaps != nil {
@@ -1875,9 +1877,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 // blockProcessingResult is a summary of block processing
 // used for updating the stats.
 type blockProcessingResult struct {
-	usedGas  uint64
-	procTime time.Duration
-	status   WriteStatus
+	usedGas     uint64
+	procTime    time.Duration
+	status      WriteStatus
+	accessItems int
+	accessList  int
 }
 
 // processBlock executes and validates the given block. If there was no error
@@ -1984,7 +1988,7 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	blockWriteTimer.Update(time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits)
 	blockInsertTimer.UpdateSince(start)
 
-	return &blockProcessingResult{usedGas: res.GasUsed, procTime: proctime, status: status}, nil
+	return &blockProcessingResult{usedGas: res.GasUsed, accessList: res.AccessList, accessItems: res.AccessItems, procTime: proctime, status: status}, nil
 }
 
 // insertSideChain is called when an import batch hits upon a pruned ancestor

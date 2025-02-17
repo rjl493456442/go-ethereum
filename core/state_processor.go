@@ -90,7 +90,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 
 	// Iterate over and process the individual transactions
+	var accessList int
 	for i, tx := range block.Transactions() {
+		for _, item := range tx.AccessList() {
+			accessList++
+			accessList += len(item.StorageKeys)
+		}
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 		if err != nil {
 			return nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
@@ -103,6 +108,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+
 	}
 	// Read requests if Prague is enabled.
 	var requests [][]byte
@@ -122,10 +128,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	p.chain.engine.Finalize(p.chain, header, tracingStateDB, block.Body())
 
 	return &ProcessResult{
-		Receipts: receipts,
-		Requests: requests,
-		Logs:     allLogs,
-		GasUsed:  *usedGas,
+		Receipts:    receipts,
+		Requests:    requests,
+		Logs:        allLogs,
+		GasUsed:     *usedGas,
+		AccessList:  accessList,
+		AccessItems: statedb.AccountLoaded + statedb.StorageLoaded,
 	}, nil
 }
 
