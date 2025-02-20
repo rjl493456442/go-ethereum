@@ -194,6 +194,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		// to be uint256. Practically much less so feasible.
 		pc   = uint64(0) // program counter
 		cost uint64
+
 		// copies used by tracer
 		pcCopy  uint64 // needed for the deferred EVMLogger
 		gasCopy uint64 // for EVMLogger to log gas remaining before execution
@@ -245,6 +246,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		op = contract.GetOp(pc)
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
+
 		// Validate stack
 		if sLen := stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
@@ -280,10 +282,13 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			// cost is explicitly set so that the capture state defer method can get the proper cost
 			var dynamicCost uint64
 			dynamicCost, err = operation.dynamicGas(in.evm, contract, stack, mem, memorySize)
+			// TODO(Sina) the returned dynamicCost is usually 0 if the error is not nil,
+			// the tracing content might be incorrect?
 			cost += dynamicCost // for tracing
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrOutOfGas, err)
 			}
+
 			// for tracing: this gas consumption event is emitted below in the debug section.
 			if contract.Gas < dynamicCost {
 				return nil, ErrOutOfGas
