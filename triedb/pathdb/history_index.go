@@ -76,7 +76,7 @@ type indexReader struct {
 // loadIndexData loads the index data associated with the specified state.
 func loadIndexData(db ethdb.KeyValueReader, state stateIdent) ([]*indexBlockDesc, error) {
 	var blob []byte
-	if state.account {
+	if state.isAccount() {
 		blob = rawdb.ReadAccountHistoryIndex(db, state.address)
 	} else {
 		blob = rawdb.ReadStorageHistoryIndex(db, state.address, state.storageHash)
@@ -138,7 +138,7 @@ func (r *indexReader) readGreaterThan(id uint64) (uint64, error) {
 			err  error
 			blob []byte
 		)
-		if r.state.account {
+		if r.state.isAccount() {
 			blob = rawdb.ReadAccountHistoryIndexBlock(r.db, r.state.address, desc.id)
 		} else {
 			blob = rawdb.ReadStorageHistoryIndexBlock(r.db, r.state.address, r.state.storageHash, desc.id)
@@ -172,7 +172,7 @@ type indexWriter struct {
 // newIndexWriter constructs the index writer for the specified state.
 func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, error) {
 	var blob []byte
-	if state.account {
+	if state.isAccount() {
 		blob = rawdb.ReadAccountHistoryIndex(db, state.address)
 	} else {
 		blob = rawdb.ReadStorageHistoryIndex(db, state.address, state.storageHash)
@@ -195,7 +195,7 @@ func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, er
 		indexBlock []byte
 		lastDesc   = descList[len(descList)-1]
 	)
-	if state.account {
+	if state.isAccount() {
 		indexBlock = rawdb.ReadAccountHistoryIndexBlock(db, state.address, lastDesc.id)
 	} else {
 		indexBlock = rawdb.ReadStorageHistoryIndexBlock(db, state.address, state.storageHash, lastDesc.id)
@@ -267,7 +267,7 @@ func (w *indexWriter) finish(batch ethdb.Batch) {
 		return // nothing to commit
 	}
 	for _, bw := range writers {
-		if w.state.account {
+		if w.state.isAccount() {
 			rawdb.WriteAccountHistoryIndexBlock(batch, w.state.address, bw.desc.id, bw.finish())
 		} else {
 			rawdb.WriteStorageHistoryIndexBlock(batch, w.state.address, w.state.storageHash, bw.desc.id, bw.finish())
@@ -279,7 +279,7 @@ func (w *indexWriter) finish(batch ethdb.Batch) {
 	for _, desc := range descList {
 		buf = append(buf, desc.encode()...)
 	}
-	if w.state.account {
+	if w.state.isAccount() {
 		rawdb.WriteAccountHistoryIndex(batch, w.state.address, buf)
 	} else {
 		rawdb.WriteStorageHistoryIndex(batch, w.state.address, w.state.storageHash, buf)
@@ -299,7 +299,7 @@ type indexDeleter struct {
 // newIndexDeleter constructs the index deleter for the specified state.
 func newIndexDeleter(db ethdb.KeyValueReader, state stateIdent) (*indexDeleter, error) {
 	var blob []byte
-	if state.account {
+	if state.isAccount() {
 		blob = rawdb.ReadAccountHistoryIndex(db, state.address)
 	} else {
 		blob = rawdb.ReadStorageHistoryIndex(db, state.address, state.storageHash)
@@ -324,7 +324,7 @@ func newIndexDeleter(db ethdb.KeyValueReader, state stateIdent) (*indexDeleter, 
 		indexBlock []byte
 		lastDesc   = descList[len(descList)-1]
 	)
-	if state.account {
+	if state.isAccount() {
 		indexBlock = rawdb.ReadAccountHistoryIndexBlock(db, state.address, lastDesc.id)
 	} else {
 		indexBlock = rawdb.ReadStorageHistoryIndexBlock(db, state.address, state.storageHash, lastDesc.id)
@@ -377,7 +377,7 @@ func (d *indexDeleter) pop(id uint64) error {
 		indexBlock []byte
 		lastDesc   = d.descList[len(d.descList)-1]
 	)
-	if d.state.account {
+	if d.state.isAccount() {
 		indexBlock = rawdb.ReadAccountHistoryIndexBlock(d.db, d.state.address, lastDesc.id)
 	} else {
 		indexBlock = rawdb.ReadStorageHistoryIndexBlock(d.db, d.state.address, d.state.storageHash, lastDesc.id)
@@ -396,7 +396,7 @@ func (d *indexDeleter) pop(id uint64) error {
 // This function is safe to be called multiple times.
 func (d *indexDeleter) finish(batch ethdb.Batch) {
 	for _, id := range d.dropped {
-		if d.state.account {
+		if d.state.isAccount() {
 			rawdb.DeleteAccountHistoryIndexBlock(batch, d.state.address, id)
 		} else {
 			rawdb.DeleteStorageHistoryIndexBlock(batch, d.state.address, d.state.storageHash, id)
@@ -406,7 +406,7 @@ func (d *indexDeleter) finish(batch ethdb.Batch) {
 
 	// Flush the content of last block writer, regardless it's dirty or not
 	if !d.bw.empty() {
-		if d.state.account {
+		if d.state.isAccount() {
 			rawdb.WriteAccountHistoryIndexBlock(batch, d.state.address, d.bw.desc.id, d.bw.finish())
 		} else {
 			rawdb.WriteStorageHistoryIndexBlock(batch, d.state.address, d.state.storageHash, d.bw.desc.id, d.bw.finish())
@@ -414,7 +414,7 @@ func (d *indexDeleter) finish(batch ethdb.Batch) {
 	}
 	// Flush the index metadata into the supplied batch
 	if d.empty() {
-		if d.state.account {
+		if d.state.isAccount() {
 			rawdb.DeleteAccountHistoryIndex(batch, d.state.address)
 		} else {
 			rawdb.DeleteStorageHistoryIndex(batch, d.state.address, d.state.storageHash)
@@ -424,7 +424,7 @@ func (d *indexDeleter) finish(batch ethdb.Batch) {
 		for _, desc := range d.descList {
 			buf = append(buf, desc.encode()...)
 		}
-		if d.state.account {
+		if d.state.isAccount() {
 			rawdb.WriteAccountHistoryIndex(batch, d.state.address, buf)
 		} else {
 			rawdb.WriteStorageHistoryIndex(batch, d.state.address, d.state.storageHash, buf)

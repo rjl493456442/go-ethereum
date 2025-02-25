@@ -32,23 +32,25 @@ import (
 // stateIdent represents the identifier of a state element, which can be
 // either an account or a storage slot.
 type stateIdent struct {
-	account     bool
 	address     common.Address
-	storageHash common.Hash // null if account is true, the hash of the raw storage slot key
+	storageHash common.Hash // the hash of the raw storage slot key, empty for account
 }
 
 // String returns the string format state identifier.
 func (ident stateIdent) String() string {
-	if ident.account {
+	if ident.isAccount() {
 		return ident.address.Hex()
 	}
 	return ident.address.Hex() + ident.storageHash.Hex()
 }
 
+func (ident stateIdent) isAccount() bool {
+	return ident.storageHash == (common.Hash{})
+}
+
 // newAccountIdent constructs a state identifier for an account.
 func newAccountIdent(address common.Address) stateIdent {
 	return stateIdent{
-		account: true,
 		address: address,
 	}
 }
@@ -57,6 +59,9 @@ func newAccountIdent(address common.Address) stateIdent {
 // The address denotes the address of the associated account;
 // the storageHash denotes the hash of the raw storage slot key;
 func newStorageIdent(address common.Address, storageHash common.Hash) stateIdent {
+	if storageHash == (common.Hash{}) {
+		panic("storage hash cannot be zero")
+	}
 	return stateIdent{
 		address:     address,
 		storageHash: storageHash,
@@ -73,7 +78,6 @@ type stateIdentQuery struct {
 func newAccountIdentQuery(address common.Address) stateIdentQuery {
 	return stateIdentQuery{
 		stateIdent: stateIdent{
-			account: true,
 			address: address,
 		},
 	}
@@ -332,7 +336,7 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	if historyID == math.MaxUint64 {
 		return latestValue, nil
 	}
-	if state.account {
+	if state.isAccount() {
 		return r.readAccount(state.address, historyID)
 	}
 	return r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
