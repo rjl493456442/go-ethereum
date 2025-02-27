@@ -18,10 +18,12 @@ package pathdb
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/trie/trienode"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -221,21 +223,52 @@ func (l *lookup) addLayer(diff *diffLayer) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for accountHash, nodes := range diff.nodes.nodes {
-			subset := l.nodes[accountHash]
-			if subset == nil {
-				subset = make(map[string][]common.Hash)
-				l.nodes[accountHash] = subset
-			}
-			// Put the layer hash at the end of the list
-			for path := range nodes {
-				if _, exists := subset[path]; !exists {
-					subset[path] = getSlice()
-				}
-				subset[path] = append(subset[path], state)
-			}
-		}
+		l.addNodes(state, diff.nodes.nodes)
 	}()
+	wg.Wait()
+}
+
+func (l *lookup) addNodes(state common.Hash, nodes map[common.Hash]map[string]*trienode.Node) {
+	workers := runtime.NumCPU() / 2 // Don't drain all cpu resources
+	if workers > len(nodes) {
+		workers = len(nodes)
+	}
+	type task struct {
+		nodes map[string]*trienode.Node
+		store map[string][]common.Hash
+	}
+	var (
+		wg    sync.WaitGroup
+		tasks = make(chan *task, workers)
+	)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for t := range tasks {
+				// Put the layer hash at the end of the list
+				for path := range t.nodes {
+					if _, exists := t.store[path]; !exists {
+						t.store[path] = getSlice()
+					}
+					t.store[path] = append(t.store[path], state)
+				}
+			}
+		}()
+	}
+	for accountHash, subset := range nodes {
+		store := l.nodes[accountHash]
+		if store == nil {
+			store = make(map[string][]common.Hash)
+			l.nodes[accountHash] = store
+		}
+		tasks <- &task{
+			nodes: subset,
+			store: store,
+		}
+	}
+	close(tasks)
 	wg.Wait()
 }
 
@@ -330,47 +363,86 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 	})
 
 	wg.Go(func() error {
-		for accountHash, nodes := range diff.nodes.nodes {
-			subset := l.nodes[accountHash]
-			if subset == nil {
-				return fmt.Errorf("unknown node owner %x", accountHash)
-			}
-			for path := range nodes {
-				// Traverse the list from oldest to newest to quickly locate the ID
-				// of the stale layer.
-				var (
-					found bool
-					list  = subset[path]
-				)
-				for j := 0; j < len(list); j++ {
-					if list[j] == state {
-						if j == 0 {
-							list = list[1:]
-							if cap(list) > 1024 {
-								list = append(getSlice(), list...)
-							}
-						} else {
-							list = append(list[:j], list[j+1:]...)
-						}
-						found = true
-						break
-					}
-				}
-				if !found {
-					return fmt.Errorf("node lookup is not found, %x %v", accountHash, []byte(path))
-				}
-				if len(list) != 0 {
-					subset[path] = list
-				} else {
-					returnSlice(subset[path])
-					delete(subset, path)
-				}
-			}
-			if len(subset) == 0 {
-				delete(l.nodes, accountHash)
-			}
-		}
-		return nil
+		return l.removeNodes(state, diff.nodes.nodes)
 	})
 	return wg.Wait()
+}
+
+func (l *lookup) removeNodes(state common.Hash, nodes map[common.Hash]map[string]*trienode.Node) error {
+	workers := runtime.NumCPU() / 2 // Don't drain all cpu resources
+	if workers > len(nodes) {
+		workers = len(nodes)
+	}
+	type task struct {
+		nodes map[string]*trienode.Node
+		store map[string][]common.Hash
+	}
+	var (
+		wg    errgroup.Group
+		tasks = make(chan *task, workers)
+	)
+	for i := 0; i < workers; i++ {
+		wg.Go(func() error {
+			for t := range tasks {
+				for path := range t.nodes {
+					// Traverse the list from oldest to newest to quickly locate the ID
+					// of the stale layer.
+					var (
+						found bool
+						list  = t.store[path]
+					)
+					for j := 0; j < len(list); j++ {
+						if list[j] == state {
+							if j == 0 {
+								list = list[1:]
+								if cap(list) > 1024 {
+									list = append(getSlice(), list...)
+								}
+							} else {
+								list = append(list[:j], list[j+1:]...)
+							}
+							found = true
+							break
+						}
+					}
+					if !found {
+						return fmt.Errorf("node lookup is not found, %v", []byte(path))
+					}
+					if len(list) != 0 {
+						t.store[path] = list
+					} else {
+						returnSlice(list)
+						delete(t.store, path)
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	// Emit the node removal tasks
+	for accountHash, subset := range nodes {
+		store := l.nodes[accountHash]
+		if store == nil {
+			close(tasks)
+			_ = wg.Wait() // ignore the error
+			return fmt.Errorf("unknown node owner %x", accountHash)
+		}
+		tasks <- &task{
+			nodes: subset,
+			store: store,
+		}
+	}
+	close(tasks)
+	if err := wg.Wait(); err != nil {
+		return err
+	}
+
+	// Clean up the zero size embedded maps
+	for accountHash := range l.nodes {
+		if len(l.nodes[accountHash]) == 0 {
+			delete(l.nodes, accountHash)
+		}
+	}
+	return nil
 }
