@@ -77,7 +77,6 @@ if one is set.  Otherwise it prints the genesis from the datadir.`,
 		ArgsUsage: "<filename> (<filename 2> ... <filename N>) ",
 		Flags: slices.Concat([]cli.Flag{
 			utils.CacheFlag,
-			utils.SyncModeFlag,
 			utils.GCModeFlag,
 			utils.SnapshotFlag,
 			utils.CacheDatabaseFlag,
@@ -116,7 +115,6 @@ processing will proceed even if an individual RLP-file import failure occurs.`,
 		ArgsUsage: "<filename> [<blockNumFirst> <blockNumLast>]",
 		Flags: slices.Concat([]cli.Flag{
 			utils.CacheFlag,
-			utils.SyncModeFlag,
 		}, utils.DatabaseFlags),
 		Description: `
 Requires a first argument of the file to write to.
@@ -159,7 +157,6 @@ into Era archives. Eras are typically packaged in steps of 8192 blocks.
 		ArgsUsage: "<datafile>",
 		Flags: slices.Concat([]cli.Flag{
 			utils.CacheFlag,
-			utils.SyncModeFlag,
 		}, utils.DatabaseFlags),
 		Description: `
 The import-preimages command imports hash preimages from an RLP encoded stream.

@@ -249,6 +249,12 @@ var (
 		Value:    ethconfig.Defaults.SyncMode.String(),
 		Category: flags.StateCategory,
 	}
+	HistoryModeFlag = &cli.StringFlag{
+		Name:     "historymode",
+		Usage:    `Mode of handling ancient chain segments: "all" or "pruned" (retain only headers while discarding others before the Paris fork)`,
+		Value:    ethconfig.Defaults.HistoryMode.String(),
+		Category: flags.StateCategory,
+	}
 	GCModeFlag = &cli.StringFlag{
 		Name:     "gcmode",
 		Usage:    `Blockchain garbage collection mode, only relevant in state.scheme=hash ("full", "archive")`,
@@ -1568,6 +1574,11 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	} else if ctx.IsSet(SyncModeFlag.Name) {
 		if err = cfg.SyncMode.UnmarshalText([]byte(ctx.String(SyncModeFlag.Name))); err != nil {
 			Fatalf("invalid --syncmode flag: %v", err)
+		}
+	}
+	if ctx.IsSet(HistoryModeFlag.Name) {
+		if err = cfg.HistoryMode.UnmarshalText([]byte(ctx.String(HistoryModeFlag.Name))); err != nil {
+			Fatalf("invalid --historymode flag: %v", err)
 		}
 	}
 	if ctx.IsSet(NetworkIdFlag.Name) {
