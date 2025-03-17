@@ -237,7 +237,8 @@ func (hc *HeaderChain) WriteHeaders(headers []*types.Header) (int, error) {
 }
 
 // writeHeadersAndSetHead writes a batch of block headers and applies the last
-// header as the chain head if the fork choicer says it's ok to update the chain.
+// header as the chain head.
+//
 // Note: This method is not concurrent-safe with inserting blocks simultaneously
 // into the chain, as side effects caused by reorganisations cannot be emulated
 // without the real blocks. Hence, writing headers directly should only be done
@@ -302,7 +303,6 @@ func (hc *HeaderChain) ValidateHeaderChain(chain []*types.Header) (int, error) {
 			return i, err
 		}
 	}
-
 	return 0, nil
 }
 
