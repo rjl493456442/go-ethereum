@@ -92,6 +92,11 @@ func (tracker *TxTracker) TrackAll(txs []*types.Transaction) []error {
 		}
 		// Ignore the transactions which are failed for fundamental
 		// validation such as invalid parameters.
+		//
+		// TODO(rjl493456442) it's unnecessary to perform this check
+		// as the transaction will be rejected by the txpool in the
+		// first place if it fails with either static or stateful
+		// checks.
 		if err := tracker.pool.ValidateTxBasics(tx); err != nil {
 			log.Debug("Invalid transaction submitted", "hash", tx.Hash(), "err", err)
 			errors = append(errors, err)
