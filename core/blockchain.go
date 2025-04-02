@@ -90,7 +90,7 @@ var (
 	blockReorgAddMeter  = metrics.NewRegisteredMeter("chain/reorg/add", nil)
 	blockReorgDropMeter = metrics.NewRegisteredMeter("chain/reorg/drop", nil)
 
-	blockPrefetchExecuteTimer   = metrics.NewRegisteredTimer("chain/prefetch/executes", nil)
+	blockPrefetchExecuteTimer   = metrics.NewRegisteredResettingTimer("chain/prefetch/executes", nil)
 	blockPrefetchInterruptMeter = metrics.NewRegisteredMeter("chain/prefetch/interrupts", nil)
 
 	errInsertionInterrupted = errors.New("insertion is interrupted")
