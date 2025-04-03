@@ -47,12 +47,18 @@ func newStatePrefetcher(config *params.ChainConfig, chain *HeaderChain) *statePr
 func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interrupt *atomic.Bool) {
 	var (
 		invalids     int
+		valids       int
 		header       = block.Header()
 		gaspool      = new(GasPool).AddGas(block.GasLimit())
 		blockContext = NewEVMBlockContext(header, p.chain, nil)
 		evm          = vm.NewEVM(blockContext, statedb, p.config, cfg)
 		signer       = types.MakeSigner(p.config, header.Number, header.Time)
 	)
+	defer func() {
+		blockPrefetchTxsValidMeter.Mark(int64(valids))
+		blockPrefetchTxsInvalidMeter.Mark(int64(invalids))
+	}()
+
 	// Iterate over and process the individual transactions
 	byzantium := p.config.IsByzantium(block.Number())
 	for i, tx := range block.Transactions() {
@@ -71,17 +77,17 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		// We attempt to apply a transaction. The goal is not to execute
 		// the transaction successfully, rather to warm up touched data slots.
 		if _, err := ApplyMessage(evm, msg, gaspool); err != nil {
+			invalids += 1
 			return // Ugh, something went horribly wrong, bail out
 		}
 		// If we're pre-byzantium, pre-load trie nodes for the intermediate root
 		if !byzantium {
 			statedb.IntermediateRoot(true)
 		}
+		valids += 1
 	}
 	// If were post-byzantium, pre-load trie nodes for the final root hash
 	if byzantium {
 		statedb.IntermediateRoot(true)
 	}
-	blockPrefetchTxsValidMeter.Mark(int64(len(block.Transactions()) - invalids))
-	blockPrefetchTxsInvalidMeter.Mark(int64(invalids))
 }
