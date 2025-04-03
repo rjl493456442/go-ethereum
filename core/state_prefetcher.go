@@ -46,6 +46,7 @@ func newStatePrefetcher(config *params.ChainConfig, chain *HeaderChain) *statePr
 // only goal is to pre-cache transaction signatures and state trie nodes.
 func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interrupt *atomic.Bool) {
 	var (
+		invalids     int
 		header       = block.Header()
 		gaspool      = new(GasPool).AddGas(block.GasLimit())
 		blockContext = NewEVMBlockContext(header, p.chain, nil)
@@ -62,6 +63,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		// Convert the transaction into an executable message and pre-cache its sender
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
 		if err != nil {
+			invalids += 1
 			return // Also invalid block, bail out
 		}
 		statedb.SetTxContext(tx.Hash(), i)
@@ -80,4 +82,6 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 	if byzantium {
 		statedb.IntermediateRoot(true)
 	}
+	blockPrefetchTxsValidMeter.Mark(int64(len(block.Transactions()) - invalids))
+	blockPrefetchTxsInvalidMeter.Mark(int64(invalids))
 }
