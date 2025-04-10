@@ -18,11 +18,8 @@ package utils
 
 import (
 	"encoding/binary"
-	"sync"
 
 	"github.com/crate-crypto/go-ipa/bandersnatch/fr"
-	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-verkle"
 	"github.com/holiman/uint256"
 )
@@ -48,11 +45,6 @@ var (
 
 	index0Point *verkle.Point // pre-computed commitment of polynomial [2+256*64]
 
-	// cacheHitGauge is the metric to track how many cache hit occurred.
-	cacheHitGauge = metrics.NewRegisteredGauge("trie/verkle/cache/hit", nil)
-
-	// cacheMissGauge is the metric to track how many cache miss occurred.
-	cacheMissGauge = metrics.NewRegisteredGauge("trie/verkle/cache/miss", nil)
 )
 
 func init() {
@@ -71,49 +63,11 @@ func init() {
 	}
 }
 
-// PointCache is the LRU cache for storing evaluated address commitment.
-type PointCache struct {
-	lru  lru.BasicLRU[string, *verkle.Point]
-	lock sync.RWMutex
-}
-
-// NewPointCache returns the cache with specified size.
-func NewPointCache(maxItems int) *PointCache {
-	return &PointCache{
-		lru: lru.NewBasicLRU[string, *verkle.Point](maxItems),
-	}
-}
-
-// Get returns the cached commitment for the specified address, or computing
-// it on the flight.
-func (c *PointCache) Get(addr []byte) *verkle.Point {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	p, ok := c.lru.Get(string(addr))
-	if ok {
-		cacheHitGauge.Inc(1)
-		return p
-	}
-	cacheMissGauge.Inc(1)
-	p = evaluateAddressPoint(addr)
-	c.lru.Add(string(addr), p)
-	return p
-}
-
-// GetStem returns the first 31 bytes of the tree key as the tree stem. It only
-// works for the account metadata whose treeIndex is 0.
-func (c *PointCache) GetStem(addr []byte) []byte {
-	p := c.Get(addr)
-	return pointToHash(p, 0)[:31]
-}
-
-// GetTreeKey performs both the work of the spec's get_tree_key function, and that
-// of pedersen_hash: it builds the polynomial in pedersen_hash without having to
-// create a mostly zero-filled buffer and "type cast" it to a 128-long 16-byte
-// array. Since at most the first 5 coefficients of the polynomial will be non-zero,
-// these 5 coefficients are created directly.
-func GetTreeKey(address []byte, treeIndex *uint256.Int, subIndex byte) []byte {
+// GetStem computes the tree stem based on the verkle spec: it builds the polynomial
+// in pedersen_hash without having to create a mostly zero-filled buffer and
+// "type cast" it to a 128-long 16-byte array. Since at most the first 5 coefficients
+// of the polynomial will be non-zero, these 5 coefficients are created directly.
+func GetStem(address []byte, treeIndex *uint256.Int) verkle.Stem {
 	if len(address) < 32 {
 		var aligned [32]byte
 		address = append(aligned[:32-len(address)], address...)
@@ -144,16 +98,13 @@ func GetTreeKey(address []byte, treeIndex *uint256.Int, subIndex byte) []byte {
 
 	// add a constant point corresponding to poly[0]=[2+256*64].
 	ret.Add(ret, index0Point)
-
-	return pointToHash(ret, subIndex)
+	hash := verkle.HashPointToBytes(ret)
+	return verkle.KeyToStem(hash[:])
 }
 
-// GetTreeKeyWithEvaluatedAddress is basically identical to GetTreeKey, the only
-// difference is a part of polynomial is already evaluated.
-//
-// Specifically, poly = [2+256*64, address_le_low, address_le_high] is already
-// evaluated.
-func GetTreeKeyWithEvaluatedAddress(evaluated *verkle.Point, treeIndex *uint256.Int, subIndex byte) []byte {
+// GetStemWithEvaluatedAddress is a variant of GetStem with the pre-computed
+// account address polynomial commitment.
+func GetStemWithEvaluatedAddress(evaluated *verkle.Point, treeIndex *uint256.Int) verkle.Stem {
 	var poly [5]fr.Element
 
 	// little-endian, 32-byte aligned treeIndex
@@ -170,7 +121,32 @@ func GetTreeKeyWithEvaluatedAddress(evaluated *verkle.Point, treeIndex *uint256.
 	// add the pre-evaluated address
 	ret.Add(ret, evaluated)
 
-	return pointToHash(ret, subIndex)
+	hash := verkle.HashPointToBytes(ret)
+	return verkle.KeyToStem(hash[:])
+}
+
+// GetTreeKey performs both the work of the spec's get_tree_key function, and that
+// of pedersen_hash: it builds the polynomial in pedersen_hash without having to
+// create a mostly zero-filled buffer and "type cast" it to a 128-long 16-byte
+// array. Since at most the first 5 coefficients of the polynomial will be non-zero,
+// these 5 coefficients are created directly.
+func GetTreeKey(address []byte, treeIndex *uint256.Int, subIndex byte) []byte {
+	if len(address) < 32 {
+		var aligned [32]byte
+		address = append(aligned[:32-len(address)], address...)
+	}
+	stem := GetStem(address, treeIndex)
+	return append(stem, subIndex)
+}
+
+// GetTreeKeyWithEvaluatedAddress is basically identical to GetTreeKey, the only
+// difference is a part of polynomial is already evaluated.
+//
+// Specifically, poly = [2+256*64, address_le_low, address_le_high] is already
+// evaluated.
+func GetTreeKeyWithEvaluatedAddress(evaluated *verkle.Point, treeIndex *uint256.Int, subIndex byte) []byte {
+	stem := GetStemWithEvaluatedAddress(evaluated, treeIndex)
+	return append(stem, subIndex)
 }
 
 // BasicDataKey returns the verkle tree key of the basic data field for
@@ -185,21 +161,32 @@ func CodeHashKey(address []byte) []byte {
 	return GetTreeKey(address, zero, CodeHashLeafKey)
 }
 
-func codeChunkIndex(chunk *uint256.Int) (*uint256.Int, byte) {
+// CodeChunkIndex returns the corresponding trie index and the offset within
+// the leaf for the specified code chunk.
+func CodeChunkIndex(chunk int) (*uint256.Int, byte) {
 	var (
-		chunkOffset            = new(uint256.Int).Add(codeOffset, chunk)
+		chunkOffset            = new(uint256.Int).Add(codeOffset, uint256.NewInt(uint64(chunk)))
 		treeIndex, subIndexMod = new(uint256.Int).DivMod(chunkOffset, verkleNodeWidth, new(uint256.Int))
 	)
 	return treeIndex, byte(subIndexMod.Uint64())
 }
 
+// CodeChunkTreeIndex returns the corresponding trie index for the specified
+// code chunk.
+func CodeChunkTreeIndex(chunk int) *uint256.Int {
+	index, _ := CodeChunkIndex(chunk)
+	return index
+}
+
 // CodeChunkKey returns the verkle tree key of the code chunk for the
 // specified account.
-func CodeChunkKey(address []byte, chunk *uint256.Int) []byte {
-	treeIndex, subIndex := codeChunkIndex(chunk)
+func CodeChunkKey(address []byte, chunk int) []byte {
+	treeIndex, subIndex := CodeChunkIndex(chunk)
 	return GetTreeKey(address, treeIndex, subIndex)
 }
 
+// StorageIndex returns the corresponding trie index and the offset within
+// the leaf for the specified storage.
 func StorageIndex(storageKey []byte) (*uint256.Int, byte) {
 	// If the storage slot is in the header, we need to add the header offset.
 	var key uint256.Int
@@ -259,8 +246,8 @@ func CodeHashKeyWithEvaluatedAddress(evaluated *verkle.Point) []byte {
 // CodeChunkKeyWithEvaluatedAddress returns the verkle tree key of the code
 // chunk for the specified account. The difference between CodeChunkKey is the
 // address evaluation is already computed to minimize the computational overhead.
-func CodeChunkKeyWithEvaluatedAddress(addressPoint *verkle.Point, chunk *uint256.Int) []byte {
-	treeIndex, subIndex := codeChunkIndex(chunk)
+func CodeChunkKeyWithEvaluatedAddress(addressPoint *verkle.Point, chunk int) []byte {
+	treeIndex, subIndex := CodeChunkIndex(chunk)
 	return GetTreeKeyWithEvaluatedAddress(addressPoint, treeIndex, subIndex)
 }
 
@@ -272,13 +259,9 @@ func StorageSlotKeyWithEvaluatedAddress(evaluated *verkle.Point, storageKey []by
 	return GetTreeKeyWithEvaluatedAddress(evaluated, treeIndex, subIndex)
 }
 
-func pointToHash(evaluated *verkle.Point, suffix byte) []byte {
-	retb := verkle.HashPointToBytes(evaluated)
-	retb[31] = suffix
-	return retb[:]
-}
-
-func evaluateAddressPoint(address []byte) *verkle.Point {
+// EvaluateAddressPoint computes the polynomial commitment in pedersen_hash for
+// the provided address.
+func EvaluateAddressPoint(address []byte) *verkle.Point {
 	if len(address) < 32 {
 		var aligned [32]byte
 		address = append(aligned[:32-len(address)], address...)

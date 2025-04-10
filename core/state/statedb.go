@@ -551,11 +551,13 @@ func (s *StateDB) GetTransientState(addr common.Address, key common.Hash) common
 func (s *StateDB) updateStateObject(obj *stateObject) {
 	// Encode the account and update the account trie
 	addr := obj.Address()
+	if obj.dirtyCode {
+		if err := s.trie.UpdateContractCode(addr, obj.code); err != nil {
+			s.setError(fmt.Errorf("updateContractCode (%x) error: %v", addr[:], err))
+		}
+	}
 	if err := s.trie.UpdateAccount(addr, &obj.data, len(obj.code)); err != nil {
 		s.setError(fmt.Errorf("updateStateObject (%x) error: %v", addr[:], err))
-	}
-	if obj.dirtyCode {
-		s.trie.UpdateContractCode(obj.Address(), common.BytesToHash(obj.CodeHash()), obj.code)
 	}
 }
 

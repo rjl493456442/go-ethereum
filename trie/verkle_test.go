@@ -18,6 +18,7 @@ package trie
 
 import (
 	"bytes"
+	"math/rand"
 	"reflect"
 	"testing"
 
@@ -102,17 +103,16 @@ func TestVerkleRollBack(t *testing.T) {
 			code[i] = 0x60
 			code[i+1] = byte(i % 256)
 		}
-		if err := tr.UpdateAccount(addr, acct, len(code)); err != nil {
-			t.Fatalf("Failed to update account, %v", err)
-		}
 		for key, val := range storages[addr] {
 			if err := tr.UpdateStorage(addr, key.Bytes(), val); err != nil {
 				t.Fatalf("Failed to update account, %v", err)
 			}
 		}
-		hash := crypto.Keccak256Hash(code)
-		if err := tr.UpdateContractCode(addr, hash, code); err != nil {
+		if err := tr.UpdateContractCode(addr, code); err != nil {
 			t.Fatalf("Failed to update contract, %v", err)
+		}
+		if err := tr.UpdateAccount(addr, acct, len(code)); err != nil {
+			t.Fatalf("Failed to update account, %v", err)
 		}
 	}
 
@@ -137,13 +137,13 @@ func TestVerkleRollBack(t *testing.T) {
 	}
 
 	// ensure there is some code in the 2nd group of the 1st account
-	keyOf2ndGroup := utils.CodeChunkKeyWithEvaluatedAddress(tr.cache.Get(common.Address{1}.Bytes()), uint256.NewInt(128))
+	keyOf2ndGroup := utils.CodeChunkKeyWithEvaluatedAddress(tr.cache.GetPoint(common.Address{1}), 128)
 	chunk, err := tr.root.Get(keyOf2ndGroup, nil)
 	if err != nil {
 		t.Fatalf("Failed to get account, %v", err)
 	}
 	if len(chunk) == 0 {
-		t.Fatal("account was not created ")
+		t.Fatal("contract code chunk is not found")
 	}
 
 	// Rollback first account and check that it is gone
@@ -168,6 +168,92 @@ func TestVerkleRollBack(t *testing.T) {
 		t.Fatalf("Failed to get account, %v", err)
 	}
 	if len(chunk) != 0 {
-		t.Fatal("account was not deleted")
+		t.Fatal("contract code was not deleted")
+	}
+}
+
+func TestVerkleUpdateContractCode(t *testing.T) {
+	db := newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.PathScheme)
+	tr, _ := NewVerkleTrie(types.EmptyVerkleHash, db, utils.NewPointCache(100))
+
+	var codes [][]byte
+	// single byte code
+	codes = append(codes, []byte{0x1})
+
+	// code with 129 chunks, two stems should be used
+	codeA := make([]byte, 129*32)
+	for i := 0; i < len(codeA); i += 2 {
+		codeA[i] = 0x60
+		codeA[i+1] = byte(i % 256)
+	}
+	codes = append(codes, codeA)
+
+	// code with 385 chunks, three stems should be used
+	chunkB := 128 + 1 + 256
+	codeB := make([]byte, chunkB*32)
+	for i := 0; i < len(codeB); i += 2 {
+		codeB[i] = 0x60
+		codeB[i+1] = byte((i + 1) % 256)
+	}
+	codes = append(codes, codeB)
+
+	// code with 127 chunks, one stem should be used
+	codeC := make([]byte, 127*32)
+	for i := 0; i < len(codeC); i += 2 {
+		codeC[i] = 0x60
+		codeC[i+1] = byte((i + 2) % 256)
+	}
+	codes = append(codes, codeC)
+
+	// reset back to single byte code
+	codes = append(codes, []byte{0x2})
+
+	// clear code
+	codes = append(codes, nil)
+
+	// random codes
+	for i := 0; i < 10; i++ {
+		codes = append(codes, randBytes(rand.Intn(32768)+1))
+	}
+	// large codes
+	for i := 0; i < 10; i++ {
+		codes = append(codes, randBytes(rand.Intn(32768)+16384))
+	}
+	for _, code := range codes {
+		tr.UpdateContractCode(common.Address{0x1}, code)
+		tr.UpdateAccount(common.Address{0x1}, &types.StateAccount{
+			Nonce:    1,
+			Balance:  uint256.NewInt(100),
+			Root:     common.Hash{},
+			CodeHash: crypto.Keccak256(code),
+		}, len(code))
+
+		size, err := tr.getCodeSize(common.Address{0x1})
+		if err != nil {
+			t.Fatalf("Failed to get contract code, %v", err)
+		}
+		if int(size) != len(code) {
+			t.Fatalf("Unexpected contract code size, expected %d, got %d", len(code), size)
+		}
+		chunks := codeChunks(len(code))
+		chunkified := ChunkifyCode(code)
+		for i := 0; i < chunks; i++ {
+			want := chunkified[32*i : 32*(i+1)]
+
+			got, err := tr.getCodeChunk(common.Address{0x1}, i)
+			if err != nil {
+				t.Fatalf("Failed to get contract code chunk, %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("Unexpected contract code chunk, expected %v, got %v", want, got)
+			}
+		}
+		// ensure the codes in the higher position has been removed
+		for i := chunks; i < 2*chunks; i++ {
+			got, err := tr.getCodeChunk(common.Address{0x1}, i)
+			if err == nil || len(got) != 0 {
+				t.Fatalf("Unexpected contract code chunk, got %v", got)
+			}
+		}
 	}
 }

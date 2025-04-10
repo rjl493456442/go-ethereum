@@ -74,7 +74,7 @@ func (ae *AccessEvents) Keys() [][]byte {
 	// TODO: consider if parallelizing this is worth it, probably depending on len(ae.chunks).
 	keys := make([][]byte, 0, len(ae.chunks))
 	for chunk := range ae.chunks {
-		basePoint := ae.pointCache.Get(chunk.addr[:])
+		basePoint := ae.pointCache.GetPoint(chunk.addr)
 		key := utils.GetTreeKeyWithEvaluatedAddress(basePoint, &chunk.treeIndex, chunk.leafKey)
 		keys = append(keys, key)
 	}

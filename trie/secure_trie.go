@@ -195,7 +195,7 @@ func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccoun
 	return nil
 }
 
-func (t *StateTrie) UpdateContractCode(_ common.Address, _ common.Hash, _ []byte) error {
+func (t *StateTrie) UpdateContractCode(_ common.Address, _ []byte) error {
 	return nil
 }
 

@@ -21,15 +21,14 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-verkle"
-	"github.com/holiman/uint256"
 )
 
 func TestTreeKey(t *testing.T) {
 	var (
 		address      = []byte{0x01}
-		addressEval  = evaluateAddressPoint(address)
-		smallIndex   = uint256.NewInt(1)
-		largeIndex   = uint256.NewInt(10000)
+		addressEval  = EvaluateAddressPoint(address)
+		smallIndex   = 1
+		largeIndex   = 10000
 		smallStorage = []byte{0x1}
 		largeStorage = bytes.Repeat([]byte{0xff}, 16)
 	)
@@ -54,11 +53,11 @@ func TestTreeKey(t *testing.T) {
 }
 
 // goos: darwin
-// goarch: amd64
+// goarch: arm64
 // pkg: github.com/ethereum/go-ethereum/trie/utils
-// cpu: VirtualApple @ 2.50GHz
+// cpu: Apple M1 Pro
 // BenchmarkTreeKey
-// BenchmarkTreeKey-8   	  398731	      2961 ns/op	      32 B/op	       1 allocs/op
+// BenchmarkTreeKey-8   	  611726	      1967 ns/op	      40 B/op	       2 allocs/op
 func BenchmarkTreeKey(b *testing.B) {
 	// Initialize the IPA settings which can be pretty expensive.
 	verkle.GetConfig()
@@ -72,17 +71,17 @@ func BenchmarkTreeKey(b *testing.B) {
 }
 
 // goos: darwin
-// goarch: amd64
+// goarch: arm64
 // pkg: github.com/ethereum/go-ethereum/trie/utils
-// cpu: VirtualApple @ 2.50GHz
+// cpu: Apple M1 Pro
 // BenchmarkTreeKeyWithEvaluation
-// BenchmarkTreeKeyWithEvaluation-8   	  513855	      2324 ns/op	      32 B/op	       1 allocs/op
+// BenchmarkTreeKeyWithEvaluation-8   	  740726	      1620 ns/op	      40 B/op	       2 allocs/op
 func BenchmarkTreeKeyWithEvaluation(b *testing.B) {
 	// Initialize the IPA settings which can be pretty expensive.
 	verkle.GetConfig()
 
 	addr := []byte{0x01}
-	eval := evaluateAddressPoint(addr)
+	eval := EvaluateAddressPoint(addr)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -92,11 +91,11 @@ func BenchmarkTreeKeyWithEvaluation(b *testing.B) {
 }
 
 // goos: darwin
-// goarch: amd64
+// goarch: arm64
 // pkg: github.com/ethereum/go-ethereum/trie/utils
-// cpu: VirtualApple @ 2.50GHz
+// cpu: Apple M1 Pro
 // BenchmarkStorageKey
-// BenchmarkStorageKey-8   	  230516	      4584 ns/op	      96 B/op	       3 allocs/op
+// BenchmarkStorageKey-8   	  441252	      2680 ns/op	     104 B/op	       4 allocs/op
 func BenchmarkStorageKey(b *testing.B) {
 	// Initialize the IPA settings which can be pretty expensive.
 	verkle.GetConfig()
@@ -110,17 +109,17 @@ func BenchmarkStorageKey(b *testing.B) {
 }
 
 // goos: darwin
-// goarch: amd64
+// goarch: arm64
 // pkg: github.com/ethereum/go-ethereum/trie/utils
-// cpu: VirtualApple @ 2.50GHz
-// BenchmarkStorageKeyWithEvaluation
-// BenchmarkStorageKeyWithEvaluation-8   	  320125	      3753 ns/op	      96 B/op	       3 allocs/op
+// cpu: Apple M1 Pro
+// BenchmarkStorageKey
+// BenchmarkStorageKey-8   	  452821	      2653 ns/op	     104 B/op	       4 allocs/op
 func BenchmarkStorageKeyWithEvaluation(b *testing.B) {
 	// Initialize the IPA settings which can be pretty expensive.
 	verkle.GetConfig()
 
 	addr := []byte{0x01}
-	eval := evaluateAddressPoint(addr)
+	eval := EvaluateAddressPoint(addr)
 
 	b.ReportAllocs()
 	b.ResetTimer()
