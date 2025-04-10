@@ -436,14 +436,14 @@ func (t *VerkleTrie) getCodeSize(addr common.Address) (uint32, error) {
 
 // getCodeChunk retrieves the contract code chunk specified by the id.
 func (t *VerkleTrie) getCodeChunk(addr common.Address, chunkID int) ([]byte, error) {
-	//size, err := t.getCodeSize(addr)
-	//if err != nil {
-	//	return nil, err
-	//}
-	//chunks := codeChunks(int(size))
-	//if chunkID >= chunks {
-	//	return nil, fmt.Errorf("contract code chunk out of range, want: %d, have: %d", chunkID, chunks)
-	//}
+	size, err := t.getCodeSize(addr)
+	if err != nil {
+		return nil, err
+	}
+	chunks := codeChunks(int(size))
+	if chunkID >= chunks {
+		return nil, fmt.Errorf("contract code chunk out of range, want: %d, have: %d", chunkID, chunks)
+	}
 	key := utils.CodeChunkKey(addr.Bytes(), chunkID)
 	return t.root.Get(key, t.nodeResolver)
 }
