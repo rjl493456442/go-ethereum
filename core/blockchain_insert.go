@@ -38,6 +38,7 @@ type insertStats struct {
 	storageSize common.StorageSize
 	accountKey  common.StorageSize
 	storageKey  common.StorageSize
+	blockSize   common.StorageSize
 }
 
 // statsReportLimit is the time limit during import and export after which we
@@ -96,6 +97,12 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 			context = append(context, []interface{}{"accountKeySize", st.accountKey / common.StorageSize(st.processed)}...)
 			context = append(context, []interface{}{"storageKeySize", st.storageKey / common.StorageSize(st.processed)}...)
 			context = append(context, []interface{}{"witnessKeySize", (st.accountKey + st.storageKey) / common.StorageSize(st.processed)}...)
+			context = append(context, []interface{}{"blockSize", st.blockSize / common.StorageSize(st.processed)}...)
+
+			if st.blockSize != 0 {
+				context = append(context, []interface{}{"witness/block", (st.accountSize + st.storageSize) / st.blockSize}...)
+				context = append(context, []interface{}{"witnessKey/block", (st.accountKey + st.storageKey) / st.blockSize}...)
+			}
 		}
 
 		if setHead {

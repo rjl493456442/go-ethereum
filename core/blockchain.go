@@ -1812,6 +1812,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		stats.storageSize += res.storageSize
 		stats.accountKey += res.accountKey
 		stats.storageKey += res.storageKey
+		stats.blockSize += common.StorageSize(block.Size())
 
 		var snapDiffItems, snapBufItems common.StorageSize
 		if bc.snaps != nil {
