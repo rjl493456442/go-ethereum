@@ -31,6 +31,13 @@ type insertStats struct {
 	usedGas                    uint64
 	lastIndex                  int
 	startTime                  mclock.AbsTime
+
+	accounts    int
+	storages    int
+	accountSize common.StorageSize
+	storageSize common.StorageSize
+	accountKey  common.StorageSize
+	storageKey  common.StorageSize
 }
 
 // statsReportLimit is the time limit during import and export after which we
@@ -80,6 +87,17 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 		if st.ignored > 0 {
 			context = append(context, []interface{}{"ignored", st.ignored}...)
 		}
+		if st.processed != 0 {
+			context = append(context, []interface{}{"accounts", float64(st.accounts) / float64(st.processed)}...)
+			context = append(context, []interface{}{"storages", float64(st.storages) / float64(st.processed)}...)
+			context = append(context, []interface{}{"accountSize", st.accountSize / common.StorageSize(st.processed)}...)
+			context = append(context, []interface{}{"storageSize", st.storageSize / common.StorageSize(st.processed)}...)
+			context = append(context, []interface{}{"witnessSize", (st.accountSize + st.storageSize) / common.StorageSize(st.processed)}...)
+			context = append(context, []interface{}{"accountKeySize", st.accountKey / common.StorageSize(st.processed)}...)
+			context = append(context, []interface{}{"storageKeySize", st.storageKey / common.StorageSize(st.processed)}...)
+			context = append(context, []interface{}{"witnessKeySize", (st.accountKey + st.storageKey) / common.StorageSize(st.processed)}...)
+		}
+
 		if setHead {
 			log.Info("Imported new chain segment", context...)
 		} else {

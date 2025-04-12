@@ -99,6 +99,13 @@ var (
 	errChainStopped         = errors.New("blockchain is stopped")
 	errInvalidOldChain      = errors.New("invalid old chain")
 	errInvalidNewChain      = errors.New("invalid new chain")
+
+	witnessAccountMeter        = metrics.NewRegisteredMeter("chain/witness/account/count", nil)
+	witnessStorageMeter        = metrics.NewRegisteredMeter("chain/witness/storage/count", nil)
+	witnessAccountSizeMeter    = metrics.NewRegisteredMeter("chain/witness/account/bytes", nil)
+	witnessStorageSizeMeter    = metrics.NewRegisteredMeter("chain/witness/storage/bytes", nil)
+	witnessAccountKeySizeMeter = metrics.NewRegisteredMeter("chain/witness/account/keys", nil)
+	witnessStorageKeySizeMeter = metrics.NewRegisteredMeter("chain/witness/storage/keys", nil)
 )
 
 const (
@@ -1799,6 +1806,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		stats.processed++
 		stats.usedGas += res.usedGas
 
+		stats.accounts += res.accounts
+		stats.storages += res.storages
+		stats.accountSize += res.accountSize
+		stats.storageSize += res.storageSize
+		stats.accountKey += res.accountKey
+		stats.storageKey += res.storageKey
+
 		var snapDiffItems, snapBufItems common.StorageSize
 		if bc.snaps != nil {
 			snapDiffItems, snapBufItems = bc.snaps.Size()
@@ -1849,6 +1863,13 @@ type blockProcessingResult struct {
 	usedGas  uint64
 	procTime time.Duration
 	status   WriteStatus
+
+	accounts    int
+	storages    int
+	accountSize common.StorageSize
+	storageSize common.StorageSize
+	accountKey  common.StorageSize
+	storageKey  common.StorageSize
 }
 
 // processBlock executes and validates the given block. If there was no error
@@ -1955,7 +1976,25 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	blockWriteTimer.Update(time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits)
 	blockInsertTimer.UpdateSince(start)
 
-	return &blockProcessingResult{usedGas: res.GasUsed, procTime: proctime, status: status}, nil
+	accounts, storages, accountSize, storageSize, accountKey, storageKey := statedb.WitnessStat()
+	witnessAccountMeter.Mark(int64(accounts))
+	witnessStorageMeter.Mark(int64(storages))
+	witnessAccountSizeMeter.Mark(int64(accountSize))
+	witnessStorageSizeMeter.Mark(int64(storageSize))
+	witnessAccountKeySizeMeter.Mark(int64(accountKey))
+	witnessStorageKeySizeMeter.Mark(int64(storageKey))
+
+	return &blockProcessingResult{
+		usedGas:     res.GasUsed,
+		procTime:    proctime,
+		status:      status,
+		accounts:    accounts,
+		storages:    storages,
+		accountSize: accountSize,
+		storageSize: storageSize,
+		accountKey:  accountKey,
+		storageKey:  storageKey,
+	}, nil
 }
 
 // insertSideChain is called when an import batch hits upon a pruned ancestor

@@ -195,6 +195,15 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 		s.db.setError(err)
 		return common.Hash{}
 	}
+	if s.db.storageWitness[s.address] == nil {
+		s.db.storageWitness[s.address] = make(map[common.Hash][]byte)
+	}
+	if value == (common.Hash{}) {
+		s.db.storageWitness[s.address][key] = nil
+	} else {
+		data := common.TrimLeftZeroes(value[:])
+		s.db.storageWitness[s.address][key] = data
+	}
 	s.db.StorageReads += time.Since(start)
 
 	// Schedule the resolved storage slots for prefetching if it's enabled.

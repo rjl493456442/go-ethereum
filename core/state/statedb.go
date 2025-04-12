@@ -138,6 +138,9 @@ type StateDB struct {
 	// State witness if cross validation is needed
 	witness *stateless.Witness
 
+	accountWitness map[common.Address][]byte
+	storageWitness map[common.Address]map[common.Hash][]byte
+
 	// Measurements gathered during execution for debugging purposes
 	AccountReads    time.Duration
 	AccountHashes   time.Duration
@@ -180,6 +183,9 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		journal:              newJournal(),
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
+
+		accountWitness: make(map[common.Address][]byte),
+		storageWitness: make(map[common.Address]map[common.Hash][]byte),
 	}
 	if db.TrieDB().IsVerkle() {
 		sdb.accessEvents = NewAccessEvents(db.PointCache())
@@ -587,6 +593,13 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 	}
 	s.AccountReads += time.Since(start)
 
+	if s.accountWitness != nil {
+		if acct == nil {
+			s.accountWitness[addr] = nil
+		} else {
+			s.accountWitness[addr] = types.SlimAccountRLP(*acct)
+		}
+	}
 	// Short circuit if the account is not found
 	if acct == nil {
 		return nil
@@ -676,6 +689,9 @@ func (s *StateDB) Copy() *StateDB {
 		accessList:       s.accessList.Copy(),
 		transientStorage: s.transientStorage.Copy(),
 		journal:          s.journal.copy(),
+
+		accountWitness: make(map[common.Address][]byte),
+		storageWitness: make(map[common.Address]map[common.Hash][]byte),
 	}
 	if s.witness != nil {
 		state.witness = s.witness.Copy()
@@ -1433,4 +1449,27 @@ func (s *StateDB) Witness() *stateless.Witness {
 
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
+}
+
+func (s *StateDB) WitnessStat() (int, int, common.StorageSize, common.StorageSize, common.StorageSize, common.StorageSize) {
+	var (
+		accountSize common.StorageSize
+		storageSize common.StorageSize
+		accountKey  common.StorageSize
+		storageKey  common.StorageSize
+		storages    int
+	)
+	for _, data := range s.accountWitness {
+		accountSize += common.StorageSize(common.AddressLength + len(data))
+		accountKey += common.AddressLength
+	}
+	for _, slots := range s.storageWitness {
+		for _, slot := range slots {
+			storageSize += common.StorageSize(common.HashLength + len(slot))
+			storageKey += common.HashLength
+		}
+		storages += len(slots)
+		// The common.AddressLength is not counted
+	}
+	return len(s.accountWitness), storages, accountSize, storageSize, accountKey, storageKey
 }
