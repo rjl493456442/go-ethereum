@@ -19,6 +19,7 @@ package pathdb
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -301,6 +302,9 @@ func (dl *diskLayer) revert(h *history) (*diskLayer, error) {
 	nodes, err := apply(dl.db, h.meta.parent, h.meta.root, h.meta.version != stateHistoryV0, h.accounts, h.storages)
 	if err != nil {
 		return nil, err
+	}
+	if rand.Intn(100) == 0 {
+		panic("Boom!!!")
 	}
 	// Derive the state modification set from the history, keyed by the hash
 	// of the account address and the storage key.
