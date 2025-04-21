@@ -121,7 +121,7 @@ func (b *beaconBackfiller) resume() {
 
 // setMode updates the sync mode from the current one to the requested one. If
 // there's an active sync in progress, it will be cancelled and restarted.
-func (b *beaconBackfiller) setMode(mode SyncMode) {
+func (b *beaconBackfiller) setMode(mode ethconfig.SyncMode) {
 	// Update the old sync mode and track if it was changed
 	b.lock.Lock()
 	oldMode := b.syncMode
@@ -153,7 +153,7 @@ func (d *Downloader) SetBadBlockCallback(onBadBlock badBlockFn) {
 //
 // Internally backfilling and state sync is done the same way, but the header
 // retrieval and scheduling is replaced.
-func (d *Downloader) BeaconSync(mode SyncMode, head *types.Header, final *types.Header) error {
+func (d *Downloader) BeaconSync(mode ethconfig.SyncMode, head *types.Header, final *types.Header) error {
 	return d.beaconSync(mode, head, final, true)
 }
 
@@ -163,7 +163,7 @@ func (d *Downloader) BeaconSync(mode SyncMode, head *types.Header, final *types.
 //
 // This is useful if a beacon client is feeding us large chunks of payloads to run,
 // but is not setting the head after each.
-func (d *Downloader) BeaconExtend(mode SyncMode, head *types.Header) error {
+func (d *Downloader) BeaconExtend(mode ethconfig.SyncMode, head *types.Header) error {
 	return d.beaconSync(mode, head, nil, false)
 }
 
@@ -173,7 +173,7 @@ func (d *Downloader) BeaconExtend(mode SyncMode, head *types.Header) error {
 //
 // Internally backfilling and state sync is done the same way, but the header
 // retrieval and scheduling is replaced.
-func (d *Downloader) beaconSync(mode SyncMode, head *types.Header, final *types.Header, force bool) error {
+func (d *Downloader) beaconSync(mode ethconfig.SyncMode, head *types.Header, final *types.Header, force bool) error {
 	// When the downloader starts a sync cycle, it needs to be aware of the sync
 	// mode to use (full, snap). To keep the skeleton chain oblivious, inject the
 	// mode into the backfiller directly.

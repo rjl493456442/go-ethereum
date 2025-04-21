@@ -327,7 +327,7 @@ func (d *Downloader) UnregisterPeer(id string) error {
 // synchronise will select the peer and use it for synchronising. If an empty string is given
 // it will use the best peer possible and synchronize if its TD is higher than our own. If any of the
 // checks fail an error will be returned. This method is synchronous
-func (d *Downloader) synchronise(mode SyncMode, beaconPing chan struct{}) error {
+func (d *Downloader) synchronise(mode ethconfig.SyncMode, beaconPing chan struct{}) error {
 	// The beacon header syncer is async. It will start this synchronization and
 	// will continue doing other tasks. However, if synchronization needs to be
 	// cancelled, the syncer needs to know if we reached the startup point (and
@@ -402,8 +402,8 @@ func (d *Downloader) synchronise(mode SyncMode, beaconPing chan struct{}) error 
 	return d.syncToHead()
 }
 
-func (d *Downloader) getMode() SyncMode {
-	return SyncMode(d.mode.Load())
+func (d *Downloader) getMode() ethconfig.SyncMode {
+	return ethconfig.SyncMode(d.mode.Load())
 }
 
 // syncToHead starts a block synchronization based on the hash chain from

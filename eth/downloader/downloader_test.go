@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/event"
@@ -388,10 +389,14 @@ func assertOwnChain(t *testing.T, tester *downloadTester, length int) {
 	}
 }
 
-func TestCanonicalSynchronisation68Full(t *testing.T) { testCanonSync(t, eth.ETH68, FullSync) }
-func TestCanonicalSynchronisation68Snap(t *testing.T) { testCanonSync(t, eth.ETH68, SnapSync) }
+func TestCanonicalSynchronisation68Full(t *testing.T) {
+	testCanonSync(t, eth.ETH68, ethconfig.FullSync)
+}
+func TestCanonicalSynchronisation68Snap(t *testing.T) {
+	testCanonSync(t, eth.ETH68, ethconfig.SnapSync)
+}
 
-func testCanonSync(t *testing.T, protocol uint, mode SyncMode) {
+func testCanonSync(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	success := make(chan struct{})
 	tester := newTesterWithNotification(t, func() {
 		close(success)
@@ -416,10 +421,10 @@ func testCanonSync(t *testing.T, protocol uint, mode SyncMode) {
 
 // Tests that if a large batch of blocks are being downloaded, it is throttled
 // until the cached blocks are retrieved.
-func TestThrottling68Full(t *testing.T) { testThrottling(t, eth.ETH68, FullSync) }
-func TestThrottling68Snap(t *testing.T) { testThrottling(t, eth.ETH68, SnapSync) }
+func TestThrottling68Full(t *testing.T) { testThrottling(t, eth.ETH68, ethconfig.FullSync) }
+func TestThrottling68Snap(t *testing.T) { testThrottling(t, eth.ETH68, ethconfig.SnapSync) }
 
-func testThrottling(t *testing.T, protocol uint, mode SyncMode) {
+func testThrottling(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	tester := newTester(t)
 	defer tester.terminate()
 
@@ -494,10 +499,10 @@ func testThrottling(t *testing.T, protocol uint, mode SyncMode) {
 }
 
 // Tests that a canceled download wipes all previously accumulated state.
-func TestCancel68Full(t *testing.T) { testCancel(t, eth.ETH68, FullSync) }
-func TestCancel68Snap(t *testing.T) { testCancel(t, eth.ETH68, SnapSync) }
+func TestCancel68Full(t *testing.T) { testCancel(t, eth.ETH68, ethconfig.FullSync) }
+func TestCancel68Snap(t *testing.T) { testCancel(t, eth.ETH68, ethconfig.SnapSync) }
 
-func testCancel(t *testing.T, protocol uint, mode SyncMode) {
+func testCancel(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	complete := make(chan struct{})
 	success := func() {
 		close(complete)
@@ -526,10 +531,14 @@ func testCancel(t *testing.T, protocol uint, mode SyncMode) {
 
 // Tests that synchronisations behave well in multi-version protocol environments
 // and not wreak havoc on other nodes in the network.
-func TestMultiProtoSynchronisation68Full(t *testing.T) { testMultiProtoSync(t, eth.ETH68, FullSync) }
-func TestMultiProtoSynchronisation68Snap(t *testing.T) { testMultiProtoSync(t, eth.ETH68, SnapSync) }
+func TestMultiProtoSynchronisation68Full(t *testing.T) {
+	testMultiProtoSync(t, eth.ETH68, ethconfig.FullSync)
+}
+func TestMultiProtoSynchronisation68Snap(t *testing.T) {
+	testMultiProtoSync(t, eth.ETH68, ethconfig.SnapSync)
+}
 
-func testMultiProtoSync(t *testing.T, protocol uint, mode SyncMode) {
+func testMultiProtoSync(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	complete := make(chan struct{})
 	success := func() {
 		close(complete)
@@ -565,10 +574,14 @@ func testMultiProtoSync(t *testing.T, protocol uint, mode SyncMode) {
 
 // Tests that if a block is empty (e.g. header only), no body request should be
 // made, and instead the header should be assembled into a whole block in itself.
-func TestEmptyShortCircuit68Full(t *testing.T) { testEmptyShortCircuit(t, eth.ETH68, FullSync) }
-func TestEmptyShortCircuit68Snap(t *testing.T) { testEmptyShortCircuit(t, eth.ETH68, SnapSync) }
+func TestEmptyShortCircuit68Full(t *testing.T) {
+	testEmptyShortCircuit(t, eth.ETH68, ethconfig.FullSync)
+}
+func TestEmptyShortCircuit68Snap(t *testing.T) {
+	testEmptyShortCircuit(t, eth.ETH68, ethconfig.SnapSync)
+}
 
-func testEmptyShortCircuit(t *testing.T, protocol uint, mode SyncMode) {
+func testEmptyShortCircuit(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	success := make(chan struct{})
 	tester := newTesterWithNotification(t, func() {
 		close(success)
@@ -610,7 +623,7 @@ func testEmptyShortCircuit(t *testing.T, protocol uint, mode SyncMode) {
 		}
 	}
 	for _, block := range chain.blocks[1:] {
-		if mode == SnapSync && len(block.Transactions()) > 0 {
+		if mode == ethconfig.SnapSync && len(block.Transactions()) > 0 {
 			receiptsNeeded++
 		}
 	}
@@ -634,10 +647,10 @@ func checkProgress(t *testing.T, d *Downloader, stage string, want ethereum.Sync
 
 // Tests that peers below a pre-configured checkpoint block are prevented from
 // being fast-synced from, avoiding potential cheap eclipse attacks.
-func TestBeaconSync68Full(t *testing.T) { testBeaconSync(t, eth.ETH68, FullSync) }
-func TestBeaconSync68Snap(t *testing.T) { testBeaconSync(t, eth.ETH68, SnapSync) }
+func TestBeaconSync68Full(t *testing.T) { testBeaconSync(t, eth.ETH68, ethconfig.FullSync) }
+func TestBeaconSync68Snap(t *testing.T) { testBeaconSync(t, eth.ETH68, ethconfig.SnapSync) }
 
-func testBeaconSync(t *testing.T, protocol uint, mode SyncMode) {
+func testBeaconSync(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	var cases = []struct {
 		name  string // The name of testing scenario
 		local int    // The length of local chain(canonical chain assumed), 0 means genesis is the head
@@ -680,10 +693,10 @@ func testBeaconSync(t *testing.T, protocol uint, mode SyncMode) {
 
 // Tests that synchronisation progress (origin block number, current block number
 // and highest block number) is tracked and updated correctly.
-func TestSyncProgress68Full(t *testing.T) { testSyncProgress(t, eth.ETH68, FullSync) }
-func TestSyncProgress68Snap(t *testing.T) { testSyncProgress(t, eth.ETH68, SnapSync) }
+func TestSyncProgress68Full(t *testing.T) { testSyncProgress(t, eth.ETH68, ethconfig.FullSync) }
+func TestSyncProgress68Snap(t *testing.T) { testSyncProgress(t, eth.ETH68, ethconfig.SnapSync) }
 
-func testSyncProgress(t *testing.T, protocol uint, mode SyncMode) {
+func testSyncProgress(t *testing.T, protocol uint, mode ethconfig.SyncMode) {
 	success := make(chan struct{})
 	tester := newTesterWithNotification(t, func() {
 		success <- struct{}{}

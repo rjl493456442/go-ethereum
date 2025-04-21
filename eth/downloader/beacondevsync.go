@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -33,7 +34,7 @@ import (
 // Note, this must not be used in live code. If the forkchcoice endpoint where
 // to use this instead of giving us the payload first, then essentially nobody
 // in the network would have the block yet that we'd attempt to retrieve.
-func (d *Downloader) BeaconDevSync(mode SyncMode, hash common.Hash, stop chan struct{}) error {
+func (d *Downloader) BeaconDevSync(mode ethconfig.SyncMode, hash common.Hash, stop chan struct{}) error {
 	// Be very loud that this code should not be used in a live node
 	log.Warn("----------------------------------")
 	log.Warn("Beacon syncing with hash as target", "hash", hash)

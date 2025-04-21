@@ -124,8 +124,8 @@ func (f *fetchResult) Done(kind uint) bool {
 
 // queue represents hashes that are either need fetching or are being fetched
 type queue struct {
-	mode       SyncMode    // Synchronisation mode to decide on the block parts to schedule for fetching
-	headerHead common.Hash // Hash of the last queued header to verify order
+	mode       ethconfig.SyncMode // Synchronisation mode to decide on the block parts to schedule for fetching
+	headerHead common.Hash        // Hash of the last queued header to verify order
 
 	// All data retrievals below are based on an already assembles header chain
 	blockTaskPool  map[common.Hash]*types.Header      // Pending block (body) retrieval tasks, mapping hashes to headers
@@ -733,7 +733,7 @@ func (q *queue) deliver(id string, taskPool map[common.Hash]*types.Header,
 
 // Prepare configures the result cache to allow accepting and caching inbound
 // fetch results.
-func (q *queue) Prepare(offset uint64, mode SyncMode) {
+func (q *queue) Prepare(offset uint64, mode ethconfig.SyncMode) {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
