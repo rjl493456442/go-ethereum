@@ -25,8 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/bloom"
+	pebble "github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/bloom"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
