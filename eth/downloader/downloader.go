@@ -46,7 +46,7 @@ var (
 
 	maxQueuedHeaders           = 32 * 1024                        // [eth/62] Maximum number of headers to queue for import (DOS protection)
 	maxHeadersProcess          = 2048                             // Number of header download results to import at once into the chain
-	maxResultsProcess          = 2048                             // Number of content download results to import at once into the chain
+	maxResultsProcess          = 256                              // Number of content download results to import at once into the chain
 	fullMaxForkAncestry uint64 = params.FullImmutabilityThreshold // Maximum chain reorganisation (locally redeclared so tests can reduce it)
 
 	reorgProtHeaderDelay = 2 // Number of headers to delay delivering to cover mini reorgs
@@ -802,6 +802,8 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 		return nil
 	}
 	select {
+	case <-d.cancelCh:
+		return errCanceled
 	case <-d.quitCh:
 		return errCancelContentProcessing
 	default:
