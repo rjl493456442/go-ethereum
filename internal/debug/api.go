@@ -229,6 +229,20 @@ func (*HandlerT) Stacks(filter *string) string {
 
 // FreeOSMemory forces a garbage collection.
 func (*HandlerT) FreeOSMemory() {
+	//              Total Go heap (held by runtime)
+	//
+	// +-------------------------------------------------------------+
+	// |     used     |    unused     |   free in allocator cache    |
+	// | (live objs)  | (GC eligible) |  (held by mcache/mcentral)   |
+	// +-------------------------------------------------------------+
+	//                      runtime.GC()
+	//                           ↓
+	//                   debug.FreeOSMemory()
+	//                           ↓
+	//           release unused pages to OS if fully free
+	//                           ↓
+	//               heap/released:bytes increases
+	runtime.GC()
 	debug.FreeOSMemory()
 }
 
