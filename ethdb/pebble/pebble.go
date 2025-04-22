@@ -31,6 +31,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	pgo "github.com/prometheus/client_model/go"
 )
 
 const (
@@ -448,6 +450,8 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 			nonLevel0CompCount = int64(d.nonLevel0Comp.Load())
 			level0CompCount    = int64(d.level0Comp.Load())
 		)
+		d.uploadWALFsyncLatency(stats)
+
 		writeDelayTimes[i%2] = writeDelayTime
 		writeDelayCounts[i%2] = writeDelayCount
 		compTimes[i%2] = compTime
@@ -507,6 +511,27 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		}
 	}
 	errc <- nil
+}
+
+func (d *Database) uploadWALFsyncLatency(stats *pebble.Metrics) {
+	ch := make(chan prometheus.Metric, 1)
+	stats.LogWriter.FsyncLatency.Collect(ch)
+	metric := <-ch
+
+	// Get the protobuf representation of the metric
+	pb := &pgo.Metric{}
+	if err := metric.Write(pb); err != nil {
+		log.Error("Failed to export WAL fsync metrics", "err", err)
+		return
+	}
+
+	h := pb.GetHistogram()
+	fmt.Printf("Count: %d\n", h.GetSampleCount())
+	fmt.Printf("Sum: %f\n", h.GetSampleSum())
+
+	for _, bucket := range h.Bucket {
+		fmt.Printf("Bucket le=%.2f: count=%d\n", bucket.GetUpperBound(), bucket.GetCumulativeCount())
+	}
 }
 
 // batch is a write-only batch that commits changes to its host database
