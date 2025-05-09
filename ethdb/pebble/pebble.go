@@ -19,6 +19,7 @@ package pebble
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -245,7 +246,9 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 
 		// The default compaction concurrency(1 thread),
 		// Here use all available CPUs for faster compaction.
-		MaxConcurrentCompactions: runtime.NumCPU,
+		CompactionConcurrencyRange: func() (lower, upper int) {
+			return 3, runtime.NumCPU()
+		},
 
 		// Per-level options. Options for at least one level must be specified. The
 		// options for the last level are used for all subsequent levels.
@@ -279,6 +282,16 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.
 	opt.Experimental.ReadSamplingMultiplier = -1
+
+	opt.FormatMajorVersion = pebble.FormatExperimentalValueSeparation
+	opt.Experimental.EnableColumnarBlocks = func() bool { return true }
+	opt.Experimental.ValueSeparationPolicy = func() pebble.ValueSeparationPolicy {
+		return pebble.ValueSeparationPolicy{
+			Enabled:               true,
+			MinimumSize:           32,
+			MaxBlobReferenceDepth: 10,
+		}
+	}
 
 	// Open the db and recover any potential corruptions
 	innerDB, err := pebble.Open(file, opt)
@@ -462,7 +475,7 @@ func (d *Database) Compact(start []byte, limit []byte) error {
 	if limit == nil {
 		limit = bytes.Repeat([]byte{0xff}, 32)
 	}
-	return d.db.Compact(start, limit, true) // Parallelization is preferred
+	return d.db.Compact(context.Background(), start, limit, true) // Parallelization is preferred
 }
 
 // Path returns the path to the database directory.
@@ -560,8 +573,8 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		d.liveMemTablesGauge.Update(stats.MemTable.Count)
 		d.zombieMemTablesGauge.Update(stats.MemTable.ZombieCount)
 		d.estimatedCompDebtGauge.Update(int64(stats.Compact.EstimatedDebt))
-		d.tableCacheHitGauge.Update(stats.TableCache.Hits)
-		d.tableCacheMissGauge.Update(stats.TableCache.Misses)
+		d.tableCacheHitGauge.Update(stats.FileCache.Hits)
+		d.tableCacheMissGauge.Update(stats.FileCache.Misses)
 		d.blockCacheHitGauge.Update(stats.BlockCache.Hits)
 		d.blockCacheMissGauge.Update(stats.BlockCache.Misses)
 		d.filterHitGauge.Update(stats.Filter.Hits)
@@ -572,7 +585,7 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 			if i >= len(d.levelsGauge) {
 				d.levelsGauge = append(d.levelsGauge, metrics.GetOrRegisterGauge(namespace+fmt.Sprintf("tables/level%v", i), nil))
 			}
-			d.levelsGauge[i].Update(level.NumFiles)
+			d.levelsGauge[i].Update(level.TablesCount)
 		}
 
 		// Sleep a bit, then repeat the stats collection
