@@ -237,7 +237,9 @@ func verifyState(ctx *cli.Context) error {
 			return err
 		}
 		log.Info("Verified the state", "root", root)
-		return snapshot.CheckDanglingStorage(chaindb)
+
+		// TODO(rjl493456442) implement dangling checks in pathdb.
+		return nil
 	} else {
 		snapConfig := snapshot.Config{
 			CacheSize:  256,
