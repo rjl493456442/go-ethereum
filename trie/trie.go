@@ -21,6 +21,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/errgroup"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -207,9 +209,11 @@ func (t *Trie) GetBatch(keys [][]byte) ([][]byte, error) {
 			hex:   keybytesToHex(k),
 		}
 	}
-	results := make([][]byte, len(keys))
-
-	var traverse func(node node, hkeys []hexKey, pos int) (node, bool, error)
+	var (
+		top      = true
+		results  = make([][]byte, len(keys))
+		traverse func(node node, hkeys []hexKey, pos int) (node, bool, error)
+	)
 
 	traverse = func(origNode node, hkeys []hexKey, pos int) (node, bool, error) {
 		switch n := origNode.(type) {
@@ -250,19 +254,44 @@ func (t *Trie) GetBatch(keys [][]byte) ([][]byte, error) {
 					grouped[hk.hex[pos]] = append(grouped[hk.hex[pos]], hk)
 				}
 			}
-			var didResolve bool
-			for b, g := range grouped {
-				child := n.Children[b]
-				newChild, childResolved, err := traverse(child, g, pos+1)
-				if err != nil {
-					return n, true, err
+			if !top {
+				var didResolve bool
+				for b, g := range grouped {
+					child := n.Children[b]
+					newChild, childResolved, err := traverse(child, g, pos+1)
+					if err != nil {
+						return n, true, err
+					}
+					if childResolved {
+						n.Children[b] = newChild
+						didResolve = true
+					}
 				}
-				if childResolved {
-					n.Children[b] = newChild
-					didResolve = true
+				return n, didResolve, nil
+			} else {
+				top = false
+
+				var (
+					workers    errgroup.Group
+					didResolve atomic.Bool
+				)
+				for b, g := range grouped {
+					workers.Go(func() error {
+						child := n.Children[b]
+						newChild, childResolved, err := traverse(child, g, pos+1)
+						if err != nil {
+							return err
+						}
+						if childResolved {
+							n.Children[b] = newChild
+							didResolve.Store(true)
+						}
+						return nil
+					})
 				}
+				err := workers.Wait()
+				return n, didResolve.Load(), err
 			}
-			return n, didResolve, nil
 
 		case hashNode:
 			child, err := t.resolveAndTrack(n, hkeys[0].hex[:pos])

@@ -18,6 +18,7 @@ package trie
 
 import (
 	"maps"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -42,9 +43,11 @@ import (
 // Note tracer is not thread-safe, callers should be responsible for handling
 // the concurrency issues by themselves.
 type tracer struct {
-	inserts    map[string]struct{}
-	deletes    map[string]struct{}
-	accessList map[string][]byte
+	inserts map[string]struct{}
+	deletes map[string]struct{}
+
+	accessList     map[string][]byte
+	accessListLock sync.Mutex
 }
 
 // newTracer initializes the tracer for capturing trie changes.
@@ -60,6 +63,9 @@ func newTracer() *tracer {
 // blob internally. Don't change the value outside of function since
 // it's not deep-copied.
 func (t *tracer) onRead(path []byte, val []byte) {
+	t.accessListLock.Lock()
+	defer t.accessListLock.Unlock()
+
 	t.accessList[string(path)] = val
 }
 

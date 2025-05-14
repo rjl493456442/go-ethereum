@@ -1501,10 +1501,11 @@ func testTrieCopyNewTrie(t *testing.T, entries []kv) {
 }
 
 func TestGetBatch(t *testing.T) {
-	trie := NewEmpty(nil)
+	db := newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme)
+	trie := NewEmpty(db)
 
 	var entries []*kv
-	for i := byte(0); i < 100; i++ {
+	for i := 0; i < 1000; i++ {
 		entry := &kv{
 			k: testrand.Bytes(32),
 			v: testrand.Bytes(32),
@@ -1512,7 +1513,29 @@ func TestGetBatch(t *testing.T) {
 		entries = append(entries, entry)
 		trie.MustUpdate(entry.k, entry.v)
 	}
-	for i := 0; i < 100; i += 20 {
+	for i := 0; i < 1000; i += 50 {
+		var keys [][]byte
+		for _, entry := range entries[i : i+50] {
+			keys = append(keys, entry.k)
+		}
+		values, err := trie.GetBatch(keys)
+		if err != nil {
+			t.Fatalf("Failed to get batch, %v", err)
+		}
+		for x, entry := range entries[i : i+50] {
+			if !bytes.Equal(entry.v, values[x]) {
+				t.Fatalf("Unexpected value")
+			}
+		}
+	}
+	root, nodes := trie.Commit(false)
+	db.Update(root, types.EmptyRootHash, trienode.NewWithNodeSet(nodes))
+
+	trie, err := New(TrieID(root), db)
+	if err != nil {
+		t.Fatalf("failed to open trie, %v", err)
+	}
+	for i := 0; i < 1000; i += 20 {
 		var keys [][]byte
 		for _, entry := range entries[i : i+20] {
 			keys = append(keys, entry.k)
