@@ -781,10 +781,14 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 	s.clearJournalAndRefund()
 }
 
-// IntermediateRoot computes the current root hash of the state trie.
+func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
+	return s.IntermediateRootWithBlock(deleteEmptyObjects, 0)
+}
+
+// IntermediateRootWithBlock computes the current root hash of the state trie.
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
-func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
+func (s *StateDB) IntermediateRootWithBlock(deleteEmptyObjects bool, block uint64) common.Hash {
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
 
@@ -806,6 +810,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		maxSlotCount int
 		slotTotal    int
 		maxWaitLock  sync.Mutex
+		maxAddress   common.Address
 		workers      errgroup.Group
 	)
 	if s.db.TrieDB().IsVerkle() {
@@ -832,6 +837,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 				}
 				if maxSlotCount < count {
 					maxSlotCount = count
+					maxAddress = obj.address
 				}
 				slotTotal += count
 				maxWaitLock.Unlock()
@@ -883,6 +889,10 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	s.StorageMaxCount += maxSlotCount
 	s.StorageTotalCount += slotTotal
 	s.StorageUpdates += time.Since(start)
+
+	if maxSlotCount > 500 {
+		log.Info("Detected heavy storage", "address", maxAddress.Hex(), "block", block)
+	}
 
 	// Now we're about to start to write changes to the trie. The trie is so far
 	// _untouched_. We can check with the prefetcher, if it can give us a trie
@@ -1135,13 +1145,13 @@ func (s *StateDB) GetTrie() Trie {
 
 // commit gathers the state mutations accumulated along with the associated
 // trie changes, resetting all internal flags with the new state as the base.
-func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateUpdate, error) {
+func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, block uint64) (*stateUpdate, error) {
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		return nil, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
 	}
 	// Finalize any pending changes and merge everything into the tries
-	s.IntermediateRoot(deleteEmptyObjects)
+	s.IntermediateRootWithBlock(deleteEmptyObjects, block)
 
 	// Short circuit if any error occurs within the IntermediateRoot.
 	if s.dbErr != nil {
@@ -1293,7 +1303,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 // commitAndFlush is a wrapper of commit which also commits the state mutations
 // to the configured data stores.
 func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorageWiping bool) (*stateUpdate, error) {
-	ret, err := s.commit(deleteEmptyObjects, noStorageWiping)
+	ret, err := s.commit(deleteEmptyObjects, noStorageWiping, block)
 	if err != nil {
 		return nil, err
 	}
