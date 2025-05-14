@@ -79,11 +79,13 @@ type Trie interface {
 	// are missing or the account blob is incorrect for decoding), an error will
 	// be returned.
 	GetAccount(address common.Address) (*types.StateAccount, error)
+	GetAccountBatch(addresses [][]byte) ([]*types.StateAccount, error)
 
 	// GetStorage returns the value for key stored in the trie. The value bytes
 	// must not be modified by the caller. If a node was not found in the database,
 	// a trie.MissingNodeError is returned.
 	GetStorage(addr common.Address, key []byte) ([]byte, error)
+	GetStorageBatch(_ common.Address, keys [][]byte) ([][]byte, error)
 
 	// UpdateAccount abstracts an account write to the trie. It encodes the
 	// provided account object with associated algorithm and then updates it

@@ -428,3 +428,11 @@ func (t *VerkleTrie) nodeResolver(path []byte) ([]byte, error) {
 func (t *VerkleTrie) Witness() map[string]struct{} {
 	panic("not implemented")
 }
+
+func (t *VerkleTrie) GetAccountBatch(addresses [][]byte) ([]*types.StateAccount, error) {
+	panic("not implemented")
+}
+
+func (t *VerkleTrie) GetStorageBatch(_ common.Address, keys [][]byte) ([][]byte, error) {
+	panic("not implemented")
+}

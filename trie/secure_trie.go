@@ -19,6 +19,7 @@ package trie
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb/database"
@@ -113,6 +114,29 @@ func (t *StateTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {
 	return content, err
 }
 
+func (t *StateTrie) GetStorageBatch(_ common.Address, keys [][]byte) ([][]byte, error) {
+	var hkeys [][]byte
+	for _, k := range keys {
+		hkeys = append(hkeys, crypto.Keccak256(k))
+	}
+	values, err := t.trie.GetBatch(hkeys)
+	if err != nil {
+		return nil, err
+	}
+	ret := make([][]byte, len(keys))
+	for i, value := range values {
+		if len(value) == 0 {
+			continue
+		}
+		_, content, _, err := rlp.Split(value)
+		if err != nil {
+			continue
+		}
+		ret[i] = content
+	}
+	return ret, nil
+}
+
 // GetAccount attempts to retrieve an account with provided account address.
 // If the specified account is not in the trie, nil will be returned.
 // If a trie node is not found in the database, a MissingNodeError is returned.
@@ -124,6 +148,30 @@ func (t *StateTrie) GetAccount(address common.Address) (*types.StateAccount, err
 	ret := new(types.StateAccount)
 	err = rlp.DecodeBytes(res, ret)
 	return ret, err
+}
+
+func (t *StateTrie) GetAccountBatch(addresses [][]byte) ([]*types.StateAccount, error) {
+	var hkeys [][]byte
+	for _, k := range addresses {
+		hkeys = append(hkeys, crypto.Keccak256(k))
+	}
+	values, err := t.trie.GetBatch(hkeys)
+	if err != nil {
+		return nil, err
+	}
+	ret := make([]*types.StateAccount, len(addresses))
+	for i, value := range values {
+		if len(value) == 0 {
+			continue
+		}
+		x := new(types.StateAccount)
+		err = rlp.DecodeBytes(value, x)
+		if err != nil {
+			continue
+		}
+		ret[i] = x
+	}
+	return ret, nil
 }
 
 // GetAccountByHash does the same thing as GetAccount, however it expects an

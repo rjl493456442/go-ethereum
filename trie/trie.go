@@ -190,6 +190,102 @@ func (t *Trie) get(origNode node, key []byte, pos int) (value []byte, newnode no
 	}
 }
 
+func (t *Trie) GetBatch(keys [][]byte) ([][]byte, error) {
+	if t.committed {
+		return nil, ErrCommitted
+	}
+	type hexKey struct {
+		index int    // position in original keys slice
+		raw   []byte // original key
+		hex   []byte // hex-encoded for trie lookup
+	}
+	hkeys := make([]hexKey, len(keys))
+	for i, k := range keys {
+		hkeys[i] = hexKey{
+			index: i,
+			raw:   k,
+			hex:   keybytesToHex(k),
+		}
+	}
+	results := make([][]byte, len(keys))
+
+	var traverse func(node node, hkeys []hexKey, pos int) (node, bool, error)
+
+	traverse = func(origNode node, hkeys []hexKey, pos int) (node, bool, error) {
+		switch n := origNode.(type) {
+		case nil:
+			return nil, false, nil
+
+		case valueNode:
+			for _, hk := range hkeys {
+				if pos == len(hk.hex) {
+					results[hk.index] = n
+				}
+			}
+			return n, false, nil
+
+		case *shortNode:
+			var matching []hexKey
+			for _, hk := range hkeys {
+				if pos+len(n.Key) <= len(hk.hex) && bytes.Equal(hk.hex[pos:pos+len(n.Key)], n.Key) {
+					matching = append(matching, hk)
+				}
+			}
+			if len(matching) == 0 {
+				return n, false, nil
+			}
+			newChild, didResolve, err := traverse(n.Val, matching, pos+len(n.Key))
+			if err != nil {
+				return n, didResolve, err
+			}
+			if didResolve {
+				n.Val = newChild
+			}
+			return n, didResolve, nil
+
+		case *fullNode:
+			grouped := make(map[byte][]hexKey)
+			for _, hk := range hkeys {
+				if pos < len(hk.hex) {
+					grouped[hk.hex[pos]] = append(grouped[hk.hex[pos]], hk)
+				}
+			}
+			var didResolve bool
+			for b, g := range grouped {
+				child := n.Children[b]
+				newChild, childResolved, err := traverse(child, g, pos+1)
+				if err != nil {
+					return n, true, err
+				}
+				if childResolved {
+					n.Children[b] = newChild
+					didResolve = true
+				}
+			}
+			return n, didResolve, nil
+
+		case hashNode:
+			child, err := t.resolveAndTrack(n, nil)
+			if err != nil {
+				return n, true, err
+			}
+			newChild, _, err := traverse(child, hkeys, pos)
+			return newChild, true, err
+
+		default:
+			panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
+		}
+	}
+	newRoot, didResolve, err := traverse(t.root, hkeys, 0)
+	if err != nil {
+		return nil, err
+	}
+	if didResolve {
+		t.root = newRoot
+	}
+	return results, nil
+}
+
 // MustGetNode is a wrapper of GetNode and will omit any encountered error but
 // just print out an error message.
 func (t *Trie) MustGetNode(path []byte) ([]byte, int) {

@@ -388,8 +388,13 @@ func (sf *subfetcher) loop() {
 			sf.tasks = nil
 			sf.lock.Unlock()
 
+			var (
+				accountTr bool
+				keys      [][]byte
+			)
 			for _, task := range tasks {
 				if task.addr != nil {
+					accountTr = true
 					key := *task.addr
 					if task.read {
 						if _, ok := sf.seenReadAddr[key]; ok {
@@ -400,6 +405,7 @@ func (sf *subfetcher) loop() {
 							sf.dupsCross++
 							continue
 						}
+						sf.seenReadAddr[*task.addr] = struct{}{}
 					} else {
 						if _, ok := sf.seenReadAddr[key]; ok {
 							sf.dupsCross++
@@ -409,7 +415,9 @@ func (sf *subfetcher) loop() {
 							sf.dupsWrite++
 							continue
 						}
+						sf.seenWriteAddr[*task.addr] = struct{}{}
 					}
+					keys = append(keys, (*task.addr).Bytes())
 				} else {
 					key := *task.slot
 					if task.read {
@@ -421,6 +429,7 @@ func (sf *subfetcher) loop() {
 							sf.dupsCross++
 							continue
 						}
+						sf.seenReadSlot[*task.slot] = struct{}{}
 					} else {
 						if _, ok := sf.seenReadSlot[key]; ok {
 							sf.dupsCross++
@@ -430,26 +439,15 @@ func (sf *subfetcher) loop() {
 							sf.dupsWrite++
 							continue
 						}
-					}
-				}
-				if task.addr != nil {
-					sf.trie.GetAccount(*task.addr)
-				} else {
-					sf.trie.GetStorage(sf.addr, (*task.slot)[:])
-				}
-				if task.read {
-					if task.addr != nil {
-						sf.seenReadAddr[*task.addr] = struct{}{}
-					} else {
-						sf.seenReadSlot[*task.slot] = struct{}{}
-					}
-				} else {
-					if task.addr != nil {
-						sf.seenWriteAddr[*task.addr] = struct{}{}
-					} else {
 						sf.seenWriteSlot[*task.slot] = struct{}{}
 					}
+					keys = append(keys, (*task.slot).Bytes())
 				}
+			}
+			if accountTr {
+				sf.trie.GetAccountBatch(keys)
+			} else {
+				sf.trie.GetStorageBatch(common.Address{}, keys)
 			}
 
 		case <-sf.stop:
