@@ -281,18 +281,19 @@ func (s *stateObject) finalise() {
 // storage change at all.
 //
 // It assumes all the dirty storage slots have been finalized before.
-func (s *stateObject) updateTrie() (Trie, error) {
+func (s *stateObject) updateTrie() (Trie, time.Duration, int, error) {
 	// Short circuit if nothing was accessed, don't trigger a prefetcher warning
 	if len(s.uncommittedStorage) == 0 {
 		// Nothing was written, so we could stop early. Unless we have both reads
 		// and witness collection enabled, in which case we need to fetch the trie.
 		if s.db.witness == nil || len(s.originStorage) == 0 {
-			return s.trie, nil
+			return s.trie, 0, 0, nil
 		}
 	}
 	// Retrieve a pretecher populated trie, or fall back to the database. This will
 	// block until all prefetch tasks are done, which are needed for witnesses even
 	// for unmodified state objects.
+	ss := time.Now()
 	tr := s.getPrefetchedTrie()
 	if tr != nil {
 		// Prefetcher returned a live trie, swap it out for the current one
@@ -303,13 +304,15 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		tr, err = s.getTrie()
 		if err != nil {
 			s.db.setError(err)
-			return nil, err
+			return nil, 0, 0, err
 		}
 	}
 	// Short circuit if nothing changed, don't bother with hashing anything
 	if len(s.uncommittedStorage) == 0 {
-		return s.trie, nil
+		return s.trie, 0, 0, nil
 	}
+	wait := time.Since(ss)
+
 	// Perform trie updates before deletions. This prevents resolution of unnecessary trie nodes
 	// in circumstances similar to the following:
 	//
@@ -338,7 +341,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		if (value != common.Hash{}) {
 			if err := tr.UpdateStorage(s.address, key[:], common.TrimLeftZeroes(value[:])); err != nil {
 				s.db.setError(err)
-				return nil, err
+				return nil, 0, 0, err
 			}
 			s.db.StorageUpdated.Add(1)
 		} else {
@@ -350,27 +353,29 @@ func (s *stateObject) updateTrie() (Trie, error) {
 	for _, key := range deletions {
 		if err := tr.DeleteStorage(s.address, key[:]); err != nil {
 			s.db.setError(err)
-			return nil, err
+			return nil, 0, 0, err
 		}
 		s.db.StorageDeleted.Add(1)
 	}
 	if s.db.prefetcher != nil {
 		s.db.prefetcher.used(s.addrHash, s.data.Root, nil, used)
 	}
+	count := len(s.uncommittedStorage)
 	s.uncommittedStorage = make(Storage) // empties the commit markers
-	return tr, nil
+	return tr, wait, count, nil
 }
 
 // updateRoot flushes all cached storage mutations to trie, recalculating the
 // new storage trie root.
-func (s *stateObject) updateRoot() {
+func (s *stateObject) updateRoot() (time.Duration, int) {
 	// Flush cached storage mutations into trie, short circuit if any error
 	// is occurred or there is no change in the trie.
-	tr, err := s.updateTrie()
+	tr, waitTime, count, err := s.updateTrie()
 	if err != nil || tr == nil {
-		return
+		return waitTime, count
 	}
 	s.data.Root = tr.Hash()
+	return waitTime, count
 }
 
 // commitStorage overwrites the clean storage with the storage changes and

@@ -73,9 +73,12 @@ var (
 	accountUpdateTimer = metrics.NewRegisteredResettingTimer("chain/account/updates", nil)
 	accountCommitTimer = metrics.NewRegisteredResettingTimer("chain/account/commits", nil)
 
-	storageReadTimer   = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
-	storageUpdateTimer = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
-	storageCommitTimer = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
+	storageReadTimer       = metrics.NewRegisteredResettingTimer("chain/storage/reads", nil)
+	storageUpdateTimer     = metrics.NewRegisteredResettingTimer("chain/storage/updates", nil)
+	storageWaitTimer       = metrics.NewRegisteredResettingTimer("chain/storage/waits", nil)
+	storageCommitTimer     = metrics.NewRegisteredResettingTimer("chain/storage/commits", nil)
+	storageMaxCountGauge   = metrics.NewRegisteredGauge("chain/storage/count/max", nil)
+	storageTotalCountGauge = metrics.NewRegisteredGauge("chain/storage/count/total", nil)
 
 	accountReadSingleTimer = metrics.NewRegisteredResettingTimer("chain/account/single/reads", nil)
 	storageReadSingleTimer = metrics.NewRegisteredResettingTimer("chain/storage/single/reads", nil)
@@ -2038,8 +2041,11 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 	if statedb.StorageLoaded != 0 {
 		storageReadSingleTimer.Update(statedb.StorageReads / time.Duration(statedb.StorageLoaded))
 	}
-	accountUpdateTimer.Update(statedb.AccountUpdates)                                 // Account updates are complete(in validation)
-	storageUpdateTimer.Update(statedb.StorageUpdates)                                 // Storage updates are complete(in validation)
+	accountUpdateTimer.Update(statedb.AccountUpdates) // Account updates are complete(in validation)
+	storageUpdateTimer.Update(statedb.StorageUpdates) // Storage updates are complete(in validation)
+	storageWaitTimer.Update(statedb.StorageWait)
+	storageMaxCountGauge.Update(int64(statedb.StorageMaxCount))
+	storageTotalCountGauge.Update(int64(statedb.StorageTotalCount))
 	accountHashTimer.Update(statedb.AccountHashes)                                    // Account hashes are complete(in validation)
 	triehash := statedb.AccountHashes                                                 // The time spent on tries hashing
 	trieUpdate := statedb.AccountUpdates + statedb.StorageUpdates                     // The time spent on tries update

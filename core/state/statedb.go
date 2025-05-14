@@ -139,12 +139,17 @@ type StateDB struct {
 	witness *stateless.Witness
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads    time.Duration
-	AccountHashes   time.Duration
-	AccountUpdates  time.Duration
-	AccountCommits  time.Duration
-	StorageReads    time.Duration
-	StorageUpdates  time.Duration
+	AccountReads   time.Duration
+	AccountHashes  time.Duration
+	AccountUpdates time.Duration
+	AccountCommits time.Duration
+	StorageReads   time.Duration
+	StorageUpdates time.Duration
+
+	StorageMaxCount   int
+	StorageTotalCount int
+	StorageWait       time.Duration
+
 	StorageCommits  time.Duration
 	SnapshotCommits time.Duration
 	TrieDBCommits   time.Duration
@@ -796,8 +801,12 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// method will internally call a blocking trie fetch from the prefetcher,
 	// so there's no need to explicitly wait for the prefetchers to finish.
 	var (
-		start   = time.Now()
-		workers errgroup.Group
+		start        = time.Now()
+		maxWaitTime  time.Duration
+		maxSlotCount int
+		slotTotal    int
+		maxWaitLock  sync.Mutex
+		workers      errgroup.Group
 	)
 	if s.db.TrieDB().IsVerkle() {
 		// Whilst MPT storage tries are independent, Verkle has one single trie
@@ -816,7 +825,16 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 			if s.db.TrieDB().IsVerkle() {
 				obj.updateTrie()
 			} else {
-				obj.updateRoot()
+				waitTime, count := obj.updateRoot()
+				maxWaitLock.Lock()
+				if maxWaitTime < waitTime {
+					maxWaitTime = waitTime
+				}
+				if maxSlotCount < count {
+					maxSlotCount = count
+				}
+				slotTotal += count
+				maxWaitLock.Unlock()
 
 				// If witness building is enabled and the state object has a trie,
 				// gather the witnesses for its specific storage trie
@@ -861,6 +879,9 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		}
 	}
 	workers.Wait()
+	s.StorageWait += maxWaitTime
+	s.StorageMaxCount += maxSlotCount
+	s.StorageTotalCount += slotTotal
 	s.StorageUpdates += time.Since(start)
 
 	// Now we're about to start to write changes to the trie. The trie is so far
