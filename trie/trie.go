@@ -265,7 +265,7 @@ func (t *Trie) GetBatch(keys [][]byte) ([][]byte, error) {
 			return n, didResolve, nil
 
 		case hashNode:
-			child, err := t.resolveAndTrack(n, nil)
+			child, err := t.resolveAndTrack(n, hkeys[0].hex[:pos])
 			if err != nil {
 				return n, true, err
 			}
