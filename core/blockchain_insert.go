@@ -55,6 +55,9 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 			txs += len(block.Transactions())
 		}
 		end := chain[index]
+		if txs == 0 {
+			txs = 1
+		}
 
 		// Assemble the log context and send it to the logger
 		context := []interface{}{
