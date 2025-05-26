@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
@@ -44,53 +45,45 @@ func newCommitter(nodeset *trienode.NodeSet, tracer *tracer, collectLeaf bool) *
 
 // Commit collapses a node down into a hash node.
 func (c *committer) Commit(n node, parallel bool) hashNode {
-	return c.commit(nil, n, parallel).(hashNode)
+	return c.commit(nil, n, parallel)
 }
 
-// commit collapses a node down into a hash node and returns it.
-func (c *committer) commit(path []byte, n node, parallel bool) node {
-	// if this path is clean, use available cached data
-	hash, dirty := n.cache()
-	if hash != nil && !dirty {
-		return hash
+func (c *committer) commitShortNode(n *shortNode, path []byte) []byte {
+	// Encode leaf node
+	if hasTerm(n.Key) {
+		var ln leafNodeEncoder
+		ln.Key = hexToCompact(n.Key)
+		ln.Val = n.Val.(valueNode)
+
+		w := rlp.NewEncoderBuffer(nil)
+		ln.encode(w)
+		result := w.ToBytes()
+		w.Flush()
+		return result
 	}
-	// Commit children, then parent, and remove the dirty flag.
-	switch cn := n.(type) {
-	case *shortNode:
-		// If the child is fullNode, recursively commit,
-		// otherwise it can only be hashNode or valueNode.
-		if _, ok := cn.Val.(*fullNode); ok {
-			cn.Val = c.commit(append(path, cn.Key...), cn.Val, false)
-		}
-		// The key needs to be copied, since we're adding it to the
-		// modified nodeset.
-		cn.Key = hexToCompact(cn.Key)
-		hashedNode := c.store(path, cn)
-		if hn, ok := hashedNode.(hashNode); ok {
-			return hn
-		}
-		return cn
-	case *fullNode:
-		c.commitChildren(path, cn, parallel)
-		hashedNode := c.store(path, cn)
-		if hn, ok := hashedNode.(hashNode); ok {
-			return hn
-		}
-		return cn
-	case hashNode:
-		return cn
-	default:
-		// nil, valuenode shouldn't be committed
-		panic(fmt.Sprintf("%T: invalid node: %v", n, n))
+	// Encode extension node
+	var en extNodeEncoder
+	en.Key = hexToCompact(n.Key)
+	if hn, ok := n.Val.(hashNode); ok {
+		en.Val = hn
+	} else {
+		en.Val = c.commit(append(path, n.Key...), n.Val, false)
 	}
+	w := rlp.NewEncoderBuffer(nil)
+	en.encode(w)
+	result := w.ToBytes()
+	w.Flush()
+	return result
 }
 
-// commitChildren commits the children of the given fullnode
-func (c *committer) commitChildren(path []byte, n *fullNode, parallel bool) {
+func (c *committer) commitFullNode(n *fullNode, path []byte, parallel bool) []byte {
 	var (
-		wg      sync.WaitGroup
-		nodesMu sync.Mutex
+		wg sync.WaitGroup
+		mu sync.Mutex
 	)
+	fn := fnEncoderPool.Get().(*fullnodeEncoder)
+	fn.reset()
+
 	for i := 0; i < 16; i++ {
 		child := n.Children[i]
 		if child == nil {
@@ -99,36 +92,69 @@ func (c *committer) commitChildren(path []byte, n *fullNode, parallel bool) {
 		// If it's the hashed child, save the hash value directly.
 		// Note: it's impossible that the child in range [0, 15]
 		// is a valueNode.
-		if _, ok := child.(hashNode); ok {
+		if hn, ok := child.(hashNode); ok {
+			fn.Children[i] = hn
 			continue
 		}
-		// Commit the child recursively and store the "hashed" value.
-		// Note the returned node can be some embedded nodes, so it's
-		// possible the type is not hashNode.
 		if !parallel {
-			n.Children[i] = c.commit(append(path, byte(i)), child, false)
+			fn.Children[i] = c.commit(append(path, byte(i)), child, false)
 		} else {
 			wg.Add(1)
 			go func(index int) {
+				defer wg.Done()
+
 				p := append(path, byte(index))
 				childSet := trienode.NewNodeSet(c.nodes.Owner)
 				childCommitter := newCommitter(childSet, c.tracer, c.collectLeaf)
-				n.Children[index] = childCommitter.commit(p, child, false)
-				nodesMu.Lock()
+				fn.Children[index] = childCommitter.commit(p, child, false)
+				mu.Lock()
 				c.nodes.MergeSet(childSet)
-				nodesMu.Unlock()
-				wg.Done()
+				mu.Unlock()
 			}(i)
 		}
 	}
 	if parallel {
 		wg.Wait()
 	}
+	if n.Children[16] != nil {
+		fn.Children[16] = n.Children[16].(valueNode)
+	}
+	w := rlp.NewEncoderBuffer(nil)
+	fn.encode(w)
+	result := w.ToBytes()
+	w.Flush()
+	return result
+}
+
+// commit collapses a node down into a hash node and returns it.
+func (c *committer) commit(path []byte, n node, parallel bool) []byte {
+	// if this path is clean, use available cached data
+	hash, dirty := n.cache()
+	if hash != nil && !dirty {
+		return hash
+	}
+	// Commit children, then parent, and remove the dirty flag.
+	switch cn := n.(type) {
+	case *shortNode:
+		enc := c.commitShortNode(cn, path)
+		return c.store(path, cn, enc)
+
+	case *fullNode:
+		enc := c.commitFullNode(cn, path, parallel)
+		return c.store(path, cn, enc)
+
+	case hashNode:
+		return cn
+
+	default:
+		// nil, valuenode shouldn't be committed
+		panic(fmt.Sprintf("%T: invalid node: %v", n, n))
+	}
 }
 
 // store hashes the node n and adds it to the modified nodeset. If leaf collection
 // is enabled, leaf nodes will be tracked in the modified nodeset as well.
-func (c *committer) store(path []byte, n node) node {
+func (c *committer) store(path []byte, n node, enc []byte) []byte {
 	// Larger nodes are replaced by their hash and stored in the database.
 	var hash, _ = n.cache()
 
@@ -144,11 +170,11 @@ func (c *committer) store(path []byte, n node) node {
 		if ok {
 			c.nodes.AddNode(path, trienode.NewDeleted())
 		}
-		return n
+		return enc
 	}
 	// Collect the dirty node to nodeset for return.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.New(nhash, nodeToBytes(n)))
+	c.nodes.AddNode(path, trienode.New(nhash, enc))
 
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key
