@@ -97,8 +97,8 @@ func (n *leafNodeEncoder) encode(w rlp.EncoderBuffer) {
 	w.ListEnd(offset)
 }
 
-func (n hashNode) encode(w rlp.EncoderBuffer) {
-	w.WriteBytes(n)
+func (n *hashNode) encode(w rlp.EncoderBuffer) {
+	w.WriteBytes(*n)
 }
 
 func (n valueNode) encode(w rlp.EncoderBuffer) {
