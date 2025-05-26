@@ -660,10 +660,10 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 
 	// Do a quick check if we really need to commit. This can happen e.g.
 	// if we load a trie for reading storage values, but don't write to it.
-	if hashedNode, dirty := t.root.cache(); !dirty {
+	if hn, dirty := t.root.cache(); !dirty {
 		// Replace the root node with the origin hash in order to
 		// ensure all resolved nodes are dropped after the commit.
-		t.root = hashedNode
+		t.root = hashNode(hn)
 		return rootHash, nil
 	}
 	nodes := trienode.NewNodeSet(t.owner)

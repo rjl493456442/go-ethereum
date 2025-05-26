@@ -28,7 +28,7 @@ import (
 var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "[17]"}
 
 type node interface {
-	cache() (hashNode, bool)
+	cache() ([]byte, bool)
 	encode(w rlp.EncoderBuffer)
 	fstring(string) string
 }
@@ -88,10 +88,10 @@ func (n nodeFlag) copy() nodeFlag {
 	}
 }
 
-func (n *fullNode) cache() (hashNode, bool)  { return n.flags.hash, n.flags.dirty }
-func (n *shortNode) cache() (hashNode, bool) { return n.flags.hash, n.flags.dirty }
-func (n hashNode) cache() (hashNode, bool)   { return nil, true }
-func (n valueNode) cache() (hashNode, bool)  { return nil, true }
+func (n *fullNode) cache() ([]byte, bool)  { return n.flags.hash, n.flags.dirty }
+func (n *shortNode) cache() ([]byte, bool) { return n.flags.hash, n.flags.dirty }
+func (n hashNode) cache() ([]byte, bool)   { return nil, true }
+func (n valueNode) cache() ([]byte, bool)  { return nil, true }
 
 // Pretty printing.
 func (n *fullNode) String() string  { return n.fstring("") }
