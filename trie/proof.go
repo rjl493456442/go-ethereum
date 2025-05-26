@@ -63,13 +63,13 @@ func (t *Trie) Prove(key []byte, proofDb ethdb.KeyValueWriter) error {
 			prefix = append(prefix, key[0])
 			key = key[1:]
 			nodes = append(nodes, n)
-		case hashNode:
+		case *hashNode:
 			// Retrieve the specified node from the underlying node reader.
 			// trie.resolveAndTrack is not used since in that function the
 			// loaded blob will be tracked, while it's not required here since
 			// all loaded nodes won't be linked to trie at all and track nodes
 			// may lead to out-of-memory issue.
-			blob, err := t.reader.node(prefix, common.BytesToHash(n))
+			blob, err := t.reader.node(prefix, common.BytesToHash(*n))
 			if err != nil {
 				log.Error("Unhandled trie error in Trie.Prove", "err", err)
 				return err
@@ -77,7 +77,7 @@ func (t *Trie) Prove(key []byte, proofDb ethdb.KeyValueWriter) error {
 			// The raw-blob format nodes are loaded either from the
 			// clean cache or the database, they are all in their own
 			// copy and safe to use unsafe decoder.
-			tn = mustDecodeNodeUnsafe(n, blob)
+			tn = mustDecodeNodeUnsafe(*n, blob)
 		default:
 			panic(fmt.Sprintf("%T: invalid node: %v", tn, tn))
 		}
@@ -125,9 +125,9 @@ func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader)
 		case nil:
 			// The trie doesn't contain the key.
 			return nil, nil
-		case hashNode:
+		case *hashNode:
 			key = keyrest
-			copy(wantHash[:], cld)
+			copy(wantHash[:], *cld)
 		case valueNode:
 			return cld, nil
 		}
@@ -186,8 +186,8 @@ func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyV
 		case *fullNode:
 			key, parent = keyrest, child // Already resolved
 			continue
-		case hashNode:
-			child, err = resolveNode(common.BytesToHash(cld))
+		case *hashNode:
+			child, err = resolveNode(common.BytesToHash(*cld))
 			if err != nil {
 				return nil, nil, err
 			}
@@ -603,7 +603,7 @@ func get(tn node, key []byte, skipResolved bool) ([]byte, node) {
 			if !skipResolved {
 				return key, tn
 			}
-		case hashNode:
+		case *hashNode:
 			return key, n
 		case nil:
 			return key, nil

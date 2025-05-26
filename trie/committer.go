@@ -64,8 +64,8 @@ func (c *committer) commitShortNode(n *shortNode, path []byte) []byte {
 	// Encode extension node
 	var en extNodeEncoder
 	en.Key = hexToCompact(n.Key)
-	if hn, ok := n.Val.(hashNode); ok {
-		en.Val = hn
+	if hn, ok := n.Val.(*hashNode); ok {
+		en.Val = *hn
 	} else {
 		en.Val = c.commit(append(path, n.Key...), n.Val, false)
 	}
@@ -92,8 +92,8 @@ func (c *committer) commitFullNode(n *fullNode, path []byte, parallel bool) []by
 		// If it's the hashed child, save the hash value directly.
 		// Note: it's impossible that the child in range [0, 15]
 		// is a valueNode.
-		if hn, ok := child.(hashNode); ok {
-			fn.Children[i] = hn
+		if hn, ok := child.(*hashNode); ok {
+			fn.Children[i] = *hn
 			continue
 		}
 		if !parallel {
@@ -143,8 +143,8 @@ func (c *committer) commit(path []byte, n node, parallel bool) []byte {
 		enc := c.commitFullNode(cn, path, parallel)
 		return c.store(path, cn, enc)
 
-	case hashNode:
-		return cn
+	case *hashNode:
+		return *cn
 
 	default:
 		// nil, valuenode shouldn't be committed
@@ -204,8 +204,8 @@ func forGatherChildren(n node, onChild func(hash common.Hash)) {
 		for i := 0; i < 16; i++ {
 			forGatherChildren(n.Children[i], onChild)
 		}
-	case hashNode:
-		onChild(common.BytesToHash(n))
+	case *hashNode:
+		onChild(common.BytesToHash(*n))
 	case valueNode, nil:
 	default:
 		panic(fmt.Sprintf("unknown node type: %T", n))

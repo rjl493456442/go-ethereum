@@ -178,8 +178,8 @@ func (t *Trie) get(origNode node, key []byte, pos int) (value []byte, newnode no
 			n.Children[key[pos]] = newnode
 		}
 		return value, n, didResolve, err
-	case hashNode:
-		child, err := t.resolveAndTrack(n, key[:pos])
+	case *hashNode:
+		child, err := t.resolveAndTrack(*n, key[:pos])
 		if err != nil {
 			return nil, n, true, err
 		}
@@ -231,8 +231,8 @@ func (t *Trie) getNode(origNode node, path []byte, pos int) (item []byte, newnod
 		// that into consensus form can be nasty (needs to cascade down) and
 		// time consuming. Instead, just pull the hash up from disk directly.
 		var hash hashNode
-		if node, ok := origNode.(hashNode); ok {
-			hash = node
+		if node, ok := origNode.(*hashNode); ok {
+			hash = *node
 		} else {
 			hash, _ = origNode.cache()
 		}
@@ -266,8 +266,8 @@ func (t *Trie) getNode(origNode node, path []byte, pos int) (item []byte, newnod
 		}
 		return item, n, resolved, err
 
-	case hashNode:
-		child, err := t.resolveAndTrack(n, path[:pos])
+	case *hashNode:
+		child, err := t.resolveAndTrack(*n, path[:pos])
 		if err != nil {
 			return nil, n, 1, err
 		}
@@ -383,11 +383,11 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 
 		return true, &shortNode{key, value, t.newFlag()}, nil
 
-	case hashNode:
+	case *hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and insert into it. This leaves all child nodes on
 		// the path to the value in the trie.
-		rn, err := t.resolveAndTrack(n, prefix)
+		rn, err := t.resolveAndTrack(*n, prefix)
 		if err != nil {
 			return false, nil, err
 		}
@@ -544,11 +544,11 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	case nil:
 		return false, nil, nil
 
-	case hashNode:
+	case *hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and delete from it. This leaves all child nodes on
 		// the path to the value in the trie.
-		rn, err := t.resolveAndTrack(n, prefix)
+		rn, err := t.resolveAndTrack(*n, prefix)
 		if err != nil {
 			return false, nil, err
 		}
@@ -593,7 +593,7 @@ func copyNode(n node) node {
 			flags:    n.flags.copy(),
 			Children: children,
 		}
-	case hashNode:
+	case *hashNode:
 		return n
 	default:
 		panic(fmt.Sprintf("%T: unknown node type", n))
@@ -601,8 +601,8 @@ func copyNode(n node) node {
 }
 
 func (t *Trie) resolve(n node, prefix []byte) (node, error) {
-	if n, ok := n.(hashNode); ok {
-		return t.resolveAndTrack(n, prefix)
+	if n, ok := n.(*hashNode); ok {
+		return t.resolveAndTrack(*n, prefix)
 	}
 	return n, nil
 }
@@ -663,7 +663,8 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 	if hn, dirty := t.root.cache(); !dirty {
 		// Replace the root node with the origin hash in order to
 		// ensure all resolved nodes are dropped after the commit.
-		t.root = hashNode(hn)
+		n := hashNode(hn)
+		t.root = &n
 		return rootHash, nil
 	}
 	nodes := trienode.NewNodeSet(t.owner)
@@ -671,7 +672,8 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 		nodes.AddNode([]byte(path), trienode.NewDeleted())
 	}
 	// If the number of changes is below 100, we let one thread handle it
-	t.root = newCommitter(nodes, t.tracer, collectLeaf).Commit(t.root, t.uncommitted > 100)
+	n := newCommitter(nodes, t.tracer, collectLeaf).Commit(t.root, t.uncommitted > 100)
+	t.root = &n
 	t.uncommitted = 0
 	return rootHash, nodes
 }

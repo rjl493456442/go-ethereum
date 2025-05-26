@@ -571,7 +571,7 @@ func (s *Sync) children(req *nodeRequest, object node) ([]*nodeRequest, error) {
 		//
 		// This step is only necessary for path mode, as there is no deletion
 		// in hash mode at all.
-		if _, ok := node.Val.(hashNode); ok && s.scheme == rawdb.PathScheme {
+		if _, ok := node.Val.(*hashNode); ok && s.scheme == rawdb.PathScheme {
 			owner, inner := ResolvePath(req.path)
 			for i := 1; i < len(key); i++ {
 				// While checking for a non-existent item in Pebble can be less efficient
@@ -626,9 +626,9 @@ func (s *Sync) children(req *nodeRequest, object node) ([]*nodeRequest, error) {
 		}
 		// If the child references another node, resolve or schedule.
 		// We check all children concurrently.
-		if node, ok := (child.node).(hashNode); ok {
+		if node, ok := (child.node).(*hashNode); ok {
 			path := child.path
-			hash := common.BytesToHash(node)
+			hash := common.BytesToHash(*node)
 			pending.Add(1)
 			go func() {
 				defer pending.Done()

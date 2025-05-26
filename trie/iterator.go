@@ -430,13 +430,13 @@ func (it *nodeIterator) resolveBlob(hash hashNode, path []byte) ([]byte, error) 
 }
 
 func (st *nodeIteratorState) resolve(it *nodeIterator, path []byte) error {
-	if hash, ok := st.node.(hashNode); ok {
-		resolved, err := it.resolveHash(hash, path)
+	if hash, ok := st.node.(*hashNode); ok {
+		resolved, err := it.resolveHash(*hash, path)
 		if err != nil {
 			return err
 		}
 		st.node = resolved
-		st.hash = common.BytesToHash(hash)
+		st.hash = common.BytesToHash(*hash)
 	}
 	return nil
 }

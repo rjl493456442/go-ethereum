@@ -92,9 +92,9 @@ func (h *hasher) hash(n node, force bool) []byte {
 		n.flags.hash = hash
 		return hash
 
-	case hashNode:
+	case *hashNode:
 		// hash nodes don't have children, so they're left as were
-		return n
+		return *n
 
 	default:
 		panic(fmt.Errorf("unexpected node type, %T", n))

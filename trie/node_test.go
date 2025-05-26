@@ -100,9 +100,10 @@ func TestDecodeFullNode(t *testing.T) {
 // BenchmarkEncodeShortNode
 // BenchmarkEncodeShortNode-8   	16878850	        70.81 ns/op	      48 B/op	       1 allocs/op
 func BenchmarkEncodeShortNode(b *testing.B) {
+	n := hashNode(randBytes(32))
 	node := &shortNode{
 		Key: []byte{0x1, 0x2},
-		Val: hashNode(randBytes(32)),
+		Val: &n,
 	}
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -120,7 +121,8 @@ func BenchmarkEncodeShortNode(b *testing.B) {
 func BenchmarkEncodeFullNode(b *testing.B) {
 	node := &fullNode{}
 	for i := 0; i < 16; i++ {
-		node.Children[i] = hashNode(randBytes(32))
+		n := hashNode(randBytes(32))
+		node.Children[i] = &n
 	}
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -136,9 +138,10 @@ func BenchmarkEncodeFullNode(b *testing.B) {
 // BenchmarkDecodeShortNode
 // BenchmarkDecodeShortNode-8   	 7925638	       151.0 ns/op	     157 B/op	       4 allocs/op
 func BenchmarkDecodeShortNode(b *testing.B) {
+	n := hashNode(randBytes(32))
 	node := &shortNode{
 		Key: []byte{0x1, 0x2},
-		Val: hashNode(randBytes(32)),
+		Val: &n,
 	}
 	blob := nodeToBytes(node)
 	hash := crypto.Keccak256(blob)
@@ -157,9 +160,10 @@ func BenchmarkDecodeShortNode(b *testing.B) {
 // BenchmarkDecodeShortNodeUnsafe
 // BenchmarkDecodeShortNodeUnsafe-8   	 9027476	       128.6 ns/op	     109 B/op	       3 allocs/op
 func BenchmarkDecodeShortNodeUnsafe(b *testing.B) {
+	n := hashNode(randBytes(32))
 	node := &shortNode{
 		Key: []byte{0x1, 0x2},
-		Val: hashNode(randBytes(32)),
+		Val: &n,
 	}
 	blob := nodeToBytes(node)
 	hash := crypto.Keccak256(blob)
@@ -180,7 +184,8 @@ func BenchmarkDecodeShortNodeUnsafe(b *testing.B) {
 func BenchmarkDecodeFullNode(b *testing.B) {
 	node := &fullNode{}
 	for i := 0; i < 16; i++ {
-		node.Children[i] = hashNode(randBytes(32))
+		n := hashNode(randBytes(32))
+		node.Children[i] = &n
 	}
 	blob := nodeToBytes(node)
 	hash := crypto.Keccak256(blob)
@@ -201,7 +206,8 @@ func BenchmarkDecodeFullNode(b *testing.B) {
 func BenchmarkDecodeFullNodeUnsafe(b *testing.B) {
 	node := &fullNode{}
 	for i := 0; i < 16; i++ {
-		node.Children[i] = hashNode(randBytes(32))
+		n := hashNode(randBytes(32))
+		node.Children[i] = &n
 	}
 	blob := nodeToBytes(node)
 	hash := crypto.Keccak256(blob)

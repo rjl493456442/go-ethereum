@@ -90,13 +90,13 @@ func (n nodeFlag) copy() nodeFlag {
 
 func (n *fullNode) cache() ([]byte, bool)  { return n.flags.hash, n.flags.dirty }
 func (n *shortNode) cache() ([]byte, bool) { return n.flags.hash, n.flags.dirty }
-func (n hashNode) cache() ([]byte, bool)   { return nil, true }
+func (n *hashNode) cache() ([]byte, bool)  { return nil, true }
 func (n valueNode) cache() ([]byte, bool)  { return nil, true }
 
 // Pretty printing.
 func (n *fullNode) String() string  { return n.fstring("") }
 func (n *shortNode) String() string { return n.fstring("") }
-func (n hashNode) String() string   { return n.fstring("") }
+func (n *hashNode) String() string  { return n.fstring("") }
 func (n valueNode) String() string  { return n.fstring("") }
 
 func (n *fullNode) fstring(ind string) string {
@@ -114,8 +114,8 @@ func (n *fullNode) fstring(ind string) string {
 func (n *shortNode) fstring(ind string) string {
 	return fmt.Sprintf("{%x: %v} ", n.Key, n.Val.fstring(ind+"  "))
 }
-func (n hashNode) fstring(ind string) string {
-	return fmt.Sprintf("<%x> ", []byte(n))
+func (n *hashNode) fstring(ind string) string {
+	return fmt.Sprintf("<%x> ", []byte(*n))
 }
 func (n valueNode) fstring(ind string) string {
 	return fmt.Sprintf("%x ", []byte(n))
@@ -236,7 +236,8 @@ func decodeRef(buf []byte) (node, []byte, error) {
 		// empty node
 		return nil, rest, nil
 	case kind == rlp.String && len(val) == 32:
-		return hashNode(val), rest, nil
+		hn := hashNode(val)
+		return &hn, rest, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid RLP string size %d (want 0 or 32)", len(val))
 	}
