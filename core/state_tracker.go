@@ -68,6 +68,9 @@ func writeStateRecord(db ethdb.KeyValueWriter, record *StateRecord) {
 }
 
 func readStateRecord(db ethdb.KeyValueReader, number uint64, hash common.Hash) *StateRecord {
+	if number == 0 {
+		return &StateRecord{Number: 0, Hash: hash, TotalGasUsed: big.NewInt(0)}
+	}
 	num := make([]byte, 8)
 	binary.BigEndian.PutUint64(num, number)
 
