@@ -136,7 +136,7 @@ func (b *batchIndexer) finish(force bool) error {
 		pureRead  atomic.Int64
 		writeTime time.Duration
 	)
-	eg.SetLimit(runtime.NumCPU())
+	eg.SetLimit(3 * runtime.NumCPU())
 
 	for addrHash, idList := range b.accounts {
 		eg.Go(func() error {
