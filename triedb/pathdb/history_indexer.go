@@ -128,26 +128,32 @@ func (b *batchIndexer) finish(force bool) error {
 		return nil
 	}
 	var (
-		batch   = b.db.NewBatch()
-		batchMu sync.RWMutex
-		eg      errgroup.Group
+		batch     = b.db.NewBatch()
+		batchMu   sync.RWMutex
+		eg        errgroup.Group
+		readTime  atomic.Int64
+		writeTime time.Duration
 	)
 	eg.SetLimit(runtime.NumCPU())
 
 	for addrHash, idList := range b.accounts {
 		eg.Go(func() error {
 			if !b.delete {
+				ss := time.Now()
 				iw, err := newIndexWriter(b.db, newAccountIdent(addrHash))
 				if err != nil {
 					return err
 				}
+				readTime.Add(time.Since(ss).Nanoseconds())
 				for _, n := range idList {
 					if err := iw.append(n); err != nil {
 						return err
 					}
 				}
 				batchMu.Lock()
+				xx := time.Now()
 				iw.finish(batch)
+				writeTime += time.Since(xx)
 				batchMu.Unlock()
 			} else {
 				id, err := newIndexDeleter(b.db, newAccountIdent(addrHash))
@@ -170,17 +176,21 @@ func (b *batchIndexer) finish(force bool) error {
 		for storageHash, idList := range slots {
 			eg.Go(func() error {
 				if !b.delete {
+					ss := time.Now()
 					iw, err := newIndexWriter(b.db, newStorageIdent(addrHash, storageHash))
 					if err != nil {
 						return err
 					}
+					readTime.Add(time.Since(ss).Nanoseconds())
 					for _, n := range idList {
 						if err := iw.append(n); err != nil {
 							return err
 						}
 					}
 					batchMu.Lock()
+					xx := time.Now()
 					iw.finish(batch)
+					writeTime += time.Since(xx)
 					batchMu.Unlock()
 				} else {
 					id, err := newIndexDeleter(b.db, newStorageIdent(addrHash, storageHash))
@@ -219,6 +229,7 @@ func (b *batchIndexer) finish(force bool) error {
 	b.counter = 0
 	b.accounts = make(map[common.Hash][]uint64)
 	b.storages = make(map[common.Hash]map[common.Hash][]uint64)
+	log.Info("Finished batch indexer", "readTime", common.PrettyDuration(readTime.Load()), "writeTime", common.PrettyDuration(writeTime))
 	return nil
 }
 
@@ -236,10 +247,13 @@ func indexSingle(historyID uint64, db ethdb.KeyValueStore, freezer ethdb.Ancient
 		}
 		return fmt.Errorf("history indexing is out of order, last: %s, requested: %d", last, historyID)
 	}
+	ss := time.Now()
 	h, err := readHistory(freezer, historyID)
 	if err != nil {
 		return err
 	}
+	readTime := time.Since(ss)
+
 	b := newBatchIndexer(db, false)
 	if err := b.process(h, historyID); err != nil {
 		return err
@@ -247,7 +261,7 @@ func indexSingle(historyID uint64, db ethdb.KeyValueStore, freezer ethdb.Ancient
 	if err := b.finish(true); err != nil {
 		return err
 	}
-	log.Debug("Indexed state history", "id", historyID)
+	log.Debug("Indexed state history", "id", historyID, "readTime", common.PrettyDuration(readTime))
 	return nil
 }
 
