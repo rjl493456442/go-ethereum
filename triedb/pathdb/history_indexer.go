@@ -131,7 +131,9 @@ func (b *batchIndexer) finish(force bool) error {
 		batch     = b.db.NewBatch()
 		batchMu   sync.RWMutex
 		eg        errgroup.Group
+		readCount atomic.Int32
 		readTime  atomic.Int64
+		pureRead  atomic.Int64
 		writeTime time.Duration
 	)
 	eg.SetLimit(runtime.NumCPU())
@@ -140,10 +142,12 @@ func (b *batchIndexer) finish(force bool) error {
 		eg.Go(func() error {
 			if !b.delete {
 				ss := time.Now()
-				iw, err := newIndexWriter(b.db, newAccountIdent(addrHash))
+				iw, r, err := newIndexWriter(b.db, newAccountIdent(addrHash))
 				if err != nil {
 					return err
 				}
+				pureRead.Add(r.Nanoseconds())
+				readCount.Add(1)
 				readTime.Add(time.Since(ss).Nanoseconds())
 				for _, n := range idList {
 					if err := iw.append(n); err != nil {
@@ -177,10 +181,12 @@ func (b *batchIndexer) finish(force bool) error {
 			eg.Go(func() error {
 				if !b.delete {
 					ss := time.Now()
-					iw, err := newIndexWriter(b.db, newStorageIdent(addrHash, storageHash))
+					iw, pr, err := newIndexWriter(b.db, newStorageIdent(addrHash, storageHash))
 					if err != nil {
 						return err
 					}
+					pureRead.Add(pr.Nanoseconds())
+					readCount.Add(1)
 					readTime.Add(time.Since(ss).Nanoseconds())
 					for _, n := range idList {
 						if err := iw.append(n); err != nil {
@@ -229,7 +235,7 @@ func (b *batchIndexer) finish(force bool) error {
 	b.counter = 0
 	b.accounts = make(map[common.Hash][]uint64)
 	b.storages = make(map[common.Hash]map[common.Hash][]uint64)
-	log.Info("Finished batch indexer", "readTime", common.PrettyDuration(readTime.Load()), "writeTime", common.PrettyDuration(writeTime))
+	log.Info("Finished batch indexer", "readTime", common.PrettyDuration(readTime.Load()), "diskRead", common.PrettyDuration(pureRead.Load()), "read-count", readCount.Load(), "writeTime", common.PrettyDuration(writeTime))
 	return nil
 }
 

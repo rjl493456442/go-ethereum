@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -173,13 +174,18 @@ type indexWriter struct {
 }
 
 // newIndexWriter constructs the index writer for the specified state.
-func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, error) {
-	var blob []byte
+func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, time.Duration, error) {
+	var (
+		readTime time.Duration
+		blob     []byte
+	)
+	ss := time.Now()
 	if state.account {
 		blob = rawdb.ReadAccountHistoryIndex(db, state.addressHash)
 	} else {
 		blob = rawdb.ReadStorageHistoryIndex(db, state.addressHash, state.storageHash)
 	}
+	readTime += time.Since(ss)
 	if len(blob) == 0 {
 		desc := newIndexBlockDesc(0)
 		bw, _ := newBlockWriter(nil, desc)
@@ -188,24 +194,27 @@ func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, er
 			bw:       bw,
 			state:    state,
 			db:       db,
-		}, nil
+		}, readTime, nil
 	}
 	descList, err := parseIndex(blob)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var (
 		indexBlock []byte
 		lastDesc   = descList[len(descList)-1]
 	)
+	ss = time.Now()
 	if state.account {
 		indexBlock = rawdb.ReadAccountHistoryIndexBlock(db, state.addressHash, lastDesc.id)
 	} else {
 		indexBlock = rawdb.ReadStorageHistoryIndexBlock(db, state.addressHash, state.storageHash, lastDesc.id)
 	}
+	readTime += time.Since(ss)
+
 	bw, err := newBlockWriter(indexBlock, lastDesc)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	return &indexWriter{
 		descList: descList,
@@ -213,7 +222,7 @@ func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, er
 		bw:       bw,
 		state:    state,
 		db:       db,
-	}, nil
+	}, readTime, nil
 }
 
 // append adds the new element into the index writer.

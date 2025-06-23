@@ -33,7 +33,7 @@ func TestIndexReaderBasic(t *testing.T) {
 		1, 5, 10, 11, 20,
 	}
 	db := rawdb.NewMemoryDatabase()
-	bw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	bw, _, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
 	for i := 0; i < len(elements); i++ {
 		bw.append(elements[i])
 	}
@@ -75,7 +75,7 @@ func TestIndexReaderLarge(t *testing.T) {
 	slices.Sort(elements)
 
 	db := rawdb.NewMemoryDatabase()
-	bw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	bw, _, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
 	for i := 0; i < len(elements); i++ {
 		bw.append(elements[i])
 	}
@@ -122,7 +122,7 @@ func TestEmptyIndexReader(t *testing.T) {
 
 func TestIndexWriterBasic(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
-	iw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	iw, _, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
 	iw.append(2)
 	if err := iw.append(1); err == nil {
 		t.Fatal("out-of-order insertion is not expected")
@@ -134,7 +134,7 @@ func TestIndexWriterBasic(t *testing.T) {
 	iw.finish(batch)
 	batch.Write()
 
-	iw, err := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	iw, _, err := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
 	if err != nil {
 		t.Fatalf("Failed to construct the block writer, %v", err)
 	}
@@ -148,7 +148,7 @@ func TestIndexWriterBasic(t *testing.T) {
 
 func TestIndexWriterDelete(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
-	iw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	iw, _, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
 	for i := 0; i < indexBlockEntriesCap*4; i++ {
 		iw.append(uint64(i + 1))
 	}
