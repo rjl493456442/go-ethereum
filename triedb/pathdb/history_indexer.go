@@ -128,13 +128,16 @@ func (b *batchIndexer) finish(force bool) error {
 		return nil
 	}
 	var (
-		batch     = b.db.NewBatch()
-		batchMu   sync.RWMutex
-		eg        errgroup.Group
-		readCount atomic.Int32
-		readTime  atomic.Int64
-		pureRead  atomic.Int64
-		writeTime time.Duration
+		batch            = b.db.NewBatch()
+		batchMu          sync.RWMutex
+		eg               errgroup.Group
+		readCount        atomic.Int32
+		storageReadCount atomic.Int32
+		accountReadTime  atomic.Int64
+		accountPureRead  atomic.Int64
+		storageReadTime  atomic.Int64
+		storagePureRead  atomic.Int64
+		writeTime        time.Duration
 	)
 	eg.SetLimit(3 * runtime.NumCPU())
 
@@ -146,9 +149,9 @@ func (b *batchIndexer) finish(force bool) error {
 				if err != nil {
 					return err
 				}
-				pureRead.Add(r.Nanoseconds())
+				accountPureRead.Add(r.Nanoseconds())
 				readCount.Add(1)
-				readTime.Add(time.Since(ss).Nanoseconds())
+				accountReadTime.Add(time.Since(ss).Nanoseconds())
 				for _, n := range idList {
 					if err := iw.append(n); err != nil {
 						return err
@@ -185,9 +188,9 @@ func (b *batchIndexer) finish(force bool) error {
 					if err != nil {
 						return err
 					}
-					pureRead.Add(pr.Nanoseconds())
-					readCount.Add(1)
-					readTime.Add(time.Since(ss).Nanoseconds())
+					storagePureRead.Add(pr.Nanoseconds())
+					storageReadCount.Add(1)
+					storageReadTime.Add(time.Since(ss).Nanoseconds())
 					for _, n := range idList {
 						if err := iw.append(n); err != nil {
 							return err
@@ -235,7 +238,10 @@ func (b *batchIndexer) finish(force bool) error {
 	b.counter = 0
 	b.accounts = make(map[common.Hash][]uint64)
 	b.storages = make(map[common.Hash]map[common.Hash][]uint64)
-	log.Info("Finished batch indexer", "readTime", common.PrettyDuration(readTime.Load()), "diskRead", common.PrettyDuration(pureRead.Load()), "read-count", readCount.Load(), "writeTime", common.PrettyDuration(writeTime))
+	log.Info("Finished batch indexer",
+		"accountReadTime", common.PrettyDuration(accountReadTime.Load()), "account-diskRead", common.PrettyDuration(accountPureRead.Load()), "account-read-count", readCount.Load(),
+		"storageReadTime", common.PrettyDuration(storageReadTime.Load()), "storage-diskRead", common.PrettyDuration(storagePureRead.Load()), "storage-read-count", storageReadCount.Load(),
+		"writeTime", common.PrettyDuration(writeTime))
 	return nil
 }
 
