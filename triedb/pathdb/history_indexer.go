@@ -37,7 +37,7 @@ const (
 	// The batch size for reading state histories
 	historyReadBatch = 1000
 
-	stateIndexV0      = uint8(0)     // initial version of state index structure
+	stateIndexV0      = uint8(1)     // initial version of state index structure
 	stateIndexVersion = stateIndexV0 // the current state index version
 )
 
