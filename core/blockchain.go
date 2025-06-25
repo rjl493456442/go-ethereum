@@ -162,10 +162,9 @@ const (
 // BlockChainConfig contains the configuration of the BlockChain object.
 type BlockChainConfig struct {
 	// Trie database related options
-	TrieCleanLimit   int           // Memory allowance (MB) to use for caching trie nodes in memory
-	TrieDirtyLimit   int           // Memory limit (MB) at which to start flushing dirty trie nodes to disk
-	TrieTimeLimit    time.Duration // Time limit after which to flush the current in-memory trie to disk
-	TrieNoAsyncFlush bool          // Whether the asynchronous buffer flushing is disallowed
+	TrieCleanLimit int           // Memory allowance (MB) to use for caching trie nodes in memory
+	TrieDirtyLimit int           // Memory limit (MB) at which to start flushing dirty trie nodes to disk
+	TrieTimeLimit  time.Duration // Time limit after which to flush the current in-memory trie to disk
 
 	Preimages    bool   // Whether to store preimage of trie key to the disk
 	StateHistory uint64 // Number of blocks from head whose state histories are reserved.
@@ -211,7 +210,7 @@ func DefaultConfig() *BlockChainConfig {
 	}
 }
 
-// WithArchive enables/disables archive mode on the config.
+// WithArchive enabled/disables archive mode on the config.
 func (cfg BlockChainConfig) WithArchive(on bool) *BlockChainConfig {
 	cfg.ArchiveMode = on
 	return &cfg
@@ -220,12 +219,6 @@ func (cfg BlockChainConfig) WithArchive(on bool) *BlockChainConfig {
 // WithStateScheme sets the state storage scheme on the config.
 func (cfg BlockChainConfig) WithStateScheme(scheme string) *BlockChainConfig {
 	cfg.StateScheme = scheme
-	return &cfg
-}
-
-// WithNoAsyncFlush enables/disables asynchronous buffer flushing mode on the config.
-func (cfg BlockChainConfig) WithNoAsyncFlush(on bool) *BlockChainConfig {
-	cfg.TrieNoAsyncFlush = on
 	return &cfg
 }
 
@@ -251,7 +244,6 @@ func (cfg *BlockChainConfig) triedbConfig(isVerkle bool) *triedb.Config {
 			// for flushing both trie data and state data to disk. The config name
 			// should be updated to eliminate the confusion.
 			WriteBufferSize: cfg.TrieDirtyLimit * 1024 * 1024,
-			NoAsyncFlush:    cfg.TrieNoAsyncFlush,
 		}
 	}
 	return config
