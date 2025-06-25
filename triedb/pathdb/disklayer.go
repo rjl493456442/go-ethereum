@@ -388,6 +388,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
 	if combined.full() || force {
+		log.Info("Write buffer is full", "full", combined.full(), "force", force)
 		// Wait until the previous frozen buffer is fully flushed
 		if dl.frozen != nil {
 			if err := dl.frozen.waitFlush(); err != nil {
@@ -555,6 +556,7 @@ func (dl *diskLayer) size() common.StorageSize {
 	if dl.stale {
 		return 0
 	}
+	log.Info("Disk layer size", "size", common.StorageSize(dl.buffer.size()))
 	return common.StorageSize(dl.buffer.size())
 }
 
