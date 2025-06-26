@@ -134,7 +134,7 @@ func newFastIterator(db *Database, root common.Hash, account common.Hash, seek c
 				debugInfo += " add disk layer("
 				for _, h := range storageList {
 					v, know := dl.buffer.states.storage(account, h)
-					debugInfo += h.Hex() + fmt.Sprintf(" know: %t %v", know, v)
+					debugInfo += h.Hex() + fmt.Sprintf(" know: %t %v  ", know, v)
 				}
 				debugInfo += ")"
 
@@ -261,7 +261,17 @@ func (fi *fastIterator) Next() bool {
 			return false
 		}
 		if fi.curAccount != nil || fi.curSlot != nil {
+			if fi.account {
+				log.Info("return account", fi.Hash().Hex(), "data", fi.curAccount)
+			} else {
+				log.Info("return storage slot", fi.Hash().Hex(), "data", fi.curSlot)
+			}
 			return true
+		}
+		if fi.account {
+			log.Info("empty account found", fi.Hash().Hex())
+		} else {
+			log.Info("empty slot found", fi.Hash().Hex())
 		}
 		// Implicit else: we've hit a nil-account or nil-slot, and need to
 		// fall through to the loop below to land on something non-nil
@@ -287,7 +297,17 @@ func (fi *fastIterator) Next() bool {
 			return false // error
 		}
 		if fi.curAccount != nil || fi.curSlot != nil {
+			if fi.account {
+				log.Info("return account", fi.Hash().Hex(), "data", fi.curAccount)
+			} else {
+				log.Info("return storage slot", fi.Hash().Hex(), "data", fi.curSlot)
+			}
 			break // non-nil value found
+		}
+		if fi.account {
+			log.Info("empty account found", fi.Hash().Hex())
+		} else {
+			log.Info("empty slot found", fi.Hash().Hex())
 		}
 	}
 	return true

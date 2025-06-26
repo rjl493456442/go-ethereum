@@ -133,7 +133,7 @@ func (s *stateSet) mustStorage(accountHash, storageHash common.Hash) ([]byte, er
 	// If the account is known locally, try to resolve the slot locally
 	if storage, ok := s.storageData[accountHash]; ok {
 		if data, ok := storage[storageHash]; ok {
-			log.Info("Retrieved storage slot", "account", accountHash.Hex(), "slot", storageHash.Hex(), "data", data)
+			log.Info("Retrieved storage slot", "account", accountHash.Hex(), "slot", storageHash.Hex(), "data", data, "data == nil", data == nil)
 			return data, nil
 		}
 	}
