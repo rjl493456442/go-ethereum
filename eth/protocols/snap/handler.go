@@ -295,6 +295,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 	if err != nil {
 		return nil, nil
 	}
+	log.Info("Receive account snap request", "id", req.ID, "origin", req.Origin.Hex(), "root", req.Root.Hex())
 	// Iterate over the requested range and pile accounts up
 	var (
 		accounts []*AccountData
@@ -303,6 +304,10 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 	)
 	for it.Next() {
 		hash, account := it.Hash(), common.CopyBytes(it.Account())
+		if account == nil {
+			log.Error("Empty account delivered", "id", req.ID, "origin", req.Origin.Hex(), "root", req.Root.Hex())
+			//break
+		}
 
 		// Track the returned interval for the Merkle proofs
 		last = hash
@@ -387,6 +392,16 @@ func ServiceGetStorageRangesQuery(chain *core.BlockChain, req *GetStorageRangesP
 		if err != nil {
 			return nil, nil
 		}
+		var accounts string
+		for _, a := range req.Accounts {
+			accounts += a.Hex()
+			accounts += "  "
+		}
+		var originStr string
+		if len(req.Origin) != 0 {
+			originStr = common.Bytes2Hex(req.Origin)
+		}
+		log.Info("Receive storage snap request", "id", req.ID, "accounts", accounts, "origin", originStr, "root", req.Root.Hex())
 		// Iterate over the requested range and pile slots up
 		var (
 			storage []*StorageData
@@ -399,6 +414,10 @@ func ServiceGetStorageRangesQuery(chain *core.BlockChain, req *GetStorageRangesP
 				break
 			}
 			hash, slot := it.Hash(), common.CopyBytes(it.Slot())
+			if slot == nil {
+				log.Error("Empty account delivered", "id", req.ID, "accounts", accounts, "origin", originStr, "root", req.Root.Hex())
+				// break
+			}
 
 			// Track the returned interval for the Merkle proofs
 			last = hash
