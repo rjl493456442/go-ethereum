@@ -175,6 +175,9 @@ func HandleMessage(backend Backend, peer *Peer) error {
 			if bytes.Compare(res.Accounts[i-1].Hash[:], res.Accounts[i].Hash[:]) >= 0 {
 				return fmt.Errorf("accounts not monotonically increasing: #%d [%x] vs #%d [%x]", i-1, res.Accounts[i-1].Hash[:], i, res.Accounts[i].Hash[:])
 			}
+			if len(res.Accounts[i].Body) == 0 {
+				log.Error("Empty account body found")
+			}
 		}
 		requestTracker.Fulfil(peer.id, peer.version, AccountRangeMsg, res.ID)
 
@@ -207,6 +210,9 @@ func HandleMessage(backend Backend, peer *Peer) error {
 			for j := 1; j < len(slots); j++ {
 				if bytes.Compare(slots[j-1].Hash[:], slots[j].Hash[:]) >= 0 {
 					return fmt.Errorf("storage slots not monotonically increasing for account #%d: #%d [%x] vs #%d [%x]", i, j-1, slots[j-1].Hash[:], j, slots[j].Hash[:])
+				}
+				if len(slots[j].Body) == 0 {
+					log.Error("Empty storage body found")
 				}
 			}
 		}
@@ -304,7 +310,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 	)
 	for it.Next() {
 		hash, account := it.Hash(), common.CopyBytes(it.Account())
-		if account == nil {
+		if len(account) == 0 {
 			log.Error("Empty account delivered", "id", req.ID, "origin", req.Origin.Hex(), "root", req.Root.Hex())
 			//break
 		}
@@ -393,9 +399,12 @@ func ServiceGetStorageRangesQuery(chain *core.BlockChain, req *GetStorageRangesP
 			return nil, nil
 		}
 		var accounts string
-		for _, a := range req.Accounts {
+		for i, a := range req.Accounts {
 			accounts += a.Hex()
 			accounts += "  "
+			if i >= 2 {
+				break
+			}
 		}
 		var originStr string
 		if len(req.Origin) != 0 {
@@ -414,8 +423,8 @@ func ServiceGetStorageRangesQuery(chain *core.BlockChain, req *GetStorageRangesP
 				break
 			}
 			hash, slot := it.Hash(), common.CopyBytes(it.Slot())
-			if slot == nil {
-				log.Error("Empty account delivered", "id", req.ID, "accounts", accounts, "origin", originStr, "root", req.Root.Hex())
+			if len(slot) == 0 {
+				log.Crit("Empty account delivered", "id", req.ID, "accounts", accounts, "origin", originStr, "root", req.Root.Hex())
 				// break
 			}
 
