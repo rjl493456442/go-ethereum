@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"slices"
 	"sort"
 
@@ -177,6 +178,10 @@ func newFastIterator(db *Database, root common.Hash, account common.Hash, seek c
 		current = current.parentLayer()
 	}
 	fi.init()
+
+	if debugInfo != "" {
+		log.Info("Constructed fastIterator", "data", debugInfo)
+	}
 	return fi, nil
 }
 
