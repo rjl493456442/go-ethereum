@@ -133,7 +133,8 @@ func newFastIterator(db *Database, root common.Hash, account common.Hash, seek c
 
 				debugInfo += " add disk layer("
 				for _, h := range storageList {
-					debugInfo += h.Hex() + " "
+					v, know := dl.buffer.states.storage(account, h)
+					debugInfo += h.Hex() + fmt.Sprintf(" know: %t %v", know, v)
 				}
 				debugInfo += ")"
 
