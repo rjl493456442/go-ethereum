@@ -402,7 +402,7 @@ func ServiceGetStorageRangesQuery(chain *core.BlockChain, req *GetStorageRangesP
 		for i, a := range req.Accounts {
 			accounts += a.Hex()
 			accounts += "  "
-			if i >= 2 {
+			if i >= 1 {
 				break
 			}
 		}
@@ -424,7 +424,7 @@ func ServiceGetStorageRangesQuery(chain *core.BlockChain, req *GetStorageRangesP
 			}
 			hash, slot := it.Hash(), common.CopyBytes(it.Slot())
 			if len(slot) == 0 {
-				log.Crit("Empty account delivered", "id", req.ID, "accounts", accounts, "origin", originStr, "root", req.Root.Hex())
+				log.Crit("Empty storage delivered", "id", req.ID, "key", hash.Hex(), "accounts", accounts, "origin", originStr, "root", req.Root.Hex())
 				// break
 			}
 

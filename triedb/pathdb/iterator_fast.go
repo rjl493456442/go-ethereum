@@ -72,6 +72,7 @@ func newFastIterator(db *Database, root common.Hash, account common.Hash, seek c
 	fi := &fastIterator{
 		account: accountIterator,
 	}
+	var debugInfo string
 	for depth := 0; current != nil; depth++ {
 		if accountIterator {
 			switch dl := current.(type) {
@@ -129,6 +130,12 @@ func newFastIterator(db *Database, root common.Hash, account common.Hash, seek c
 				storageList := dl.buffer.states.storageList(account)
 				dl.lock.RUnlock()
 
+				debugInfo += " add disk layer("
+				for _, h := range storageList {
+					debugInfo += h.Hex() + " "
+				}
+				debugInfo += ")"
+
 				fi.iterators = append(fi.iterators, &weightedIterator{
 					// The state set in the disk layer is mutable, and the entire state becomes stale
 					// if a diff layer above is merged into it. Therefore, staleness must be checked,
@@ -152,6 +159,12 @@ func newFastIterator(db *Database, root common.Hash, account common.Hash, seek c
 				// The state set in diff layer is immutable and will never be stale,
 				// so the read lock protection is unnecessary.
 				storageList := dl.states.storageList(account)
+
+				debugInfo += " add diff layer("
+				for _, h := range storageList {
+					debugInfo += h.Hex() + " "
+				}
+				debugInfo += ")"
 
 				// The state set in diff layer is immutable and will never be stale,
 				// so the read lock protection is unnecessary.
