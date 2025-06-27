@@ -19,7 +19,6 @@ package pathdb
 import (
 	"errors"
 	"fmt"
-	"runtime"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -238,15 +237,11 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 	if id == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	r := &HistoricalStateReader{
+	return &HistoricalStateReader{
 		id:     *id,
 		db:     db,
 		reader: newHistoryReader(db.diskdb, db.freezer),
-	}
-	runtime.SetFinalizer(r, func(o *HistoricalStateReader) {
-		o.report()
-	})
-	return r, nil
+	}, nil
 }
 
 // AccountRLP directly retrieves the account RLP associated with a particular
@@ -284,6 +279,10 @@ func (r *HistoricalStateReader) AccountRLP(address common.Address) ([]byte, erro
 	r.accountIndexRead += stats.indexRead
 	r.accountMetaRead += stats.metaRead
 	r.accountDataRead += stats.dataRead
+
+	if (r.storageRead+r.accountRead)%500 == 0 {
+		r.report()
+	}
 	return data, nil
 }
 
@@ -343,6 +342,10 @@ func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash)
 	r.storageIndexRead += stats.indexRead
 	r.storageMetaRead += stats.metaRead
 	r.storageDataRead += stats.dataRead
+
+	if (r.storageRead+r.accountRead)%500 == 0 {
+		r.report()
+	}
 	return data, nil
 }
 
