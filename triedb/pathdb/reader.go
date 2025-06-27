@@ -19,6 +19,7 @@ package pathdb
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -202,6 +203,14 @@ type HistoricalStateReader struct {
 	db     *Database
 	reader *historyReader
 	id     uint64
+
+	// Statistics
+	accountRead      int
+	storageRead      int
+	accountIndexRead time.Duration
+	accountDataRead  time.Duration
+	storageIndexRead time.Duration
+	storageDataRead  time.Duration
 }
 
 // HistoricReader constructs a reader for accessing the requested historic state.
@@ -227,11 +236,13 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 	if id == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	return &HistoricalStateReader{
+	r := &HistoricalStateReader{
 		id:     *id,
 		db:     db,
 		reader: newHistoryReader(db.diskdb, db.freezer),
-	}, nil
+	}
+	runtime.SetFinalizer(r, r.report)
+	return r, nil
 }
 
 // AccountRLP directly retrieves the account RLP associated with a particular
@@ -261,7 +272,14 @@ func (r *HistoricalStateReader) AccountRLP(address common.Address) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	return r.reader.read(newAccountIdentQuery(address, hash), r.id, dl.stateID(), latest)
+	data, stats, err := r.reader.readWithStats(newAccountIdentQuery(address, hash), r.id, dl.stateID(), latest)
+	if err != nil {
+		return nil, err
+	}
+	r.accountRead++
+	r.accountIndexRead += stats.indexRead
+	r.accountDataRead += stats.dataRead
+	return data, nil
 }
 
 // Account directly retrieves the account associated with a particular address in
@@ -312,5 +330,31 @@ func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash)
 	if err != nil {
 		return nil, err
 	}
-	return r.reader.read(newStorageIdentQuery(address, addrHash, key, keyHash), r.id, dl.stateID(), latest)
+	data, stats, err := r.reader.readWithStats(newStorageIdentQuery(address, addrHash, key, keyHash), r.id, dl.stateID(), latest)
+	if err != nil {
+		return nil, err
+	}
+	r.storageRead++
+	r.storageIndexRead += stats.indexRead
+	r.storageDataRead += stats.dataRead
+	return data, nil
+}
+
+func (r *HistoricalStateReader) report() {
+	var msg string
+	if r.accountRead > 0 {
+		msg += fmt.Sprintf("account: %d, accountIndex: %s, accountData: %s, index-avg: %s, data-avg: %s\t",
+			r.accountRead, common.PrettyDuration(r.accountIndexRead), common.PrettyDuration(r.accountDataRead),
+			common.PrettyDuration(r.accountIndexRead/time.Duration(r.accountRead)),
+			common.PrettyDuration(r.accountDataRead/time.Duration(r.accountRead)),
+		)
+	}
+	if r.storageRead > 0 {
+		msg += fmt.Sprintf("storage: %d, storageIndex: %s, storageData: %s, index-avg: %s, data-avg: %s",
+			r.storageRead, common.PrettyDuration(r.storageIndexRead), common.PrettyDuration(r.storageDataRead),
+			common.PrettyDuration(r.storageIndexRead/time.Duration(r.accountRead)),
+			common.PrettyDuration(r.storageDataRead/time.Duration(r.accountRead)),
+		)
+	}
+	log.Info("Dump stats", "msg", msg)
 }

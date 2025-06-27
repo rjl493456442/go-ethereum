@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -301,6 +302,63 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 	return data[offset : offset+length], nil
 }
 
+type historyReadStats struct {
+	indexRead time.Duration
+	dataRead  time.Duration
+}
+
+func (r *historyReader) readWithStats(state stateIdentQuery, stateID uint64, lastID uint64, latestValue []byte) ([]byte, historyReadStats, error) {
+	tail, err := r.freezer.Tail()
+	if err != nil {
+		return nil, historyReadStats{}, err
+	}
+	// stateID == tail is allowed, as the first history object preserved
+	// is tail+1
+	if stateID < tail {
+		return nil, historyReadStats{}, errors.New("historical state has been pruned")
+	}
+	// Construct the index reader to locate the corresponding history for
+	// state retrieval
+	indexStart := time.Now()
+	ir, ok := r.readers[state.String()]
+	if !ok {
+		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, lastID)
+		if err != nil {
+			return nil, historyReadStats{}, err
+		}
+		r.readers[state.String()] = ir
+	}
+	historyID, err := ir.readGreaterThan(stateID, lastID)
+	if err != nil {
+		return nil, historyReadStats{}, err
+	}
+	indexTime := time.Since(indexStart)
+
+	// The state was not found in the state histories, as it has not been modified
+	// since stateID. Use the data from the associated disk layer instead.
+	if historyID == math.MaxUint64 {
+		return latestValue, historyReadStats{indexRead: indexTime}, nil
+	}
+	// Resolve data from the specified state history object. Notably, since the history
+	// reader operates completely asynchronously with the indexer/unindexer, it's possible
+	// that the associated state histories are no longer available due to a rollback.
+	// Such truncation should be captured by the state resolver below, rather than returning
+	// invalid data.
+	var (
+		data      []byte
+		dataStart = time.Now()
+	)
+	if state.account {
+		data, err = r.readAccount(state.address, historyID)
+	} else {
+		data, err = r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
+	}
+	if err != nil {
+		return nil, historyReadStats{}, err
+	}
+	return data, historyReadStats{indexRead: indexTime, dataRead: time.Since(dataStart)}, nil
+}
+
 // read retrieves the state element data associated with the stateID.
 // stateID: represents the ID of the state of the specified version;
 // lastID: represents the ID of the latest/newest state history;
@@ -309,41 +367,6 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 // This function assumes all the state histories until the specified
 // lastID have been fully indexed.
 func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
-	tail, err := r.freezer.Tail()
-	if err != nil {
-		return nil, err
-	}
-	// stateID == tail is allowed, as the first history object preserved
-	// is tail+1
-	if stateID < tail {
-		return nil, errors.New("historical state has been pruned")
-	}
-	// Construct the index reader to locate the corresponding history for
-	// state retrieval
-	ir, ok := r.readers[state.String()]
-	if !ok {
-		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, lastID)
-		if err != nil {
-			return nil, err
-		}
-		r.readers[state.String()] = ir
-	}
-	historyID, err := ir.readGreaterThan(stateID, lastID)
-	if err != nil {
-		return nil, err
-	}
-	// The state was not found in the state histories, as it has not been modified
-	// since stateID. Use the data from the associated disk layer instead.
-	if historyID == math.MaxUint64 {
-		return latestValue, nil
-	}
-	// Resolve data from the specified state history object. Notably, since the history
-	// reader operates completely asynchronously with the indexer/unindexer, it's possible
-	// that the associated state histories are no longer available due to a rollback.
-	// Such truncation should be captured by the state resolver below, rather than returning
-	// invalid data.
-	if state.account {
-		return r.readAccount(state.address, historyID)
-	}
-	return r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
+	data, _, err := r.readWithStats(state, stateID, lastID, latestValue)
+	return data, err
 }
