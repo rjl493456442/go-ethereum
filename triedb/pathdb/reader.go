@@ -208,8 +208,10 @@ type HistoricalStateReader struct {
 	accountRead      int
 	storageRead      int
 	accountIndexRead time.Duration
+	accountMetaRead  time.Duration
 	accountDataRead  time.Duration
 	storageIndexRead time.Duration
+	storageMetaRead  time.Duration
 	storageDataRead  time.Duration
 }
 
@@ -278,6 +280,7 @@ func (r *HistoricalStateReader) AccountRLP(address common.Address) ([]byte, erro
 	}
 	r.accountRead++
 	r.accountIndexRead += stats.indexRead
+	r.accountMetaRead += stats.metaRead
 	r.accountDataRead += stats.dataRead
 	return data, nil
 }
@@ -336,6 +339,7 @@ func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash)
 	}
 	r.storageRead++
 	r.storageIndexRead += stats.indexRead
+	r.storageMetaRead += stats.metaRead
 	r.storageDataRead += stats.dataRead
 	return data, nil
 }
@@ -343,17 +347,19 @@ func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash)
 func (r *HistoricalStateReader) report() {
 	var msg string
 	if r.accountRead > 0 {
-		msg += fmt.Sprintf("account: %d, accountIndex: %s, accountData: %s, index-avg: %s, data-avg: %s\t",
-			r.accountRead, common.PrettyDuration(r.accountIndexRead), common.PrettyDuration(r.accountDataRead),
+		msg += fmt.Sprintf("account: %d, accountIndex: %s, accountMeta: %s, accountData: %s, index-avg: %s, meta-avg: %s, data-avg: %s\t",
+			r.accountRead, common.PrettyDuration(r.accountIndexRead), common.PrettyDuration(r.accountMetaRead), common.PrettyDuration(r.accountDataRead),
 			common.PrettyDuration(r.accountIndexRead/time.Duration(r.accountRead)),
+			common.PrettyDuration(r.accountMetaRead/time.Duration(r.accountRead)),
 			common.PrettyDuration(r.accountDataRead/time.Duration(r.accountRead)),
 		)
 	}
 	if r.storageRead > 0 {
-		msg += fmt.Sprintf("storage: %d, storageIndex: %s, storageData: %s, index-avg: %s, data-avg: %s",
-			r.storageRead, common.PrettyDuration(r.storageIndexRead), common.PrettyDuration(r.storageDataRead),
-			common.PrettyDuration(r.storageIndexRead/time.Duration(r.accountRead)),
-			common.PrettyDuration(r.storageDataRead/time.Duration(r.accountRead)),
+		msg += fmt.Sprintf("storage: %d, storageIndex: %s, storageMeta: %s, storageData: %s, index-avg: %s, meta-avg: %s, data-avg: %s",
+			r.storageRead, common.PrettyDuration(r.storageIndexRead), common.PrettyDuration(r.storageMetaRead), common.PrettyDuration(r.storageDataRead),
+			common.PrettyDuration(r.storageIndexRead/time.Duration(r.storageRead)),
+			common.PrettyDuration(r.storageMetaRead/time.Duration(r.storageRead)),
+			common.PrettyDuration(r.storageDataRead/time.Duration(r.storageRead)),
 		)
 	}
 	log.Info("Dump stats", "msg", msg)

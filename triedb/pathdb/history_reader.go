@@ -258,28 +258,35 @@ func (r *historyReader) readStorageMetadata(storageKey common.Hash, storageHash 
 }
 
 // readAccount retrieves the account data from the specified state history.
-func (r *historyReader) readAccount(address common.Address, historyID uint64) ([]byte, error) {
+func (r *historyReader) readAccount(address common.Address, historyID uint64) ([]byte, time.Duration, time.Duration, error) {
+	s := time.Now()
 	metadata, err := r.readAccountMetadata(address, historyID)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
+	metaTime := time.Since(s)
+
 	length := int(metadata[common.AddressLength])                                                     // one byte for account data length
 	offset := int(binary.BigEndian.Uint32(metadata[common.AddressLength+1 : common.AddressLength+5])) // four bytes for the account data offset
 
 	// TODO(rj493456442) optimize it with partial read
+	s = time.Now()
 	data := rawdb.ReadStateAccountHistory(r.freezer, historyID)
 	if len(data) < length+offset {
-		return nil, fmt.Errorf("account data is truncated, address: %#x, historyID: %d, size: %d, offset: %d, len: %d", address, historyID, len(data), offset, length)
+		return nil, 0, 0, fmt.Errorf("account data is truncated, address: %#x, historyID: %d, size: %d, offset: %d, len: %d", address, historyID, len(data), offset, length)
 	}
-	return data[offset : offset+length], nil
+	dataTime := time.Since(s)
+	return data[offset : offset+length], metaTime, dataTime, nil
 }
 
 // readStorage retrieves the storage slot data from the specified state history.
-func (r *historyReader) readStorage(address common.Address, storageKey common.Hash, storageHash common.Hash, historyID uint64) ([]byte, error) {
+func (r *historyReader) readStorage(address common.Address, storageKey common.Hash, storageHash common.Hash, historyID uint64) ([]byte, time.Duration, time.Duration, error) {
+	s := time.Now()
 	metadata, err := r.readAccountMetadata(address, historyID)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
+
 	// slotIndexOffset:
 	//   The offset of storage indices associated with the specified account.
 	// slotIndexNumber:
@@ -289,21 +296,27 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 
 	slotMetadata, err := r.readStorageMetadata(storageKey, storageHash, historyID, slotIndexOffset, slotIndexNumber)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
+	metaTime := time.Since(s)
+
 	length := int(slotMetadata[common.HashLength])                                                  // one byte for slot data length
 	offset := int(binary.BigEndian.Uint32(slotMetadata[common.HashLength+1 : common.HashLength+5])) // four bytes for slot data offset
 
 	// TODO(rj493456442) optimize it with partial read
+	s = time.Now()
 	data := rawdb.ReadStateStorageHistory(r.freezer, historyID)
 	if len(data) < offset+length {
-		return nil, fmt.Errorf("storage data is truncated, address: %#x, key: %#x, historyID: %d, size: %d, offset: %d, len: %d", address, storageKey, historyID, len(data), offset, length)
+		return nil, 0, 0, fmt.Errorf("storage data is truncated, address: %#x, key: %#x, historyID: %d, size: %d, offset: %d, len: %d", address, storageKey, historyID, len(data), offset, length)
 	}
-	return data[offset : offset+length], nil
+	dataTime := time.Since(s)
+
+	return data[offset : offset+length], metaTime, dataTime, nil
 }
 
 type historyReadStats struct {
 	indexRead time.Duration
+	metaRead  time.Duration
 	dataRead  time.Duration
 }
 
@@ -345,18 +358,23 @@ func (r *historyReader) readWithStats(state stateIdentQuery, stateID uint64, las
 	// Such truncation should be captured by the state resolver below, rather than returning
 	// invalid data.
 	var (
-		data      []byte
-		dataStart = time.Now()
+		data     []byte
+		metaTime time.Duration
+		dataTime time.Duration
 	)
 	if state.account {
-		data, err = r.readAccount(state.address, historyID)
+		data, metaTime, dataTime, err = r.readAccount(state.address, historyID)
 	} else {
-		data, err = r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
+		data, metaTime, dataTime, err = r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
 	}
 	if err != nil {
 		return nil, historyReadStats{}, err
 	}
-	return data, historyReadStats{indexRead: indexTime, dataRead: time.Since(dataStart)}, nil
+	return data, historyReadStats{
+		indexRead: indexTime,
+		metaRead:  metaTime,
+		dataRead:  dataTime,
+	}, nil
 }
 
 // read retrieves the state element data associated with the stateID.
