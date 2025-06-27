@@ -243,7 +243,9 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 		db:     db,
 		reader: newHistoryReader(db.diskdb, db.freezer),
 	}
-	runtime.SetFinalizer(r, r.report)
+	runtime.SetFinalizer(r, func(o *HistoricalStateReader) {
+		o.report()
+	})
 	return r, nil
 }
 
