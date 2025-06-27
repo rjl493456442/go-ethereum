@@ -122,19 +122,14 @@ type indexReaderWithLimitTag struct {
 }
 
 // newIndexReaderWithLimitTag constructs a index reader with indexing position.
-func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent) (*indexReaderWithLimitTag, error) {
-	// Read the last indexed ID before the index reader construction
-	metadata := loadIndexMetadata(db)
-	if metadata == nil {
-		return nil, errors.New("state history hasn't been indexed yet")
-	}
+func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, last uint64) (*indexReaderWithLimitTag, error) {
 	r, err := newIndexReader(db, state)
 	if err != nil {
 		return nil, err
 	}
 	return &indexReaderWithLimitTag{
 		reader: r,
-		limit:  metadata.Last,
+		limit:  last,
 		db:     db,
 	}, nil
 }
@@ -167,21 +162,10 @@ func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uin
 	if r.limit == lastID {
 		return res, nil
 	}
-	// Refresh the index reader and attempt again. If the latest indexed position
-	// is even below the ID of the disk layer, it indicates that state histories
-	// are being removed. In this case, it would theoretically be better to block
-	// the state rollback operation synchronously until all readers are released.
-	// Given that it's very unlikely to occur and users try to perform historical
-	// state queries while reverting the states at the same time. Simply returning
-	// an error should be sufficient for now.
-	metadata := loadIndexMetadata(r.db)
-	if metadata == nil || metadata.Last < lastID {
-		return 0, errors.New("state history hasn't been indexed yet")
-	}
 	if err := r.reader.refresh(); err != nil {
 		return 0, err
 	}
-	r.limit = metadata.Last
+	r.limit = lastID
 
 	return r.reader.readGreaterThan(id)
 }
@@ -244,32 +228,32 @@ func (r *historyReader) readStorageMetadata(storageKey common.Hash, storageHash 
 	}
 	subSlice := blob[slotIndexSize*slotOffset : slotIndexSize*(slotOffset+slotNumber)]
 
-	// TODO(rj493456442) get rid of the metadata resolution
-	var (
-		m      meta
-		target common.Hash
-	)
-	blob = rawdb.ReadStateHistoryMeta(r.freezer, historyID)
-	if err := m.decode(blob); err != nil {
-		return nil, err
+	lookup := func(target common.Hash) ([]byte, error) {
+		pos := sort.Search(slotNumber, func(i int) bool {
+			slotID := subSlice[slotIndexSize*i : slotIndexSize*i+common.HashLength]
+			return bytes.Compare(slotID, target.Bytes()) >= 0
+		})
+		if pos == slotNumber {
+			return nil, fmt.Errorf("storage metadata is not found, slot key: %#x, historyID: %d", storageKey, historyID)
+		}
+		offset := slotIndexSize * pos
+		if target != common.BytesToHash(subSlice[offset:offset+common.HashLength]) {
+			return nil, fmt.Errorf("storage metadata is not found, slot key: %#x, historyID: %d", storageKey, historyID)
+		}
+		return subSlice[offset : slotIndexSize*(pos+1)], nil
 	}
-	if m.version == stateHistoryV0 {
-		target = storageHash
-	} else {
-		target = storageKey
+	// In state history V0, the storage key hash is used as the identifier.
+	// Starting from the Cancun fork (history V1), the raw storage key is
+	// used instead.
+	//
+	// To avoid the cost of reading metadata from the freezer (2 disk reads),
+	// we optimistically attempt V1 first and fall back to V0 if needed,
+	// as the in-memory binary search is expected to be fast enough.
+	value, err := lookup(storageKey)
+	if err == nil {
+		return value, nil
 	}
-	pos := sort.Search(slotNumber, func(i int) bool {
-		slotID := subSlice[slotIndexSize*i : slotIndexSize*i+common.HashLength]
-		return bytes.Compare(slotID, target.Bytes()) >= 0
-	})
-	if pos == slotNumber {
-		return nil, fmt.Errorf("storage metadata is not found, slot key: %#x, historyID: %d", storageKey, historyID)
-	}
-	offset := slotIndexSize * pos
-	if target != common.BytesToHash(subSlice[offset:offset+common.HashLength]) {
-		return nil, fmt.Errorf("storage metadata is not found, slot key: %#x, historyID: %d", storageKey, historyID)
-	}
-	return subSlice[offset : slotIndexSize*(pos+1)], nil
+	return lookup(storageHash)
 }
 
 // readAccount retrieves the account data from the specified state history.
@@ -321,6 +305,9 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 // stateID: represents the ID of the state of the specified version;
 // lastID: represents the ID of the latest/newest state history;
 // latestValue: represents the state value at the current disk layer with ID == lastID;
+//
+// This function assumes all the state histories until the specified
+// lastID have been fully indexed.
 func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
 	tail, err := r.freezer.Tail()
 	if err != nil {
@@ -331,24 +318,11 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	if stateID < tail {
 		return nil, errors.New("historical state has been pruned")
 	}
-
-	// To serve the request, all state histories from stateID+1 to lastID
-	// must be indexed. It's not supposed to happen unless system is very
-	// wrong.
-	metadata := loadIndexMetadata(r.disk)
-	if metadata == nil || metadata.Last < lastID {
-		indexed := "null"
-		if metadata != nil {
-			indexed = fmt.Sprintf("%d", metadata.Last)
-		}
-		return nil, fmt.Errorf("state history is not fully indexed, requested: %d, indexed: %s", stateID, indexed)
-	}
-
 	// Construct the index reader to locate the corresponding history for
 	// state retrieval
 	ir, ok := r.readers[state.String()]
 	if !ok {
-		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent)
+		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, lastID)
 		if err != nil {
 			return nil, err
 		}
