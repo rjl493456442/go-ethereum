@@ -1879,7 +1879,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		}
 		// The traced section of block import.
 		start := time.Now()
-		res, err := bc.processBlock(parent.Root, block, setHead, makeWitness && len(chain) == 1)
+		res, err := bc.processBlock(parent.Root, block, setHead, makeWitness && len(chain) == 1, len(chain) == 1)
 		if err != nil {
 			return nil, it.index, err
 		}
@@ -1947,7 +1947,7 @@ type blockProcessingResult struct {
 
 // processBlock executes and validates the given block. If there was no error
 // it writes the block and associated state to database.
-func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, setHead bool, makeWitness bool) (_ *blockProcessingResult, blockEndErr error) {
+func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, setHead bool, makeWitness bool, report bool) (_ *blockProcessingResult, blockEndErr error) {
 	var (
 		err       error
 		startTime = time.Now()
@@ -2122,13 +2122,25 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 	snapshotCommitTimer.Update(statedb.SnapshotCommits) // Snapshot commits are complete, we can mark them
 	triedbCommitTimer.Update(statedb.TrieDBCommits)     // Trie database commits are complete, we can mark them
 
-	blockWriteTimer.Update(time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits)
+	blockWrite := time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.SnapshotCommits - statedb.TrieDBCommits
+	blockWriteTimer.Update(blockWrite)
 	elapsed := time.Since(startTime) + 1 // prevent zero division
 	blockInsertTimer.Update(elapsed)
 
 	// TODO(rjl493456442) generalize the ResettingTimer
 	mgasps := float64(res.GasUsed) * 1000 / float64(elapsed)
 	chainMgaspsMeter.Update(time.Duration(mgasps))
+
+	if report {
+		log.Info("Processed block", "number", block.Number(), "hash", block.Hash(), "txs", len(block.Transactions()),
+			"accountread", common.PrettyDuration(statedb.AccountReads), "storageread", common.PrettyDuration(statedb.StorageReads),
+			"accountupdate", common.PrettyDuration(statedb.AccountUpdates), "storageupdate", common.PrettyDuration(statedb.StorageUpdates),
+			"evm", common.PrettyDuration(ptime-(statedb.AccountReads+statedb.StorageReads)),
+			"dbcommit", common.PrettyDuration(statedb.TrieDBCommits),
+			"commit", common.PrettyDuration(blockWrite),
+			"elapsed", common.PrettyDuration(elapsed),
+		)
+	}
 
 	return &blockProcessingResult{
 		usedGas:  res.GasUsed,
