@@ -1953,6 +1953,8 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 		startTime = time.Now()
 		statedb   *state.StateDB
 		interrupt atomic.Bool
+
+		processExt state.ReaderWithStats
 	)
 	defer interrupt.Store(true) // terminate the prefetch at the end
 
@@ -1979,6 +1981,8 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 		if err != nil {
 			return nil, err
 		}
+		processExt = process
+
 		// Upload the statistics of reader at the end
 		defer func() {
 			stats := prefetch.GetStats()
@@ -2132,9 +2136,21 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 	chainMgaspsMeter.Update(time.Duration(mgasps))
 
 	if report {
+		var (
+			accountHits float64
+			storageHits float64
+		)
+		stats := processExt.GetStats()
+		if stats.AccountHit+stats.AccountMiss != 0 {
+			accountHits = float64(stats.AccountHit) / float64(stats.AccountMiss+stats.AccountHit)
+		}
+		if stats.StorageHit+stats.StorageMiss != 0 {
+			storageHits = float64(stats.StorageHit) / float64(stats.StorageMiss+stats.StorageHit)
+		}
 		log.Info("Processed block", "number", block.Number(), "hash", block.Hash(), "txs", len(block.Transactions()),
 			"accountread", common.PrettyDuration(statedb.AccountReads), "storageread", common.PrettyDuration(statedb.StorageReads),
 			"accountupdate", common.PrettyDuration(statedb.AccountUpdates), "storageupdate", common.PrettyDuration(statedb.StorageUpdates),
+			"accountHits", accountHits, "storageHits", storageHits,
 			"evm", common.PrettyDuration(ptime-(statedb.AccountReads+statedb.StorageReads)),
 			"dbcommit", common.PrettyDuration(statedb.TrieDBCommits),
 			"commit", common.PrettyDuration(blockWrite),

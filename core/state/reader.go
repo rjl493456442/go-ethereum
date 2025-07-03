@@ -18,9 +18,6 @@ package state
 
 import (
 	"errors"
-	"sync"
-	"sync/atomic"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -32,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/database"
+	"sync"
+	"sync/atomic"
 )
 
 // ContractCodeReader defines the interface for accessing contract code.
