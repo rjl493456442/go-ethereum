@@ -21,7 +21,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"math"
+	"math/rand"
 	"sort"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -325,6 +327,17 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 // lastID: represents the ID of the latest/newest state history;
 // latestValue: represents the state value at the current disk layer with ID == lastID;
 func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
+	defer func() {
+		if rand.Intn(100) == 0 {
+			var stats fastcache.Stats
+			r.cache.UpdateStats(&stats)
+			var hitRatio float64
+			if stats.GetCalls != 0 {
+				hitRatio = float64(stats.GetCalls-stats.Misses) / float64(stats.GetCalls)
+			}
+			log.Info("Cache statistics", "total", stats.GetCalls, "miss", stats.Misses, "hitratio", hitRatio, "set", stats.SetCalls, "entries", stats.EntriesCount)
+		}
+	}()
 	tail, err := r.freezer.Tail()
 	if err != nil {
 		return nil, err
