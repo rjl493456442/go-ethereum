@@ -22,6 +22,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 )
@@ -74,15 +75,29 @@ type indexReader struct {
 	descList []*indexBlockDesc
 	readers  map[uint32]*blockReader
 	state    stateIdent
+	cache    *fastcache.Cache
 }
 
 // loadIndexData loads the index data associated with the specified state.
-func loadIndexData(db ethdb.KeyValueReader, state stateIdent) ([]*indexBlockDesc, error) {
-	var blob []byte
+func loadIndexData(db ethdb.KeyValueReader, state stateIdent, cache *fastcache.Cache) ([]*indexBlockDesc, error) {
+	var (
+		found bool
+		blob  []byte
+	)
 	if state.account {
-		blob = rawdb.ReadAccountHistoryIndex(db, state.addressHash)
+		if cache != nil {
+			blob, found = cache.HasGet(nil, state.addressHash.Bytes())
+		}
+		if !found {
+			blob = rawdb.ReadAccountHistoryIndex(db, state.addressHash)
+		}
 	} else {
-		blob = rawdb.ReadStorageHistoryIndex(db, state.addressHash, state.storageHash)
+		if cache != nil {
+			blob, found = cache.HasGet(nil, append(state.addressHash.Bytes(), state.storageHash.Bytes()...))
+		}
+		if !found {
+			blob = rawdb.ReadStorageHistoryIndex(db, state.addressHash, state.storageHash)
+		}
 	}
 	if len(blob) == 0 {
 		return nil, nil
@@ -92,8 +107,8 @@ func loadIndexData(db ethdb.KeyValueReader, state stateIdent) ([]*indexBlockDesc
 
 // newIndexReader constructs a index reader for the specified state. Reader with
 // empty data is allowed.
-func newIndexReader(db ethdb.KeyValueReader, state stateIdent) (*indexReader, error) {
-	descList, err := loadIndexData(db, state)
+func newIndexReader(db ethdb.KeyValueReader, state stateIdent, cache *fastcache.Cache) (*indexReader, error) {
+	descList, err := loadIndexData(db, state, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +117,7 @@ func newIndexReader(db ethdb.KeyValueReader, state stateIdent) (*indexReader, er
 		readers:  make(map[uint32]*blockReader),
 		db:       db,
 		state:    state,
+		cache:    cache,
 	}, nil
 }
 
@@ -116,7 +132,7 @@ func (r *indexReader) refresh() error {
 			delete(r.readers, last.id)
 		}
 	}
-	descList, err := loadIndexData(r.db, r.state)
+	descList, err := loadIndexData(r.db, r.state, r.cache)
 	if err != nil {
 		return err
 	}
@@ -255,7 +271,7 @@ func (w *indexWriter) rotate() error {
 // the supplied batch.
 //
 // This function is safe to be called multiple times.
-func (w *indexWriter) finish(batch ethdb.Batch) {
+func (w *indexWriter) finish(batch ethdb.Batch, cache *fastcache.Cache) {
 	var (
 		writers  = append(w.frozen, w.bw)
 		descList = w.descList
@@ -284,8 +300,14 @@ func (w *indexWriter) finish(batch ethdb.Batch) {
 	}
 	if w.state.account {
 		rawdb.WriteAccountHistoryIndex(batch, w.state.addressHash, buf)
+		if cache != nil {
+			cache.Set(w.state.addressHash.Bytes(), buf)
+		}
 	} else {
 		rawdb.WriteStorageHistoryIndex(batch, w.state.addressHash, w.state.storageHash, buf)
+		if cache != nil {
+			cache.Set(append(w.state.addressHash[:], w.state.storageHash[:]...), buf)
+		}
 	}
 }
 
@@ -397,7 +419,7 @@ func (d *indexDeleter) pop(id uint64) error {
 // finish deletes the empty index blocks and updates the index meta.
 //
 // This function is safe to be called multiple times.
-func (d *indexDeleter) finish(batch ethdb.Batch) {
+func (d *indexDeleter) finish(batch ethdb.Batch, cache *fastcache.Cache) {
 	for _, id := range d.dropped {
 		if d.state.account {
 			rawdb.DeleteAccountHistoryIndexBlock(batch, d.state.addressHash, id)
@@ -419,8 +441,14 @@ func (d *indexDeleter) finish(batch ethdb.Batch) {
 	if d.empty() {
 		if d.state.account {
 			rawdb.DeleteAccountHistoryIndex(batch, d.state.addressHash)
+			if cache != nil {
+				cache.Del(d.state.addressHash.Bytes())
+			}
 		} else {
 			rawdb.DeleteStorageHistoryIndex(batch, d.state.addressHash, d.state.storageHash)
+			if cache != nil {
+				cache.Del(append(d.state.addressHash.Bytes(), d.state.storageHash.Bytes()...))
+			}
 		}
 	} else {
 		buf := make([]byte, 0, indexBlockDescSize*len(d.descList))
@@ -429,8 +457,14 @@ func (d *indexDeleter) finish(batch ethdb.Batch) {
 		}
 		if d.state.account {
 			rawdb.WriteAccountHistoryIndex(batch, d.state.addressHash, buf)
+			if cache != nil {
+				cache.Set(d.state.addressHash.Bytes(), buf)
+			}
 		} else {
 			rawdb.WriteStorageHistoryIndex(batch, d.state.addressHash, d.state.storageHash, buf)
+			if cache != nil {
+				cache.Set(append(d.state.addressHash.Bytes(), d.state.storageHash.Bytes()...), buf)
+			}
 		}
 	}
 }

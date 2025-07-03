@@ -24,6 +24,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -122,13 +123,13 @@ type indexReaderWithLimitTag struct {
 }
 
 // newIndexReaderWithLimitTag constructs a index reader with indexing position.
-func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent) (*indexReaderWithLimitTag, error) {
+func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, cache *fastcache.Cache) (*indexReaderWithLimitTag, error) {
 	// Read the last indexed ID before the index reader construction
 	metadata := loadIndexMetadata(db)
 	if metadata == nil {
 		return nil, errors.New("state history hasn't been indexed yet")
 	}
-	r, err := newIndexReader(db, state)
+	r, err := newIndexReader(db, state, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -191,14 +192,16 @@ type historyReader struct {
 	disk    ethdb.KeyValueReader
 	freezer ethdb.AncientReader
 	readers map[string]*indexReaderWithLimitTag
+	cache   *fastcache.Cache
 }
 
 // newHistoryReader constructs the history reader with the supplied db.
-func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *historyReader {
+func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader, cache *fastcache.Cache) *historyReader {
 	return &historyReader{
 		disk:    disk,
 		freezer: freezer,
 		readers: make(map[string]*indexReaderWithLimitTag),
+		cache:   cache,
 	}
 }
 
@@ -348,7 +351,7 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	// state retrieval
 	ir, ok := r.readers[state.String()]
 	if !ok {
-		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent)
+		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, r.cache)
 		if err != nil {
 			return nil, err
 		}
