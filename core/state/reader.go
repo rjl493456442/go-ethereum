@@ -18,6 +18,9 @@ package state
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -29,8 +32,6 @@ import (
 	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/database"
-	"sync"
-	"sync/atomic"
 )
 
 // ContractCodeReader defines the interface for accessing contract code.
@@ -403,9 +404,10 @@ type readerWithCache struct {
 	Reader // safe for concurrent read
 
 	// Previously resolved state entries.
-	accounts    map[common.Address]*types.StateAccount
-	accountLock sync.RWMutex
-
+	accountBuckets [16]struct {
+		lock     sync.RWMutex
+		accounts map[common.Address]*types.StateAccount
+	}
 	// List of storage buckets, each of which is thread-safe.
 	// This reader is typically used in scenarios requiring concurrent
 	// access to storage. Using multiple buckets helps mitigate
@@ -419,8 +421,10 @@ type readerWithCache struct {
 // newReaderWithCache constructs the reader with local cache.
 func newReaderWithCache(reader Reader) *readerWithCache {
 	r := &readerWithCache{
-		Reader:   reader,
-		accounts: make(map[common.Address]*types.StateAccount),
+		Reader: reader,
+	}
+	for i := range r.accountBuckets {
+		r.accountBuckets[i].accounts = make(map[common.Address]*types.StateAccount)
 	}
 	for i := range r.storageBuckets {
 		r.storageBuckets[i].storages = make(map[common.Address]map[common.Hash]common.Hash)
@@ -434,10 +438,12 @@ func newReaderWithCache(reader Reader) *readerWithCache {
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *readerWithCache) account(addr common.Address) (*types.StateAccount, bool, error) {
+	bucket := &r.accountBuckets[addr[0]&0x0f]
+
 	// Try to resolve the requested account in the local cache
-	r.accountLock.RLock()
-	acct, ok := r.accounts[addr]
-	r.accountLock.RUnlock()
+	bucket.lock.RLock()
+	acct, ok := bucket.accounts[addr]
+	bucket.lock.RUnlock()
 	if ok {
 		return acct, true, nil
 	}
@@ -446,9 +452,9 @@ func (r *readerWithCache) account(addr common.Address) (*types.StateAccount, boo
 	if err != nil {
 		return nil, false, err
 	}
-	r.accountLock.Lock()
-	r.accounts[addr] = acct
-	r.accountLock.Unlock()
+	bucket.lock.Lock()
+	bucket.accounts[addr] = acct
+	bucket.lock.Unlock()
 	return acct, false, nil
 }
 
