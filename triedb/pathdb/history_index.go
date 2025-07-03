@@ -90,6 +90,9 @@ func loadIndexData(db ethdb.KeyValueReader, state stateIdent, cache *fastcache.C
 		}
 		if !found {
 			blob = rawdb.ReadAccountHistoryIndex(db, state.addressHash)
+			if cache != nil && len(blob) > 0 {
+				cache.Set(state.addressHash.Bytes(), blob)
+			}
 		}
 	} else {
 		if cache != nil {
@@ -97,6 +100,9 @@ func loadIndexData(db ethdb.KeyValueReader, state stateIdent, cache *fastcache.C
 		}
 		if !found {
 			blob = rawdb.ReadStorageHistoryIndex(db, state.addressHash, state.storageHash)
+			if cache != nil && len(blob) > 0 {
+				cache.Set(append(state.addressHash.Bytes(), state.storageHash.Bytes()...), blob)
+			}
 		}
 	}
 	if len(blob) == 0 {
