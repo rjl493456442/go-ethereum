@@ -111,6 +111,14 @@ func newPrevalueTracer() *prevalueTracer {
 	}
 }
 
+// get returns the cached RL-encode node blob if exists.
+func (t *prevalueTracer) get(path []byte) []byte {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	return t.data[string(path)]
+}
+
 // put tracks the newly loaded trie node and caches its RLP-encoded
 // blob internally. Do not modify the value outside this function,
 // as it is not deep-copied.
