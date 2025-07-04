@@ -77,7 +77,8 @@ func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash,
 	if err := ctx.nodes.Merge(result); err != nil {
 		return nil, err
 	}
-	return ctx.nodes.Flatten(), nil
+	nodes, _ := ctx.nodes.Flatten()
+	return nodes, nil
 }
 
 // updateAccount the account was present in prev-state, and may or may not

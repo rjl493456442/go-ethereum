@@ -105,7 +105,7 @@ type layer interface {
 	// the provided dirty trie nodes along with the state change set.
 	//
 	// Note, the maps are retained by the method to avoid copying everything.
-	update(root common.Hash, id uint64, block uint64, nodes *nodeSet, states *StateSetWithOrigin) *diffLayer
+	update(root common.Hash, id uint64, block uint64, nodes *nodeSetWithOrigin, states *StateSetWithOrigin) *diffLayer
 
 	// journal commits an entire diff hierarchy to disk into a single journal entry.
 	// This is meant to be used during shutdown to persist the layer without

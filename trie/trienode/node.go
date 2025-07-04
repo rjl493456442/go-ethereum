@@ -245,10 +245,14 @@ func (set *MergedNodeSet) Merge(other *NodeSet) error {
 }
 
 // Flatten returns a two-dimensional map for internal nodes.
-func (set *MergedNodeSet) Flatten() map[common.Hash]map[string]*Node {
-	nodes := make(map[common.Hash]map[string]*Node, len(set.Sets))
+func (set *MergedNodeSet) Flatten() (map[common.Hash]map[string]*Node, map[common.Hash]map[string][]byte) {
+	var (
+		nodes   = make(map[common.Hash]map[string]*Node, len(set.Sets))
+		origins = make(map[common.Hash]map[string][]byte, len(set.Sets))
+	)
 	for owner, set := range set.Sets {
 		nodes[owner] = set.Nodes
+		origins[owner] = set.Origins
 	}
-	return nodes
+	return nodes, origins
 }

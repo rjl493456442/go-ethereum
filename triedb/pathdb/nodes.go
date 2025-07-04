@@ -301,3 +301,149 @@ func (s *nodeSet) dbsize() int {
 	}
 	return m + int(s.size)
 }
+
+// nodeSetWithOrigin wraps the node set with additional original values of the
+// mutated trie nodes.
+type nodeSetWithOrigin struct {
+	*nodeSet
+
+	// accountNodeOrigin represents the account trie nodes before the state
+	// transition. It's keyed by the node path. The nil value means the trie
+	// node was not present before.
+	accountNodeOrigin map[string][]byte
+
+	// storageNodeOrigin represents the storage trie nodes before the state
+	// transition, It's keyed by the account address hash and node path. The
+	// nil value means the trie node was not present.
+	storageNodeOrigin map[common.Hash]map[string][]byte
+
+	// memory size of the state data (accountNodeOrigin and storageNodeOrigin)
+	size uint64
+}
+
+// NewNodeSetWithOrigin constructs the state set with the provided data.
+func NewNodeSetWithOrigin(nodes map[common.Hash]map[string]*trienode.Node, origins map[common.Hash]map[string][]byte) *nodeSetWithOrigin {
+	// Don't panic for the lazy callers, initialize the nil maps instead.
+	if origins == nil {
+		origins = make(map[common.Hash]map[string][]byte)
+	}
+	// Count the memory size occupied by the set. Note that each slot key here
+	// uses 2*common.HashLength to keep consistent with the calculation method
+	// of stateSet.
+	var (
+		size              int
+		accountNodeOrigin = make(map[string][]byte)
+		storageNodeOrigin = make(map[common.Hash]map[string][]byte)
+	)
+	for owner, subset := range origins {
+		if owner == (common.Hash{}) {
+			accountNodeOrigin = subset
+		} else {
+			storageNodeOrigin[owner] = subset
+		}
+	}
+	for _, data := range accountNodeOrigin {
+		size += common.HashLength + len(data)
+	}
+	for _, slots := range storageNodeOrigin {
+		for _, data := range slots {
+			size += 2*common.HashLength + len(data)
+		}
+	}
+	set := &nodeSetWithOrigin{
+		nodeSet:           newNodeSet(nodes),
+		accountNodeOrigin: accountNodeOrigin,
+		storageNodeOrigin: storageNodeOrigin,
+	}
+	set.computeSize()
+	return set
+}
+
+// computeSize calculates the database size of the held trie nodes.
+func (s *nodeSetWithOrigin) computeSize() {
+	var size int
+	for _, data := range s.accountNodeOrigin {
+		size += common.HashLength + len(data)
+	}
+	for _, slots := range s.storageNodeOrigin {
+		for _, data := range slots {
+			size += 2*common.HashLength + len(data)
+		}
+	}
+	s.size = s.nodeSet.size + uint64(size)
+}
+
+// encode serializes the content of node set into the provided writer.
+func (s *nodeSetWithOrigin) encode(w io.Writer) error {
+	// Encode node set
+	if err := s.nodeSet.encode(w); err != nil {
+		return err
+	}
+	nodes := make([]journalNodes, 0, len(s.storageNodes)+1)
+
+	// Encode account nodes
+	if len(s.accountNodeOrigin) > 0 {
+		entry := journalNodes{Owner: common.Hash{}}
+		for path, node := range s.accountNodeOrigin {
+			entry.Nodes = append(entry.Nodes, journalNode{
+				Path: []byte(path),
+				Blob: node,
+			})
+		}
+		nodes = append(nodes, entry)
+	}
+	// Encode storage nodes
+	for owner, subset := range s.storageNodeOrigin {
+		entry := journalNodes{Owner: owner}
+		for path, node := range subset {
+			entry.Nodes = append(entry.Nodes, journalNode{
+				Path: []byte(path),
+				Blob: node,
+			})
+		}
+		nodes = append(nodes, entry)
+	}
+	return rlp.Encode(w, nodes)
+}
+
+// decode deserializes the content from the rlp stream into the node set.
+func (s *nodeSetWithOrigin) decode(r *rlp.Stream) error {
+	if s.nodeSet == nil {
+		s.nodeSet = &nodeSet{}
+	}
+	if err := s.nodeSet.decode(r); err != nil {
+		return err
+	}
+	var encoded []journalNodes
+	if err := r.Decode(&encoded); err != nil {
+		return fmt.Errorf("load nodes: %v", err)
+	}
+	s.accountNodeOrigin = make(map[string][]byte)
+	s.storageNodeOrigin = make(map[common.Hash]map[string][]byte)
+
+	for _, entry := range encoded {
+		if entry.Owner == (common.Hash{}) {
+			// Account nodes
+			for _, n := range entry.Nodes {
+				if len(n.Blob) > 0 {
+					s.accountNodeOrigin[string(n.Path)] = n.Blob
+				} else {
+					s.accountNodeOrigin[string(n.Path)] = nil
+				}
+			}
+		} else {
+			// Storage nodes
+			subset := make(map[string][]byte)
+			for _, n := range entry.Nodes {
+				if len(n.Blob) > 0 {
+					subset[string(n.Path)] = n.Blob
+				} else {
+					subset[string(n.Path)] = nil
+				}
+			}
+			s.storageNodeOrigin[entry.Owner] = subset
+		}
+	}
+	s.computeSize()
+	return nil
+}
