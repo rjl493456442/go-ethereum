@@ -449,7 +449,7 @@ func verifyAccessList(old *Trie, new *Trie, set *trienode.NodeSet) error {
 		if !ok || n.IsDeleted() {
 			return errors.New("expect new node")
 		}
-		if len(n.Prev) > 0 {
+		if len(set.Origins[path]) > 0 {
 			return errors.New("unexpected origin value")
 		}
 	}
@@ -459,10 +459,10 @@ func verifyAccessList(old *Trie, new *Trie, set *trienode.NodeSet) error {
 		if !ok || !n.IsDeleted() {
 			return errors.New("expect deleted node")
 		}
-		if len(n.Prev) == 0 {
+		if len(set.Origins[path]) == 0 {
 			return errors.New("expect origin value")
 		}
-		if !bytes.Equal(n.Prev, blob) {
+		if !bytes.Equal(set.Origins[path], blob) {
 			return errors.New("invalid origin value")
 		}
 	}
@@ -472,10 +472,10 @@ func verifyAccessList(old *Trie, new *Trie, set *trienode.NodeSet) error {
 		if !ok || n.IsDeleted() {
 			return errors.New("expect updated node")
 		}
-		if len(n.Prev) == 0 {
+		if len(set.Origins[path]) == 0 {
 			return errors.New("expect origin value")
 		}
-		if !bytes.Equal(n.Prev, blob) {
+		if !bytes.Equal(set.Origins[path], blob) {
 			return errors.New("invalid origin value")
 		}
 	}

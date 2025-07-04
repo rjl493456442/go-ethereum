@@ -53,9 +53,9 @@ func benchmarkMerge(b *testing.B, count int) {
 	for i := 0; i < b.N; i++ {
 		// Store set x into a backup
 		z := NewNodeSet(common.Hash{})
-		z.Merge(common.Hash{}, x.Nodes)
+		z.Merge(common.Hash{}, x.Nodes, x.Origins)
 		// Merge y into x
-		x.Merge(common.Hash{}, y.Nodes)
+		x.Merge(common.Hash{}, y.Nodes, y.Origins)
 		x = z
 	}
 }
