@@ -80,6 +80,10 @@ var (
 	// been indexed.
 	headStateHistoryIndexKey = []byte("LastStateHistoryIndex")
 
+	// headTrienodeHistoryIndexKey tracks the ID of the latest state history that has
+	// been indexed.
+	headTrienodeHistoryIndexKey = []byte("LastTrienodeHistoryIndex")
+
 	// txIndexTailKey tracks the oldest block whose transactions have been indexed.
 	txIndexTailKey = []byte("TransactionIndexTail")
 
@@ -125,8 +129,10 @@ var (
 	StateHistoryIndexPrefix           = []byte("m")   // The global prefix of state history index data
 	StateHistoryAccountMetadataPrefix = []byte("ma")  // StateHistoryAccountMetadataPrefix + account address hash => account metadata
 	StateHistoryStorageMetadataPrefix = []byte("ms")  // StateHistoryStorageMetadataPrefix + account address hash + storage slot hash => slot metadata
+	TrienodeHistoryMetadataPrefix     = []byte("mt")  // TrienodeHistoryMetadataPrefix + account address hash + trienode path => trienode metadata
 	StateHistoryAccountBlockPrefix    = []byte("mba") // StateHistoryAccountBlockPrefix + account address hash + blockID => account block
 	StateHistoryStorageBlockPrefix    = []byte("mbs") // StateHistoryStorageBlockPrefix + account address hash + storage slot hash + blockID => slot block
+	TrienodeHistoryBlockPrefix        = []byte("mbt") // TrienodeHistoryBlockPrefix + account address hash + trienode path + blockID => trienode block
 
 	// VerklePrefix is the database prefix for Verkle trie data, which includes:
 	// (a) Trie nodes
@@ -384,6 +390,11 @@ func storageHistoryIndexKey(addressHash common.Hash, storageHash common.Hash) []
 	return append(append(StateHistoryStorageMetadataPrefix, addressHash.Bytes()...), storageHash.Bytes()...)
 }
 
+// trienodeHistoryIndexKey = TrienodeHistoryMetadataPrefix + addressHash + trienode path
+func trienodeHistoryIndexKey(addressHash common.Hash, path []byte) []byte {
+	return append(append(TrienodeHistoryMetadataPrefix, addressHash.Bytes()...), path...)
+}
+
 // accountHistoryIndexBlockKey = StateHistoryAccountBlockPrefix + addressHash + blockID
 func accountHistoryIndexBlockKey(addressHash common.Hash, blockID uint32) []byte {
 	var buf [4]byte
@@ -396,4 +407,11 @@ func storageHistoryIndexBlockKey(addressHash common.Hash, storageHash common.Has
 	var buf [4]byte
 	binary.BigEndian.PutUint32(buf[:], blockID)
 	return append(append(append(StateHistoryStorageBlockPrefix, addressHash.Bytes()...), storageHash.Bytes()...), buf[:]...)
+}
+
+// trienodeHistoryIndexBlockKey = StateHistoryStorageBlockPrefix + addressHash + trienode path + blockID
+func trienodeHistoryIndexBlockKey(addressHash common.Hash, path []byte, blockID uint32) []byte {
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], blockID)
+	return append(append(append(TrienodeHistoryBlockPrefix, addressHash.Bytes()...), path...), buf[:]...)
 }

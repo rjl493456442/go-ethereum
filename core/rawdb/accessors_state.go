@@ -299,3 +299,28 @@ func WriteStateHistory(db ethdb.AncientWriter, id uint64, meta []byte, accountIn
 	})
 	return err
 }
+
+// ReadTrienodeHistory retrieves the trienode history corresponding to the specified id.
+// Compute the position of trienode history in freezer by minus one since the id of first
+// trienode history starts from one(zero for initial state).
+func ReadTrienodeHistory(db ethdb.AncientReaderOp, id uint64) ([]byte, error) {
+	return db.Ancient(trienodeHistoryTable, id-1)
+}
+
+// ReadTrienodeHistoryList retrieves the a list of trienode history corresponding
+// to the specified range.
+// Compute the position of trienode history in freezer by minus one since the id
+// of first trienode history starts from one(zero for initial state).
+func ReadTrienodeHistoryList(db ethdb.AncientReaderOp, start uint64, count uint64) ([][]byte, error) {
+	return db.AncientRange(trienodeHistoryTable, start-1, count, 0)
+}
+
+// WriteTrienodeHistory writes the provided trienode history to database.
+// Compute the position of trienode history in freezer by minus one since
+// the id of first state history starts from one(zero for initial state).
+func WriteTrienodeHistory(db ethdb.AncientWriter, id uint64, data []byte) error {
+	_, err := db.ModifyAncients(func(op ethdb.AncientWriteOp) error {
+		return op.AppendRaw(trienodeHistoryTable, id-1, data)
+	})
+	return err
+}

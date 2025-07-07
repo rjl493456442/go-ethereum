@@ -413,7 +413,8 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		filterMapBlockLV   stat
 
 		// Path-mode archive data
-		stateIndex stat
+		stateIndex    stat
+		trienodeIndex stat
 
 		// Verkle statistics
 		verkleTries        stat
@@ -492,9 +493,21 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		case bytes.HasPrefix(key, bloomBitsMetaPrefix) && len(key) < len(bloomBitsMetaPrefix)+8:
 			bloomBits.Add(size)
 
-		// Path-based historic state indexes
-		case bytes.HasPrefix(key, StateHistoryIndexPrefix) && len(key) >= len(StateHistoryIndexPrefix)+common.HashLength:
+		// Path-based historical state indexes
+		case bytes.HasPrefix(key, StateHistoryAccountMetadataPrefix) && len(key) == len(StateHistoryAccountMetadataPrefix)+common.HashLength:
 			stateIndex.Add(size)
+		case bytes.HasPrefix(key, StateHistoryStorageMetadataPrefix) && len(key) == len(StateHistoryStorageMetadataPrefix)+2*common.HashLength:
+			stateIndex.Add(size)
+		case bytes.HasPrefix(key, StateHistoryAccountBlockPrefix) && len(key) == len(StateHistoryAccountBlockPrefix)+common.HashLength+4:
+			stateIndex.Add(size)
+		case bytes.HasPrefix(key, StateHistoryStorageBlockPrefix) && len(key) == len(StateHistoryStorageBlockPrefix)+2*common.HashLength+4:
+			stateIndex.Add(size)
+
+		// Path-based historical trienode indexes
+		case bytes.HasPrefix(key, TrienodeHistoryMetadataPrefix) && len(key) >= len(TrienodeHistoryMetadataPrefix)+common.HashLength:
+			trienodeIndex.Add(size)
+		case bytes.HasPrefix(key, TrienodeHistoryBlockPrefix) && len(key) >= len(TrienodeHistoryBlockPrefix)+common.HashLength+4:
+			trienodeIndex.Add(size)
 
 		// Verkle trie data is detected, determine the sub-category
 		case bytes.HasPrefix(key, VerklePrefix):
@@ -552,6 +565,7 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		{"Key-Value store", "Path trie account nodes", accountTries.Size(), accountTries.Count()},
 		{"Key-Value store", "Path trie storage nodes", storageTries.Size(), storageTries.Count()},
 		{"Key-Value store", "Path state history indexes", stateIndex.Size(), stateIndex.Count()},
+		{"Key-Value store", "Path trie history indexes", trienodeIndex.Size(), trienodeIndex.Count()},
 		{"Key-Value store", "Verkle trie nodes", verkleTries.Size(), verkleTries.Count()},
 		{"Key-Value store", "Verkle trie state lookups", verkleStateLookups.Size(), verkleStateLookups.Count()},
 		{"Key-Value store", "Trie preimages", preimages.Size(), preimages.Count()},
@@ -599,7 +613,7 @@ var knownMetadataKeys = [][]byte{
 	snapshotGeneratorKey, snapshotRecoveryKey, txIndexTailKey, fastTxLookupLimitKey,
 	uncleanShutdownKey, badBlockKey, transitionStatusKey, skeletonSyncStatusKey,
 	persistentStateIDKey, trieJournalKey, snapshotSyncStatusKey, snapSyncStatusFlagKey,
-	filterMapsRangeKey, headStateHistoryIndexKey,
+	filterMapsRangeKey, headStateHistoryIndexKey, headTrienodeHistoryIndexKey,
 }
 
 // printChainMetadata prints out chain metadata to stderr.

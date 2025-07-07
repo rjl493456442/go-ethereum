@@ -49,36 +49,36 @@ func randomStateSet(n int) (map[common.Address][]byte, map[common.Address]map[co
 	return accounts, storages
 }
 
-func makeHistory(rawStorageKey bool) *history {
+func makeStateHistory(rawStorageKey bool) *stateHistory {
 	accounts, storages := randomStateSet(3)
-	return newHistory(testrand.Hash(), types.EmptyRootHash, 0, accounts, storages, rawStorageKey)
+	return newStateHistory(testrand.Hash(), types.EmptyRootHash, 0, accounts, storages, rawStorageKey)
 }
 
-func makeHistories(n int) []*history {
+func makeStateHistories(n int) []*stateHistory {
 	var (
 		parent = types.EmptyRootHash
-		result []*history
+		result []*stateHistory
 	)
 	for i := 0; i < n; i++ {
 		root := testrand.Hash()
 		accounts, storages := randomStateSet(3)
-		h := newHistory(root, parent, uint64(i), accounts, storages, false)
+		h := newStateHistory(root, parent, uint64(i), accounts, storages, false)
 		parent = root
 		result = append(result, h)
 	}
 	return result
 }
 
-func TestEncodeDecodeHistory(t *testing.T) {
-	testEncodeDecodeHistory(t, false)
-	testEncodeDecodeHistory(t, true)
+func TestEncodeDecodeStateHistory(t *testing.T) {
+	testEncodeDecodeStateHistory(t, false)
+	testEncodeDecodeStateHistory(t, true)
 }
 
-func testEncodeDecodeHistory(t *testing.T, rawStorageKey bool) {
+func testEncodeDecodeStateHistory(t *testing.T, rawStorageKey bool) {
 	var (
 		m   meta
-		dec history
-		obj = makeHistory(rawStorageKey)
+		dec stateHistory
+		obj = makeStateHistory(rawStorageKey)
 	)
 	// check if meta data can be correctly encode/decode
 	blob := obj.meta.encode()
@@ -97,13 +97,13 @@ func testEncodeDecodeHistory(t *testing.T, rawStorageKey bool) {
 	if !compareSet(dec.accounts, obj.accounts) {
 		t.Fatal("account data is mismatched")
 	}
-	if !compareStorages(dec.storages, obj.storages) {
+	if !compareMapSet(dec.storages, obj.storages) {
 		t.Fatal("storage data is mismatched")
 	}
 	if !compareList(dec.accountList, obj.accountList) {
 		t.Fatal("account list is mismatched")
 	}
-	if !compareStorageList(dec.storageList, obj.storageList) {
+	if !compareMapList(dec.storageList, obj.storageList) {
 		t.Fatal("storage list is mismatched")
 	}
 }
@@ -130,10 +130,10 @@ func checkHistoriesInRange(t *testing.T, db ethdb.KeyValueReader, freezer ethdb.
 	}
 }
 
-func TestTruncateHeadHistory(t *testing.T) {
+func TestTruncateHeadStateHistory(t *testing.T) {
 	var (
 		roots      []common.Hash
-		hs         = makeHistories(10)
+		hs         = makeStateHistories(10)
 		db         = rawdb.NewMemoryDatabase()
 		freezer, _ = rawdb.NewStateFreezer(t.TempDir(), false, false)
 	)
@@ -146,7 +146,7 @@ func TestTruncateHeadHistory(t *testing.T) {
 		roots = append(roots, hs[i].meta.root)
 	}
 	for size := len(hs); size > 0; size-- {
-		pruned, err := truncateFromHead(db, freezer, uint64(size-1))
+		pruned, err := truncateFromHead(freezer, "state", uint64(size-1))
 		if err != nil {
 			t.Fatalf("Failed to truncate from head %v", err)
 		}
@@ -158,10 +158,10 @@ func TestTruncateHeadHistory(t *testing.T) {
 	}
 }
 
-func TestTruncateTailHistory(t *testing.T) {
+func TestTruncateTailStateHistory(t *testing.T) {
 	var (
 		roots      []common.Hash
-		hs         = makeHistories(10)
+		hs         = makeStateHistories(10)
 		db         = rawdb.NewMemoryDatabase()
 		freezer, _ = rawdb.NewStateFreezer(t.TempDir(), false, false)
 	)
@@ -174,7 +174,7 @@ func TestTruncateTailHistory(t *testing.T) {
 		roots = append(roots, hs[i].meta.root)
 	}
 	for newTail := 1; newTail < len(hs); newTail++ {
-		pruned, _ := truncateFromTail(db, freezer, uint64(newTail))
+		pruned, _ := truncateFromTail(freezer, "state", uint64(newTail))
 		if pruned != 1 {
 			t.Error("Unexpected pruned items", "want", 1, "got", pruned)
 		}
@@ -183,7 +183,7 @@ func TestTruncateTailHistory(t *testing.T) {
 	}
 }
 
-func TestTruncateTailHistories(t *testing.T) {
+func TestTruncateTailStateHistories(t *testing.T) {
 	var cases = []struct {
 		limit       uint64
 		expPruned   int
@@ -204,7 +204,7 @@ func TestTruncateTailHistories(t *testing.T) {
 	for i, c := range cases {
 		var (
 			roots      []common.Hash
-			hs         = makeHistories(10)
+			hs         = makeStateHistories(10)
 			db         = rawdb.NewMemoryDatabase()
 			freezer, _ = rawdb.NewStateFreezer(t.TempDir()+fmt.Sprintf("%d", i), false, false)
 		)
@@ -216,7 +216,7 @@ func TestTruncateTailHistories(t *testing.T) {
 			rawdb.WriteStateID(db, hs[i].meta.root, uint64(i+1))
 			roots = append(roots, hs[i].meta.root)
 		}
-		pruned, _ := truncateFromTail(db, freezer, uint64(10)-c.limit)
+		pruned, _ := truncateFromTail(freezer, "state", uint64(10)-c.limit)
 		if pruned != c.expPruned {
 			t.Error("Unexpected pruned items", "want", c.expPruned, "got", pruned)
 		}
@@ -232,7 +232,7 @@ func TestTruncateTailHistories(t *testing.T) {
 
 func TestTruncateOutOfRange(t *testing.T) {
 	var (
-		hs         = makeHistories(10)
+		hs         = makeStateHistories(10)
 		db         = rawdb.NewMemoryDatabase()
 		freezer, _ = rawdb.NewStateFreezer(t.TempDir(), false, false)
 	)
@@ -243,7 +243,7 @@ func TestTruncateOutOfRange(t *testing.T) {
 		rawdb.WriteStateHistory(freezer, uint64(i+1), hs[i].meta.encode(), accountIndex, storageIndex, accountData, storageData)
 		rawdb.WriteStateID(db, hs[i].meta.root, uint64(i+1))
 	}
-	truncateFromTail(db, freezer, uint64(len(hs)/2))
+	truncateFromTail(freezer, "state", uint64(len(hs)/2))
 
 	// Ensure of-out-range truncations are rejected correctly.
 	head, _ := freezer.Ancients()
@@ -264,9 +264,9 @@ func TestTruncateOutOfRange(t *testing.T) {
 	for _, c := range cases {
 		var gotErr error
 		if c.mode == 0 {
-			_, gotErr = truncateFromHead(db, freezer, c.target)
+			_, gotErr = truncateFromHead(freezer, "state", c.target)
 		} else {
-			_, gotErr = truncateFromTail(db, freezer, c.target)
+			_, gotErr = truncateFromTail(freezer, "state", c.target)
 		}
 		if !reflect.DeepEqual(gotErr, c.expErr) {
 			t.Errorf("Unexpected error, want: %v, got: %v", c.expErr, gotErr)
@@ -302,32 +302,32 @@ func compareList[k comparable](a, b []k) bool {
 	return true
 }
 
-func compareStorages(a, b map[common.Address]map[common.Hash][]byte) bool {
+func compareMapSet[K1 comparable, K2 comparable](a, b map[K1]map[K2][]byte) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for h, subA := range a {
-		subB, ok := b[h]
+	for key, subsetA := range a {
+		subsetB, ok := b[key]
 		if !ok {
 			return false
 		}
-		if !compareSet(subA, subB) {
+		if !compareSet(subsetA, subsetB) {
 			return false
 		}
 	}
 	return true
 }
 
-func compareStorageList(a, b map[common.Address][]common.Hash) bool {
+func compareMapList[K comparable, V comparable](a, b map[K][]V) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for h, la := range a {
-		lb, ok := b[h]
+	for key, listA := range a {
+		listB, ok := b[key]
 		if !ok {
 			return false
 		}
-		if !compareList(la, lb) {
+		if !compareList(listA, listB) {
 			return false
 		}
 	}

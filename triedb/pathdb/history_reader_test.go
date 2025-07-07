@@ -28,7 +28,7 @@ import (
 
 func waitIndexing(db *Database) {
 	for {
-		metadata := loadIndexMetadata(db.diskdb)
+		metadata := loadIndexMetadata(db.diskdb, typeStateHistory)
 		if metadata != nil && metadata.Last >= db.tree.bottom().stateID() {
 			return
 		}
@@ -133,7 +133,7 @@ func testHistoryReader(t *testing.T, historyLimit uint64) {
 	var (
 		roots = env.roots
 		dRoot = env.db.tree.bottom().rootHash()
-		hr    = newHistoryReader(env.db.diskdb, env.db.freezer)
+		hr    = newHistoryReader(env.db.diskdb, env.db.stateFreezer)
 	)
 	for _, root := range roots {
 		if root == dRoot {
