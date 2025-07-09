@@ -1418,6 +1418,7 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 			return 0, err
 		}
 		size += writeSize
+		log.Info("Written ancient blocks", "number", blockChain[len(blockChain)-1].NumberU64())
 
 		// Sync the ancient store explicitly to ensure all data has been flushed to disk.
 		if err := bc.db.SyncAncient(); err != nil {

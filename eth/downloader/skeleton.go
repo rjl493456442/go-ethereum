@@ -1111,7 +1111,7 @@ func (s *skeleton) processResponse(res *headerResponse) (linked bool, merged boo
 			log.Info("Beacon sync starting", "left", left)
 		} else {
 			eta := float64(time.Since(s.started)) / float64(s.pulled) * float64(left)
-			log.Info("Syncing beacon headers", "downloaded", s.pulled, "left", left, "eta", common.PrettyDuration(eta))
+			log.Info("Syncing beacon headers", "downloaded", s.pulled, "left", left, "eta", common.PrettyDuration(eta), "linked", linked, "merged", merged)
 		}
 	}
 	return linked, merged

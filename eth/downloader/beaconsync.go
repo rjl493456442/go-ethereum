@@ -82,6 +82,7 @@ func (b *beaconBackfiller) suspend() *types.Header {
 
 // resume starts the downloader threads for backfilling state and chain data.
 func (b *beaconBackfiller) resume() {
+	log.Info("Resuming beacon sync")
 	b.lock.Lock()
 	if b.filling {
 		// If a previous filling cycle is still running, just ignore this start

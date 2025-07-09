@@ -362,6 +362,7 @@ func (d *Downloader) synchronise(mode SyncMode, beaconPing chan struct{}) error 
 		// subsequent state reads, explicitly disable the trie database and state
 		// syncer is responsible to address and correct any state missing.
 		if d.blockchain.TrieDB().Scheme() == rawdb.PathScheme {
+			log.Info("Try to disable trie database")
 			if err := d.blockchain.TrieDB().Disable(); err != nil {
 				return err
 			}
@@ -425,7 +426,7 @@ func (d *Downloader) syncToHead() (err error) {
 	}()
 	mode := d.getMode()
 
-	log.Debug("Backfilling with the network", "mode", mode)
+	log.Info("Backfilling with the network", "mode", mode)
 	defer func(start time.Time) {
 		log.Debug("Synchronisation terminated", "elapsed", common.PrettyDuration(time.Since(start)))
 	}(time.Now())
@@ -474,6 +475,7 @@ func (d *Downloader) syncToHead() (err error) {
 	if err != nil {
 		return err
 	}
+	log.Info("Common ancestor", "number", origin)
 	d.syncStatsLock.Lock()
 	if d.syncStatsChainHeight <= origin || d.syncStatsChainOrigin > origin {
 		d.syncStatsChainOrigin = origin
@@ -525,6 +527,7 @@ func (d *Downloader) syncToHead() (err error) {
 		} else {
 			d.ancientLimit = 0
 		}
+		log.Info("Find ancient limit", "number", d.ancientLimit)
 		// Extend the ancient chain segment range if the ancient limit is even
 		// below the pre-configured chain cutoff.
 		if d.chainCutoffNumber != 0 && d.chainCutoffNumber > d.ancientLimit {
@@ -532,6 +535,7 @@ func (d *Downloader) syncToHead() (err error) {
 			log.Info("Extend the ancient range with configured cutoff", "cutoff", d.chainCutoffNumber)
 		}
 		frozen, _ := d.stateDB.Ancients() // Ignore the error here since light client can also hit here.
+		log.Info("Find ancient frozen", "frozen", frozen)
 
 		// If a part of blockchain data has already been written into active store,
 		// disable the ancient style insertion explicitly.
@@ -539,7 +543,7 @@ func (d *Downloader) syncToHead() (err error) {
 			d.ancientLimit = 0
 			log.Info("Disabling direct-ancient mode", "origin", origin, "ancient", frozen-1)
 		} else if d.ancientLimit > 0 {
-			log.Debug("Enabling direct-ancient mode", "ancient", d.ancientLimit)
+			log.Info("Enabling direct-ancient mode", "ancient", d.ancientLimit)
 		}
 		// Rewind the ancient store and blockchain if reorg happens.
 		if origin+1 < frozen {
