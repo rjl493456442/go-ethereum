@@ -827,11 +827,28 @@ func (db *Database) HistoryRange() (uint64, uint64, error) {
 
 // IndexProgress returns the indexing progress made so far. It provides the
 // number of states that remain unindexed.
-func (db *Database) IndexProgress() (uint64, error) {
-	if db.stateIndexer == nil {
-		return 0, nil
+func (db *Database) IndexProgress() (uint64, uint64, error) {
+	if db.stateIndexer == nil && db.trienodeIndexer == nil {
+		return 0, 0, nil
 	}
-	return db.stateIndexer.progress()
+	var (
+		err            error
+		stateRemain    uint64
+		trienodeRemain uint64
+	)
+	if db.stateIndexer != nil {
+		stateRemain, err = db.stateIndexer.progress()
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if db.trienodeIndexer != nil {
+		trienodeRemain, err = db.trienodeIndexer.progress()
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	return stateRemain, trienodeRemain, nil
 }
 
 // AccountIterator creates a new account iterator for the specified root hash and

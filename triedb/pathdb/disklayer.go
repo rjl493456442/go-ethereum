@@ -502,6 +502,11 @@ func (dl *diskLayer) revert(h *stateHistory) (*diskLayer, error) {
 			return nil, err
 		}
 	}
+	if dl.db.trienodeIndexer != nil {
+		if err := dl.db.trienodeIndexer.shorten(dl.id); err != nil {
+			return nil, err
+		}
+	}
 	// State change may be applied to node buffer, or the persistent
 	// state, depends on if node buffer is empty or not. If the node
 	// buffer is not empty, it means that the state transition that

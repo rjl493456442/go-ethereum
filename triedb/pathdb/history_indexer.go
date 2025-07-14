@@ -99,6 +99,7 @@ func storeIndexMetadata(db ethdb.KeyValueWriter, typ historyType, last uint64) {
 	default:
 		panic(fmt.Errorf("unknown history type %d", typ))
 	}
+	log.Debug("Written index metadata", "type", typ, "last", last)
 }
 
 // deleteIndexMetadata deletes the metadata of the specific history index.
@@ -111,6 +112,7 @@ func deleteIndexMetadata(db ethdb.KeyValueWriter, typ historyType) {
 	default:
 		panic(fmt.Errorf("unknown history type %d", typ))
 	}
+	log.Debug("Deleted index metadata", "type", typ)
 }
 
 // batchIndexer is responsible for performing batch indexing or unindexing
@@ -139,6 +141,7 @@ func newBatchIndexer(db ethdb.KeyValueStore, delete bool, typ historyType) *batc
 func (b *batchIndexer) process(h history, id uint64) error {
 	for ident := range h.forEach() {
 		b.index[ident] = append(b.index[ident], id)
+		b.pending++
 	}
 	b.lastID = id
 
@@ -210,7 +213,7 @@ func (b *batchIndexer) finish(force bool) error {
 	if err := batch.Write(); err != nil {
 		return err
 	}
-	log.Debug("Committed batch indexer", "entries", len(b.index), "records", b.pending, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Debug("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "elapsed", common.PrettyDuration(time.Since(start)))
 	b.pending = 0
 	b.index = make(map[stateIdent][]uint64)
 	return nil
@@ -421,7 +424,7 @@ func (i *indexIniter) run(lastID uint64) {
 			if signal.newLastID == lastID+1 {
 				lastID = signal.newLastID
 				signal.result <- nil
-				i.log.Debug("Extended state history range", "last", lastID)
+				i.log.Debug("Extended history range", "last", lastID)
 				continue
 			}
 			// The index limit is shortened by one, interrupt the current background
@@ -439,19 +442,19 @@ func (i *indexIniter) run(lastID uint64) {
 				}
 				close(i.done)
 				signal.result <- nil
-				i.log.Info("State histories have been fully indexed", "last", lastID-1)
+				i.log.Info("Histories have been fully indexed", "last", lastID-1)
 				return
 			}
 			// Adjust the indexing target and relaunch the process
 			lastID = signal.newLastID
 			done, interrupt = make(chan struct{}), new(atomic.Int32)
 			go i.index(done, interrupt, lastID)
-			i.log.Debug("Shortened state history range", "last", lastID)
+			i.log.Debug("Shortened history range", "last", lastID)
 
 		case <-done:
 			if checkDone() {
 				close(i.done)
-				i.log.Info("State histories have been fully indexed", "last", lastID)
+				i.log.Info("Histories have been fully indexed", "last", lastID)
 				return
 			}
 			// Relaunch the background runner if some tasks are left
@@ -530,8 +533,8 @@ func (i *indexIniter) index(done chan struct{}, interrupt *atomic.Int32, lastID 
 
 	var (
 		current = beginID
-		logged  time.Time
 		start   = time.Now()
+		logged  = time.Now()
 		batch   = newBatchIndexer(i.disk, false, i.typ)
 	)
 	for current <= lastID {
@@ -648,7 +651,7 @@ func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
 	if err == nil {
 		version = fmt.Sprintf("%d", m.Version)
 	}
-	log.Info("Cleaned up obsolete state history index", "version", m.Version, "want", version)
+	log.Info("Cleaned up obsolete history index", "type", typ, "version", m.Version, "want", version)
 }
 
 // newHistoryIndexer constructs the history indexer and launches the background

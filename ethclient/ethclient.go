@@ -790,6 +790,7 @@ type rpcProgress struct {
 	TxIndexFinishedBlocks  hexutil.Uint64
 	TxIndexRemainingBlocks hexutil.Uint64
 	StateIndexRemaining    hexutil.Uint64
+	TirnodeIndexRemaining  hexutil.Uint64
 }
 
 func (p *rpcProgress) toSyncProgress() *ethereum.SyncProgress {
@@ -817,5 +818,6 @@ func (p *rpcProgress) toSyncProgress() *ethereum.SyncProgress {
 		TxIndexFinishedBlocks:  uint64(p.TxIndexFinishedBlocks),
 		TxIndexRemainingBlocks: uint64(p.TxIndexRemainingBlocks),
 		StateIndexRemaining:    uint64(p.StateIndexRemaining),
+		TrienodeIndexRemaining: uint64(p.TirnodeIndexRemaining),
 	}
 }
