@@ -29,7 +29,7 @@ func randomTrienodes(n int) map[common.Hash]map[string][]byte {
 	for i := 0; i < n; i++ {
 		owner := testrand.Hash()
 		nodes[owner] = make(map[string][]byte)
-		for j := 0; j < 2; j++ {
+		for j := 0; j < 10; j++ {
 			path := testrand.Bytes(10)
 			for z := 0; z < len(path); z++ {
 				nodes[owner][string(path[:z])] = testrand.Bytes(32)
@@ -40,7 +40,7 @@ func randomTrienodes(n int) map[common.Hash]map[string][]byte {
 }
 
 func makeTrinodeHistory() *trienodeHistory {
-	return newTrienodeHistory(randomTrienodes(1))
+	return newTrienodeHistory(randomTrienodes(10))
 }
 
 func TestEncodeDecodeTrienodeHistory(t *testing.T) {

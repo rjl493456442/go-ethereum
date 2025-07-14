@@ -30,7 +30,8 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		LogHistory              uint64 `toml:",omitempty"`
 		LogNoHistory            bool   `toml:",omitempty"`
 		LogExportCheckpoints    string
-		StateHistory            uint64                 `toml:",omitempty"`
+		StateHistory            int64                  `toml:",omitempty"`
+		TrienodeHistory         int64                  `toml:",omitempty"`
 		StateScheme             string                 `toml:",omitempty"`
 		RequiredBlocks          map[uint64]common.Hash `toml:"-"`
 		SkipBcVersionCheck      bool                   `toml:"-"`
@@ -72,6 +73,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.LogNoHistory = c.LogNoHistory
 	enc.LogExportCheckpoints = c.LogExportCheckpoints
 	enc.StateHistory = c.StateHistory
+	enc.TrienodeHistory = c.TrienodeHistory
 	enc.StateScheme = c.StateScheme
 	enc.RequiredBlocks = c.RequiredBlocks
 	enc.SkipBcVersionCheck = c.SkipBcVersionCheck
@@ -116,7 +118,8 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		LogHistory              *uint64 `toml:",omitempty"`
 		LogNoHistory            *bool   `toml:",omitempty"`
 		LogExportCheckpoints    *string
-		StateHistory            *uint64                `toml:",omitempty"`
+		StateHistory            *int64                 `toml:",omitempty"`
+		TrienodeHistory         *int64                 `toml:",omitempty"`
 		StateScheme             *string                `toml:",omitempty"`
 		RequiredBlocks          map[uint64]common.Hash `toml:"-"`
 		SkipBcVersionCheck      *bool                  `toml:"-"`
@@ -188,6 +191,9 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.StateHistory != nil {
 		c.StateHistory = *dec.StateHistory
+	}
+	if dec.TrienodeHistory != nil {
+		c.TrienodeHistory = *dec.TrienodeHistory
 	}
 	if dec.StateScheme != nil {
 		c.StateScheme = *dec.StateScheme

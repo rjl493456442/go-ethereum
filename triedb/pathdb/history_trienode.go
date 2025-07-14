@@ -34,10 +34,8 @@ import (
 
 // Header section:
 //
-//      + the number of tries           + the offset within the data slice
-//     /                               /
 //    +--------------------+---------------+-----------------+---------------+--------------+-----------------+
-//    |  counter (4 bytes) |  trie owner 1 | offset(4 bytes) |       ...     | trie owner n | offset(4 bytes) |
+//    | metadata (5 bytes) |  trie owner 1 | offset(4 bytes) |       ...     | trie owner n | offset(4 bytes) |
 //    +--------------------+---------------+-----------------+---------------+--------------------------------+
 //
 //
@@ -73,18 +71,20 @@ import (
 const (
 	trienodeHistoryV0           = uint8(0)              // initial version of node history structure
 	trienodeHistoryVersion      = trienodeHistoryV0     // the default node history version
-	trienodeHistoryHeaderSize   = 4 + common.HashLength // the size of a single header in node history
+	trienodeMetadataSize        = 5                     // the size of metadata in the history
+	trienodeTrieHeaderSize      = 4 + common.HashLength // the size of a single trie header in history
 	trienodeDataBlockRestartLen = 16                    // The restart interval length of trie node block
 )
 
-// trienodeHistory represents a trienode diff corresponding a state transition.
+// trienodeHistory represents a set of trie node changes resulting from a state
+// transition across the main account trie and all associated storage tries.
 type trienodeHistory struct {
-	nodes    map[common.Hash]map[string][]byte // Set of original value of trie nodes before state transition
 	owners   []common.Hash                     // List of trie identifier sorted lexicographically
-	nodeList map[common.Hash][]string          // Set of node paths  sorted lexicographically
+	nodeList map[common.Hash][]string          // Set of node paths sorted lexicographically
+	nodes    map[common.Hash]map[string][]byte // Set of original value of trie nodes before state transition
 }
 
-// newTrienodeHistory constructs a trienode history with the provided trienodes
+// newTrienodeHistory constructs a trienode history with the provided trie nodes.
 func newTrienodeHistory(nodes map[common.Hash]map[string][]byte) *trienodeHistory {
 	nodeList := make(map[common.Hash][]string)
 	for owner, subset := range nodes {
@@ -93,9 +93,9 @@ func newTrienodeHistory(nodes map[common.Hash]map[string][]byte) *trienodeHistor
 		nodeList[owner] = keys
 	}
 	return &trienodeHistory{
-		nodes:    nodes,
 		owners:   slices.SortedFunc(maps.Keys(nodes), common.Hash.Cmp),
 		nodeList: nodeList,
+		nodes:    nodes,
 	}
 }
 
@@ -132,14 +132,16 @@ func (h *trienodeHistory) forEach() iter.Seq[stateIdent] {
 	}
 }
 
+// encode serializes the contained trie nodes into bytes.
 func (h *trienodeHistory) encode() ([]byte, error) {
 	var (
+		buf           = make([]byte, 64)
 		headerSection bytes.Buffer
 		dataSection   bytes.Buffer
-		scratch       = make([]byte, 64)
 	)
 	binary.Write(&headerSection, binary.BigEndian, trienodeHistoryVersion) // 1 byte
 	binary.Write(&headerSection, binary.BigEndian, uint32(len(h.owners)))  // 4 bytes
+
 	for _, owner := range h.owners {
 		// Write the header of the trie in the header section
 		headerSection.Write(owner.Bytes())                                        // 32 bytes
@@ -151,20 +153,20 @@ func (h *trienodeHistory) encode() ([]byte, error) {
 			restarts  []uint32
 			prefixLen int
 		)
-		for i, p := range h.nodeList[owner] {
-			key := []byte(p)
+		for i, path := range h.nodeList[owner] {
+			key := []byte(path)
 			if i%trienodeDataBlockRestartLen == 0 {
 				restarts = append(restarts, uint32(dataSection.Len()))
 				prefixLen = 0
 			} else {
 				prefixLen = sharedLen(prevKey, key)
 			}
-			value := h.nodes[owner][p]
+			value := h.nodes[owner][path]
 
-			n := binary.PutUvarint(scratch[0:], uint64(prefixLen))
-			n += binary.PutUvarint(scratch[n:], uint64(len(key)-prefixLen))
-			n += binary.PutUvarint(scratch[n:], uint64(len(value)))
-			if _, err := dataSection.Write(scratch[:n]); err != nil {
+			n := binary.PutUvarint(buf[0:], uint64(prefixLen))
+			n += binary.PutUvarint(buf[n:], uint64(len(key)-prefixLen))
+			n += binary.PutUvarint(buf[n:], uint64(len(value)))
+			if _, err := dataSection.Write(buf[:n]); err != nil {
 				return nil, err
 			}
 			if _, err := dataSection.Write(key[prefixLen:]); err != nil {
@@ -179,8 +181,8 @@ func (h *trienodeHistory) encode() ([]byte, error) {
 		// Encode trailer
 		var trailer []byte
 		for _, number := range append(restarts, uint32(len(restarts))) {
-			binary.BigEndian.PutUint32(scratch[:4], number)
-			trailer = append(trailer, scratch[:4]...)
+			binary.BigEndian.PutUint32(buf[:4], number)
+			trailer = append(trailer, buf[:4]...)
 		}
 		if _, err := dataSection.Write(trailer); err != nil {
 			return nil, err
@@ -189,16 +191,17 @@ func (h *trienodeHistory) encode() ([]byte, error) {
 	return append(headerSection.Bytes(), dataSection.Bytes()...), nil
 }
 
+// decode deserializes the contained trie nodes from the provided bytes.
 func (h *trienodeHistory) decode(data []byte) error {
-	if len(data) < 5 {
+	if len(data) < trienodeMetadataSize {
 		return fmt.Errorf("trienode history is too small, size: %d", len(data))
 	}
 	version := data[0]
 	if version != trienodeHistoryVersion {
 		return fmt.Errorf("unregonized trienode history version: %d", version)
 	}
-	count := binary.BigEndian.Uint32(data[1:5])
-	if len(data) < 5+trienodeHistoryHeaderSize*int(count) {
+	count := binary.BigEndian.Uint32(data[1:trienodeMetadataSize])
+	if len(data) < trienodeMetadataSize+trienodeTrieHeaderSize*int(count) {
 		return fmt.Errorf("truncated trienode history data, size %d, count: %d", len(data), count)
 	}
 	// Decode headers (trie id and the associated offset)
@@ -208,7 +211,7 @@ func (h *trienodeHistory) decode(data []byte) error {
 		offsets = make([]uint32, 0, count)
 	)
 	for i := 0; i < int(count); i++ {
-		n := 5 + trienodeHistoryHeaderSize*i
+		n := trienodeMetadataSize + trienodeTrieHeaderSize*i
 		owner := common.BytesToHash(data[n : n+common.HashLength])
 		if i != 0 && bytes.Compare(owner.Bytes(), prev.Bytes()) <= 0 {
 			return fmt.Errorf("trienode owners are out of order, prev: %v, cur: %v", prev, owner)
@@ -216,7 +219,7 @@ func (h *trienodeHistory) decode(data []byte) error {
 		owners = append(owners, owner)
 		offsets = append(offsets, binary.BigEndian.Uint32(data[n+common.HashLength:n+common.HashLength+4]))
 	}
-	data = data[5+trienodeHistoryHeaderSize*int(count):]
+	data = data[trienodeMetadataSize+trienodeTrieHeaderSize*int(count):]
 
 	// Decode the trie data respectively
 	var (
@@ -230,10 +233,10 @@ func (h *trienodeHistory) decode(data []byte) error {
 		}
 		var (
 			paths    []string
-			subset   = make(map[string][]byte)
 			prevKey  []byte
 			items    int
 			restarts []uint32
+			subset   = make(map[string][]byte)
 		)
 		// Decode restarts
 		nRestarts := binary.BigEndian.Uint32(data[limit-4 : limit])
@@ -287,15 +290,14 @@ func (h *trienodeHistory) decode(data []byte) error {
 	return nil
 }
 
-// writeTrienodeHistory persists the trienode history associated with the given
-// diff layer.
+// writeTrienodeHistory persists the trienode history associated with the given diff layer.
 func writeTrienodeHistory(writer ethdb.AncientWriter, dl *diffLayer) error {
 	start := time.Now()
 	combined := maps.Clone(dl.nodes.storageNodeOrigin)
 	combined[common.Hash{}] = dl.nodes.accountNodeOrigin
 
-	history := newTrienodeHistory(combined)
-	data, err := history.encode()
+	h := newTrienodeHistory(combined)
+	data, err := h.encode()
 	if err != nil {
 		return err
 	}
@@ -309,6 +311,7 @@ func writeTrienodeHistory(writer ethdb.AncientWriter, dl *diffLayer) error {
 	return nil
 }
 
+// readTrienodeHistory resolves a single trienode history object with specific id.
 func readTrienodeHistory(reader ethdb.AncientReader, id uint64) (*trienodeHistory, error) {
 	data, err := rawdb.ReadTrienodeHistory(reader, id)
 	if err != nil {
@@ -321,6 +324,7 @@ func readTrienodeHistory(reader ethdb.AncientReader, id uint64) (*trienodeHistor
 	return &h, nil
 }
 
+// readTrienodeHistories resolves a list of trienode histories with the specific range.
 func readTrienodeHistories(reader ethdb.AncientReader, start uint64, count uint64) ([]history, error) {
 	list, err := rawdb.ReadTrienodeHistoryList(reader, start, count)
 	if err != nil {

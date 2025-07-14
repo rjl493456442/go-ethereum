@@ -17,10 +17,14 @@
 package pathdb
 
 import (
+	"errors"
 	"fmt"
 	"iter"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 // historyType represents the category of historical data.
@@ -139,7 +143,7 @@ func newStorageIdent(addressHash common.Hash, storageHash common.Hash) stateIden
 // the path denotes the path of the node within the trie;
 func newTrienodeIdent(addressHash common.Hash, path string) stateIdent {
 	return stateIdent{
-		typ:         typeStorage,
+		typ:         typeTrienode,
 		addressHash: addressHash,
 		path:        path,
 	}
@@ -191,4 +195,135 @@ type history interface {
 
 	// forEach returns an iterator to traverse the state entries in the history.
 	forEach() iter.Seq[stateIdent]
+}
+
+// repairHistory truncates leftover history objects, which may occur due to
+// an unclean shutdown or other unexpected reasons.
+func repairHistory(db ethdb.Database, typ historyType, head uint64, limit int64, isVerkle bool, readOnly bool) ethdb.ResettableAncientStore {
+	// Short circuit if the history is disabled
+	if limit < 0 {
+		return nil
+	}
+	// Open the freezer for state history. This mechanism ensures that
+	// only one database instance can be opened at a time to prevent
+	// accidental mutation.
+	ancient, err := db.AncientDatadir()
+	if err != nil {
+		// TODO error out if ancient store is disabled. A tons of unit tests
+		// disable the ancient store thus the error here will immediately fail
+		// all of them. Fix the tests first.
+		return nil
+	}
+	var (
+		freezer ethdb.ResettableAncientStore
+		logger  = log.New("type", typ.String())
+	)
+	if typ == typeStateHistory {
+		freezer, err = rawdb.NewStateFreezer(ancient, isVerkle, readOnly)
+		if err != nil {
+			logger.Crit("Failed to open history freezer", "type", typ, "err", err)
+		}
+	} else {
+		freezer, err = rawdb.NewTrienodeFreezer(ancient, isVerkle, readOnly)
+		if err != nil {
+			logger.Crit("Failed to open history freezer", "type", typ, "err", err)
+		}
+	}
+	// Reset the entire state histories if the trie database is not initialized
+	// yet. This action is necessary because these state histories are not
+	// expected to exist without an initialized trie database.
+	if head == 0 {
+		frozen, err := freezer.Ancients()
+		if err != nil {
+			logger.Crit("Failed to retrieve head of state history", "err", err)
+		}
+		if frozen != 0 {
+			batch := db.NewBatch()
+			if typ == typeStateHistory {
+				rawdb.DeleteStateHistoryIndexMetadata(batch)
+				rawdb.DeleteStateHistories(batch)
+			} else {
+				rawdb.DeleteTrienodeHistoryIndexMetadata(batch)
+				rawdb.DeleteTrienodeHistories(batch)
+			}
+			if err := batch.Write(); err != nil {
+				logger.Crit("Failed to delete the history indices", "err", err)
+			}
+			if err := freezer.Reset(); err != nil {
+				logger.Crit("Failed to reset state histories", "err", err)
+			}
+			logger.Info("Truncated extraneous state history")
+		}
+		return freezer
+	}
+
+	// Truncate the excessive history entries above in freezer in case it's not
+	// aligned with the disk layer. It might happen after an unclean shutdown.
+	pruned, err := truncateFromHead(freezer, typ, head)
+	if err != nil {
+		logger.Crit("Failed to truncate extra histories", "err", err)
+	}
+	if pruned != 0 {
+		logger.Warn("Truncated extra histories", "number", pruned)
+	}
+	return freezer
+}
+
+var (
+	errHeadTruncationOutOfRange = errors.New("history head truncation out of range")
+	errTailTruncationOutOfRange = errors.New("history tail truncation out of range")
+)
+
+// truncateFromHead removes excess elements from the head of the freezer based
+// on the given parameters. It returns the number of items that were removed.
+func truncateFromHead(store ethdb.AncientStore, typ historyType, nhead uint64) (int, error) {
+	ohead, err := store.Ancients()
+	if err != nil {
+		return 0, err
+	}
+	otail, err := store.Tail()
+	if err != nil {
+		return 0, err
+	}
+	log.Info("Truncating from head", "ohead", ohead, "tail", otail, "nhead", nhead)
+
+	// Ensure that the truncation target falls within the valid range.
+	if ohead < nhead || nhead < otail {
+		return 0, fmt.Errorf("%w, %s, tail: %d, head: %d, target: %d", errHeadTruncationOutOfRange, typ, otail, ohead, nhead)
+	}
+	// Short circuit if nothing to truncate.
+	if ohead == nhead {
+		return 0, nil
+	}
+	ohead, err = store.TruncateHead(nhead)
+	if err != nil {
+		return 0, err
+	}
+	return int(ohead - nhead), nil
+}
+
+// truncateFromTail removes excess elements from the end of the freezer based
+// on the given parameters. It returns the number of items that were removed.
+func truncateFromTail(store ethdb.AncientStore, typ historyType, ntail uint64) (int, error) {
+	ohead, err := store.Ancients()
+	if err != nil {
+		return 0, err
+	}
+	otail, err := store.Tail()
+	if err != nil {
+		return 0, err
+	}
+	// Ensure that the truncation target falls within the valid range.
+	if otail > ntail || ntail > ohead {
+		return 0, fmt.Errorf("%w, %s, tail: %d, head: %d, target: %d", errTailTruncationOutOfRange, typ, otail, ohead, ntail)
+	}
+	// Short circuit if nothing to truncate.
+	if otail == ntail {
+		return 0, nil
+	}
+	otail, err = store.TruncateTail(ntail)
+	if err != nil {
+		return 0, err
+	}
+	return int(ntail - otail), nil
 }

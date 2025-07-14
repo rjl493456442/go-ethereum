@@ -171,14 +171,39 @@ func (r *reader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
 // NodeReader retrieves a layer belonging to the given state root.
 func (db *Database) NodeReader(root common.Hash) (database.NodeReader, error) {
 	layer := db.tree.get(root)
-	if layer == nil {
+	if layer != nil {
+		return &reader{
+			db:          db,
+			state:       root,
+			noHashCheck: db.isVerkle,
+			layer:       layer,
+		}, nil
+	}
+	// Bail out if the state history hasn't been fully indexed
+	if db.trienodeIndexer == nil || !db.trienodeIndexer.inited() {
+		return nil, errors.New("trienode histories haven't been fully indexed yet")
+	}
+	if db.trienodeFreezer == nil {
+		return nil, errors.New("trienode histories are not available")
+	}
+	// States at the current disk layer or above are directly accessible via
+	// db.StateReader.
+	//
+	// States older than the current disk layer (including the disk layer
+	// itself) are available through historical state access.
+	//
+	// Note: the requested state may refer to a stale historical state that has
+	// already been pruned. This function does not validate availability, as
+	// underlying states may be pruned dynamically. Validity is checked during
+	// each actual state retrieval.
+	id := rawdb.ReadStateID(db.diskdb, root)
+	if id == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	return &reader{
-		db:          db,
-		state:       root,
-		noHashCheck: db.isVerkle,
-		layer:       layer,
+	return &HistoricalStateReader{
+		id:     *id,
+		db:     db,
+		reader: newHistoryReader(db.diskdb, db.trienodeFreezer),
 	}, nil
 }
 
@@ -204,8 +229,8 @@ type HistoricalStateReader struct {
 	id     uint64
 }
 
-// HistoricReader constructs a reader for accessing the requested historic state.
-func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, error) {
+// HistoricalReader constructs a reader for accessing the requested historic state.
+func (db *Database) HistoricalReader(root common.Hash) (*HistoricalStateReader, error) {
 	// Bail out if the state history hasn't been fully indexed
 	if db.stateIndexer == nil || !db.stateIndexer.inited() {
 		return nil, errors.New("state histories haven't been fully indexed yet")

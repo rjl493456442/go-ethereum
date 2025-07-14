@@ -323,6 +323,81 @@ func (dl *diskLayer) update(root common.Hash, id uint64, block uint64, nodes *no
 	return newDiffLayer(dl, root, id, block, nodes, states)
 }
 
+// writeStateHistory persists state history into the ancient store, truncating
+// the oldest entry if necessary. Tail truncation is skipped if the oldest entry
+// aligns with the persistent state, to avoid losing state history in case an
+// unclean shutdown before the persistent state is updated.
+func (dl *diskLayer) writeStateHistory(diff *diffLayer) (bool, error) {
+	if dl.db.stateFreezer == nil {
+		return false, nil
+	}
+	// Bail out with an error if writing the state history fails.
+	// This can happen, for example, if the device is full.
+	err := writeStateHistory(dl.db.stateFreezer, diff)
+	if err != nil {
+		return false, err
+	}
+	// Notify the history indexer for newly created history
+	if dl.db.stateIndexer != nil {
+		if err := dl.db.stateIndexer.extend(diff.stateID()); err != nil {
+			return false, err
+		}
+	}
+	// Determine if the persisted history object has exceeded the configured
+	// limitation, truncate the oldest one if so.
+	tail, err := dl.db.stateFreezer.Tail()
+	if err != nil {
+		return false, err
+	}
+	limit := uint64(dl.db.config.StateHistory)
+
+	if limit != 0 && diff.stateID()-tail > limit {
+		newTailID := diff.stateID() - limit + 1
+		if rawdb.ReadPersistentStateID(dl.db.diskdb) < newTailID {
+			return true, nil
+		}
+		_, err := dl.db.stateFreezer.TruncateTail(newTailID - 1)
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// writeTrienodeHistory persists trienode history into the ancient store, truncating
+// the oldest entry if necessary.
+func (dl *diskLayer) writeTrienodeHistory(diff *diffLayer) error {
+	if dl.db.trienodeFreezer == nil {
+		return nil
+	}
+	// Bail out with an error if writing the trienode history fails.
+	// This can happen, for example, if the device is full.
+	if err := writeTrienodeHistory(dl.db.trienodeFreezer, diff); err != nil {
+		return err
+	}
+	// Notify the history indexer for newly created history
+	if dl.db.trienodeIndexer != nil {
+		if err := dl.db.trienodeIndexer.extend(diff.stateID()); err != nil {
+			return err
+		}
+	}
+	// Determine if the persisted history object has exceeded the configured
+	// limitation, truncate the oldest one if so.
+	tail, err := dl.db.trienodeFreezer.Tail()
+	if err != nil {
+		return err
+	}
+	limit := uint64(dl.db.config.TrienodeHistory)
+
+	if limit != 0 && diff.stateID()-tail > limit {
+		_, err := dl.db.trienodeFreezer.TruncateTail(diff.stateID() - limit)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // commit merges the given bottom-most diff layer into the node buffer
 // and returns a newly constructed disk layer. Note the current disk
 // layer must be tagged as stale first to prevent re-access.
@@ -330,50 +405,17 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
 
-	// Construct and store the state history first. If crash happens after storing
-	// the state history but without flushing the corresponding states(journal),
-	// the stored state history will be truncated from head in the next restart.
-	var (
-		overflow bool
-		oldest   uint64
-	)
-	if dl.db.stateFreezer != nil {
-		// Bail out with an error if writing the state history fails.
-		// This can happen, for example, if the device is full.
-		err := writeStateHistory(dl.db.stateFreezer, bottom)
-		if err != nil {
-			return nil, err
-		}
-		// Determine if the persisted history object has exceeded the configured
-		// limitation, set the overflow as true if so.
-		tail, err := dl.db.stateFreezer.Tail()
-		if err != nil {
-			return nil, err
-		}
-		limit := dl.db.config.StateHistory
-		if limit != 0 && bottom.stateID()-tail > limit {
-			overflow = true
-			oldest = bottom.stateID() - limit + 1 // track the id of history **after truncation**
-		}
+	// Construct and store the data history first. If crash happens after storing
+	// the history object but without flushing the corresponding states(journal),
+	// the stored history object will be truncated from head in the next restart.
+	forceFlush, err := dl.writeStateHistory(bottom)
+	if err != nil {
+		return nil, err
 	}
-	if dl.db.trienodeFreezer != nil {
-		// Bail out with an error if writing the state history fails.
-		// This can happen, for example, if the device is full.
-		if err := writeTrienodeHistory(dl.db.trienodeFreezer, bottom); err != nil {
-			return nil, err
-		}
-	}
-	// Notify the state history indexer for newly created history
-	if dl.db.stateIndexer != nil {
-		if err := dl.db.stateIndexer.extend(bottom.stateID()); err != nil {
-			return nil, err
-		}
-	}
-	// Notify the state history indexer for newly created history
-	if dl.db.trienodeIndexer != nil {
-		if err := dl.db.trienodeIndexer.extend(bottom.stateID()); err != nil {
-			return nil, err
-		}
+	force = force || forceFlush
+
+	if err := dl.writeTrienodeHistory(bottom); err != nil {
+		return nil, err
 	}
 	// Mark the diskLayer as stale before applying any mutations on top.
 	dl.stale = true
@@ -386,14 +428,6 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	}
 	rawdb.WriteStateID(dl.db.diskdb, bottom.rootHash(), bottom.stateID())
 
-	// In a unique scenario where the ID of the oldest history object (after tail
-	// truncation) surpasses the persisted state ID, we take the necessary action
-	// of forcibly committing the cached dirty states to ensure that the persisted
-	// state ID remains higher.
-	persistedID := rawdb.ReadPersistentStateID(dl.db.diskdb)
-	if !force && persistedID < oldest {
-		force = true
-	}
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
 	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet)
@@ -445,7 +479,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 		})
 		// Block until the frozen buffer is fully flushed out if the async flushing
 		// is not allowed, or if the oldest history surpasses the persisted state ID.
-		if dl.db.config.NoAsyncFlush || persistedID < oldest {
+		if dl.db.config.NoAsyncFlush || force {
 			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
@@ -457,15 +491,6 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	ndl := newDiskLayer(bottom.root, bottom.stateID(), dl.db, dl.nodes, dl.states, combined, dl.frozen)
 	if dl.generator != nil {
 		ndl.setGenerator(dl.generator)
-	}
-	// To remove outdated history objects from the end, we set the 'tail' parameter
-	// to 'oldest-1' due to the offset between the freezer index and the history ID.
-	if overflow {
-		pruned, err := truncateFromTail(ndl.db.stateFreezer, "state", oldest-1)
-		if err != nil {
-			return nil, err
-		}
-		log.Debug("Pruned state history", "items", pruned, "tailid", oldest)
 	}
 	return ndl, nil
 }
@@ -502,6 +527,7 @@ func (dl *diskLayer) revert(h *stateHistory) (*diskLayer, error) {
 			return nil, err
 		}
 	}
+	// Unindex the corresponding trienode history
 	if dl.db.trienodeIndexer != nil {
 		if err := dl.db.trienodeIndexer.shorten(dl.id); err != nil {
 			return nil, err

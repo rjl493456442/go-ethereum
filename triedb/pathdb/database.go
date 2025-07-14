@@ -115,8 +115,8 @@ type layer interface {
 
 // Config contains the settings for database.
 type Config struct {
-	StateHistory        uint64 // Number of recent blocks to maintain state history for
-	TrienodeHistory     uint64 // Number of recent blocks to maintain trie node history for
+	StateHistory        int64  // Number of recent blocks to maintain state history for, -1 means disabled
+	TrienodeHistory     int64  // Number of recent blocks to maintain trie node history for, -1 means disabled
 	EnableStateIndexing bool   // Whether to enable state history indexing for external state access
 	TrieCleanSize       int    // Maximum memory allowance (in bytes) for caching clean trie nodes
 	StateCleanSize      int    // Maximum memory allowance (in bytes) for caching clean state data
@@ -138,10 +138,6 @@ func (c *Config) sanitize() *Config {
 		log.Warn("Sanitizing invalid node buffer size", "provided", common.StorageSize(conf.WriteBufferSize), "updated", common.StorageSize(maxBufferSize))
 		conf.WriteBufferSize = maxBufferSize
 	}
-	// DEBUG CODE
-	if conf.TrienodeHistory == 0 {
-		conf.TrienodeHistory = 1
-	}
 	return &conf
 }
 
@@ -158,13 +154,22 @@ func (c *Config) fields() []interface{} {
 	list = append(list, "statecache", common.StorageSize(c.StateCleanSize))
 	list = append(list, "buffer", common.StorageSize(c.WriteBufferSize))
 
-	if c.StateHistory == 0 {
-		list = append(list, "state-history", "entire chain")
-	} else {
-		list = append(list, "state-history", fmt.Sprintf("last %d blocks", c.StateHistory))
+	if c.StateHistory >= 0 {
+		if c.StateHistory == 0 {
+			list = append(list, "state-history", "entire chain")
+		} else {
+			list = append(list, "state-history", fmt.Sprintf("last %d blocks", c.StateHistory))
+		}
 	}
-	if c.TrienodeHistory != 0 {
-		list = append(list, "trienode-history", fmt.Sprintf("last %d blocks", c.StateHistory))
+	if c.TrienodeHistory >= 0 {
+		if c.TrienodeHistory == 0 {
+			list = append(list, "trienode-history", "entire chain")
+		} else {
+			list = append(list, "trienode-history", fmt.Sprintf("last %d blocks", c.TrienodeHistory))
+		}
+	}
+	if c.EnableStateIndexing {
+		list = append(list, "history-index", true)
 	}
 	if c.JournalDirectory != "" {
 		list = append(list, "journal-dir", c.JournalDirectory)
@@ -175,6 +180,7 @@ func (c *Config) fields() []interface{} {
 // Defaults contains default settings for Ethereum mainnet.
 var Defaults = &Config{
 	StateHistory:    params.FullImmutabilityThreshold,
+	TrienodeHistory: -1, // Disable by default
 	TrieCleanSize:   defaultTrieCleanSize,
 	StateCleanSize:  defaultStateCleanSize,
 	WriteBufferSize: defaultBufferSize,
@@ -227,14 +233,16 @@ type Database struct {
 	isVerkle bool       // Flag if database is used for verkle tree
 	hasher   nodeHasher // Trie node hasher
 
-	config          *Config                      // Configuration for database
-	diskdb          ethdb.Database               // Persistent storage for matured trie nodes
-	tree            *layerTree                   // The group for all known layers
+	config *Config        // Configuration for database
+	diskdb ethdb.Database // Persistent storage for matured trie nodes
+	tree   *layerTree     // The group for all known layers
+
 	stateFreezer    ethdb.ResettableAncientStore // Freezer for storing state histories, nil possible in tests
 	trienodeFreezer ethdb.ResettableAncientStore // Freezer for storing trienode histories, nil possible in tests
-	lock            sync.RWMutex                 // Lock to prevent mutations from happening at the same time
-	stateIndexer    *historyIndexer              // History indexer
-	trienodeIndexer *historyIndexer
+	stateIndexer    *historyIndexer              // History indexer for historical state data
+	trienodeIndexer *historyIndexer              // History indexer for historical trienode data
+
+	lock sync.RWMutex // Lock to prevent mutations from happening at the same time
 }
 
 // New attempts to load an already existing layer from a persistent key-value
@@ -266,14 +274,6 @@ func New(diskdb ethdb.Database, config *Config, isVerkle bool) *Database {
 	// and in-memory layer journal.
 	db.tree = newLayerTree(db.loadLayers())
 
-	// Repair the state history, which might not be aligned with the state
-	// in the key-value store due to an unclean shutdown.
-	if err := db.repairStateHistory(); err != nil {
-		log.Crit("Failed to repair state history", "err", err)
-	}
-	if err := db.repairTrienodeHistory(); err != nil {
-		log.Crit("Failed to repair trienode history", "err", err)
-	}
 	// Disable database in case node is still in the initial state sync stage.
 	if rawdb.ReadSnapSyncStatusFlag(diskdb) == rawdb.StateSyncRunning && !db.readOnly {
 		if err := db.Disable(); err != nil {
@@ -287,132 +287,30 @@ func New(diskdb ethdb.Database, config *Config, isVerkle bool) *Database {
 	if err := db.setStateGenerator(); err != nil {
 		log.Crit("Failed to setup the generator", "err", err)
 	}
-	// TODO (rjl493456442) disable the background indexing in read-only mode
-	if db.stateFreezer != nil && db.config.EnableStateIndexing {
-		db.stateIndexer = newHistoryIndexer(db.diskdb, db.stateFreezer, db.tree.bottom().stateID(), typeStateHistory)
-		log.Info("Enabled state history indexing")
+	// Repair the historical histories, which might not be aligned with the state
+	// in the key-value store due to an unclean shutdown.
+	db.stateFreezer = repairHistory(db.diskdb, typeStateHistory, db.tree.bottom().stateID(), config.StateHistory, isVerkle, config.ReadOnly)
+	db.trienodeFreezer = repairHistory(db.diskdb, typeTrienodeHistory, db.tree.bottom().stateID(), config.TrienodeHistory, isVerkle, config.ReadOnly)
+
+	// Initialise the historical data indexer if it's permitted
+	if !db.config.ReadOnly && db.config.EnableStateIndexing {
+		if db.stateFreezer != nil {
+			db.stateIndexer = newHistoryIndexer(db.diskdb, db.stateFreezer, db.tree.bottom().stateID(), typeStateHistory)
+			log.Info("Enabled state history indexing")
+		}
+		if db.trienodeFreezer != nil {
+			db.trienodeIndexer = newHistoryIndexer(db.diskdb, db.trienodeFreezer, db.tree.bottom().stateID(), typeTrienodeHistory)
+			log.Info("Enabled trienode history indexing")
+		}
 	}
-	if db.trienodeFreezer != nil && db.config.EnableStateIndexing {
-		db.trienodeIndexer = newHistoryIndexer(db.diskdb, db.trienodeFreezer, db.tree.bottom().stateID(), typeTrienodeHistory)
-		log.Info("Enabled trienode history indexing")
-	}
+
+	// Log out the attributes of the database
 	fields := config.fields()
 	if db.isVerkle {
 		fields = append(fields, "verkle", true)
 	}
 	log.Info("Initialized path database", fields...)
 	return db
-}
-
-// repairStateHistory truncates leftover state history objects, which may occur due
-// to an unclean shutdown or other unexpected reasons.
-func (db *Database) repairStateHistory() error {
-	// Open the freezer for state history. This mechanism ensures that
-	// only one database instance can be opened at a time to prevent
-	// accidental mutation.
-	ancient, err := db.diskdb.AncientDatadir()
-	if err != nil {
-		// TODO error out if ancient store is disabled. A tons of unit tests
-		// disable the ancient store thus the error here will immediately fail
-		// all of them. Fix the tests first.
-		return nil
-	}
-	freezer, err := rawdb.NewStateFreezer(ancient, db.isVerkle, db.readOnly)
-	if err != nil {
-		log.Crit("Failed to open state history freezer", "err", err)
-	}
-	db.stateFreezer = freezer
-
-	// Reset the entire state histories if the trie database is not initialized
-	// yet. This action is necessary because these state histories are not
-	// expected to exist without an initialized trie database.
-	id := db.tree.bottom().stateID()
-	if id == 0 {
-		frozen, err := db.stateFreezer.Ancients()
-		if err != nil {
-			log.Crit("Failed to retrieve head of state history", "err", err)
-		}
-		if frozen != 0 {
-			// TODO(rjl493456442) would be better to group them into a batch.
-			//
-			// Purge all state history indexing data first
-			rawdb.DeleteStateHistoryIndexMetadata(db.diskdb)
-			rawdb.DeleteStateHistories(db.diskdb)
-			err := db.stateFreezer.Reset()
-			if err != nil {
-				log.Crit("Failed to reset state histories", "err", err)
-			}
-			log.Info("Truncated extraneous state history")
-		}
-		return nil
-	}
-	// Truncate the extra state histories above in freezer in case it's not
-	// aligned with the disk layer. It might happen after a unclean shutdown.
-	pruned, err := truncateFromHead(db.stateFreezer, "state", id)
-	if err != nil {
-		log.Crit("Failed to truncate extra state histories", "err", err)
-	}
-	if pruned != 0 {
-		log.Warn("Truncated extra state histories", "number", pruned)
-	}
-	return nil
-}
-
-func (db *Database) repairTrienodeHistory() error {
-	if db.config.TrienodeHistory == 0 {
-		return nil
-	}
-	// Open the freezer for trienode history. This mechanism ensures that
-	// only one database instance can be opened at a time to prevent
-	// accidental mutation.
-	ancient, err := db.diskdb.AncientDatadir()
-	if err != nil {
-		// TODO error out if ancient store is disabled. A tons of unit tests
-		// disable the ancient store thus the error here will immediately fail
-		// all of them. Fix the tests first.
-		return nil
-	}
-	freezer, err := rawdb.NewTrienodeFreezer(ancient, db.isVerkle, db.readOnly)
-	if err != nil {
-		log.Crit("Failed to open trienode history freezer", "err", err)
-	}
-	db.trienodeFreezer = freezer
-
-	// Reset the entire state histories if the trie database is not initialized
-	// yet. This action is necessary because these state histories are not
-	// expected to exist without an initialized trie database.
-	id := db.tree.bottom().stateID()
-	log.Info("Repairing trienode history", "bottom", id)
-
-	if id == 0 {
-		frozen, err := db.trienodeFreezer.Ancients()
-		if err != nil {
-			log.Crit("Failed to retrieve head of trienode history", "err", err)
-		}
-		if frozen != 0 {
-			// TODO(rjl493456442) would be better to group them into a batch.
-			//
-			// Purge all state history indexing data first
-			rawdb.DeleteTrienodeHistoryIndexMetadata(db.diskdb)
-			rawdb.DeleteTrienodeHistories(db.diskdb)
-			err := db.trienodeFreezer.Reset()
-			if err != nil {
-				log.Crit("Failed to reset trienode histories", "err", err)
-			}
-			log.Info("Truncated extraneous trienode history")
-		}
-		return nil
-	}
-	// Truncate the extra state histories above in freezer in case it's not
-	// aligned with the disk layer. It might happen after a unclean shutdown.
-	pruned, err := truncateFromHead(db.trienodeFreezer, "trienode", id)
-	if err != nil {
-		log.Crit("Failed to truncate excessive trienode histories", "err", err)
-	}
-	if pruned != 0 {
-		log.Warn("Truncated excessive trienode histories", "number", pruned)
-	}
-	return nil
 }
 
 // setStateGenerator loads the state generation progress marker and potentially
@@ -674,7 +572,11 @@ func (db *Database) Recover(root common.Hash) error {
 	if err := db.diskdb.SyncKeyValue(); err != nil {
 		return err
 	}
-	_, err := truncateFromHead(db.stateFreezer, "state", dl.stateID())
+	_, err := truncateFromHead(db.stateFreezer, typeStateHistory, dl.stateID())
+	if err != nil {
+		return err
+	}
+	_, err = truncateFromHead(db.trienodeFreezer, typeTrienodeHistory, dl.stateID())
 	if err != nil {
 		return err
 	}

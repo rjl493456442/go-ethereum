@@ -135,7 +135,7 @@ func (db *Database) HistoricReader(root common.Hash) (*pathdb.HistoricalStateRea
 	if !ok {
 		return nil, errors.New("not supported")
 	}
-	return pdb.HistoricReader(root)
+	return pdb.HistoricalReader(root)
 }
 
 // Update performs a state transition by committing dirty nodes contained in the

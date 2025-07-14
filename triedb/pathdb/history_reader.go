@@ -44,7 +44,7 @@ func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent) (*ind
 	// Read the last indexed ID before the index reader construction
 	metadata := loadIndexMetadata(db, toHistoryType(state.typ))
 	if metadata == nil {
-		return nil, errors.New("state history hasn't been indexed yet")
+		return nil, fmt.Errorf("history %s hasn't been indexed yet", toHistoryType(state.typ))
 	}
 	r, err := newIndexReader(db, state)
 	if err != nil {
