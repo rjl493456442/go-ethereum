@@ -738,6 +738,9 @@ func (db *Database) Close() error {
 	if db.stateIndexer != nil {
 		db.stateIndexer.close()
 	}
+	if db.trienodeIndexer != nil {
+		db.trienodeIndexer.close()
+	}
 	// Close the attached history freezers.
 	if db.stateFreezer != nil {
 		if err := db.stateFreezer.Close(); err != nil {
