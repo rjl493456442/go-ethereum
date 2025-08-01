@@ -292,7 +292,8 @@ type BlockChain struct {
 	flushInterval atomic.Int64                     // Time interval (processing time) after which to flush a state
 	triedb        *triedb.Database                 // The database handler for maintaining trie nodes.
 	statedb       *state.CachingDB                 // State database to reuse between imports (contains state cache)
-	txIndexer     *txIndexer                       // Transaction indexer, might be nil if not enabled
+	jumpDest      *JumpDestCache
+	txIndexer     *txIndexer // Transaction indexer, might be nil if not enabled
 
 	hc               *HeaderChain
 	rmLogsFeed       event.Feed
@@ -370,6 +371,7 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		cfg:           cfg,
 		db:            db,
 		triedb:        triedb,
+		jumpDest:      NewJumpDestCache(),
 		triegc:        prque.New[int64, common.Hash](nil),
 		chainmu:       syncx.NewClosableMutex(),
 		bodyCache:     lru.NewCache[common.Hash, *types.Body](bodyCacheLimit),
@@ -1999,7 +2001,7 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 			// Disable tracing for prefetcher executions.
 			vmCfg := bc.cfg.VmConfig
 			vmCfg.Tracer = nil
-			bc.prefetcher.Prefetch(block, throwaway, vmCfg, &interrupt)
+			bc.prefetcher.Prefetch(block, throwaway, bc.jumpDest, vmCfg, &interrupt)
 
 			blockPrefetchExecuteTimer.Update(time.Since(start))
 			if interrupt.Load() {
@@ -2041,7 +2043,7 @@ func (bc *BlockChain) processBlock(parentRoot common.Hash, block *types.Block, s
 
 	// Process block using the parent state as reference point
 	pstart := time.Now()
-	res, err := bc.processor.Process(block, statedb, bc.cfg.VmConfig)
+	res, err := bc.processor.Process(block, statedb, bc.jumpDest, bc.cfg.VmConfig)
 	if err != nil {
 		bc.reportBlock(block, res, err)
 		return nil, err
