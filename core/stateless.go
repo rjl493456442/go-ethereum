@@ -66,7 +66,7 @@ func ExecuteStateless(config *params.ChainConfig, vmconfig vm.Config, block *typ
 	validator := NewBlockValidator(config, nil) // No chain, we only validate the state, not the block
 
 	// Run the stateless blocks processing and self-validate certain fields
-	res, err := processor.Process(block, db, vmconfig)
+	res, err := processor.Process(block, db, nil, vmconfig)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
