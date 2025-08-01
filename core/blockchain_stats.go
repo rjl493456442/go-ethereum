@@ -57,6 +57,8 @@ type ExecuteStats struct {
 	// Cache hit rates
 	StateReadCacheStats     state.ReaderStats
 	StatePrefetchCacheStats state.ReaderStats
+	PrecompileHit           int32
+	PrecompileMiss          int32
 }
 
 // reportMetrics uploads execution statistics to the metrics system.
@@ -106,6 +108,10 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 	if s.TotalTime < slowBlockThreshold {
 		return
 	}
+	var precompileRate float64
+	if s.PrecompileHit+s.PrecompileMiss != 0 {
+		precompileRate = float64(s.PrecompileHit) / float64(s.PrecompileHit+s.PrecompileMiss)
+	}
 	msg := fmt.Sprintf(`
 ########## SLOW BLOCK #########
 Block: %v (%#x) txs: %d, mgasps: %.2f, elapsed: %v
@@ -119,6 +125,8 @@ Storage hash: %v
 DB commit: %v
 Block write: %v
 
+Precompile hit: %d, miss: %d (%.2f)
+
 %s
 ##############################
 `, block.Number(), block.Hash(), len(block.Transactions()), s.MgasPerSecond, common.PrettyDuration(s.TotalTime),
@@ -128,6 +136,7 @@ Block write: %v
 		common.PrettyDuration(s.AccountHashes+s.AccountCommits+s.AccountUpdates),
 		common.PrettyDuration(s.StorageCommits+s.StorageUpdates),
 		common.PrettyDuration(s.TrieDBCommit+s.SnapshotCommit), common.PrettyDuration(s.BlockWrite),
+		s.PrecompileHit, s.PrecompileMiss, precompileRate,
 		s.StateReadCacheStats)
 	for _, line := range strings.Split(msg, "\n") {
 		if line == "" {

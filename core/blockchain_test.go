@@ -160,7 +160,7 @@ func testBlockChainImport(chain types.Blocks, blockchain *BlockChain) error {
 		if err != nil {
 			return err
 		}
-		res, err := blockchain.processor.Process(block, statedb, vm.Config{})
+		res, err := blockchain.processor.Process(block, statedb, nil, nil, vm.Config{})
 		if err != nil {
 			blockchain.reportBadBlock(block, res, err)
 			return err

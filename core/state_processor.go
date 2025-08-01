@@ -57,7 +57,7 @@ func (p *StateProcessor) chainConfig() *params.ChainConfig {
 // Process returns the receipts and logs accumulated during the process and
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
-func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (*ProcessResult, error) {
+func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, jumpDests vm.JumpDestCache, precompileCache vm.PrecompileCache, cfg vm.Config) (*ProcessResult, error) {
 	var (
 		config      = p.chainConfig()
 		receipts    types.Receipts
@@ -86,6 +86,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	// Apply pre-execution system calls.
 	context = NewEVMBlockContext(header, p.chain, nil)
 	evm := vm.NewEVM(context, tracingStateDB, config, cfg)
+	if jumpDests != nil {
+		evm.SetJumpDestCache(jumpDests)
+	}
+	if precompileCache != nil {
+		evm.SetPrecompileCache(precompileCache)
+	}
 
 	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
 		ProcessBeaconBlockRoot(*beaconRoot, evm)

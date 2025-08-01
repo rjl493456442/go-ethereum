@@ -293,15 +293,17 @@ type BlockChain struct {
 	chainConfig *params.ChainConfig // Chain & network configuration
 	cfg         *BlockChainConfig   // Blockchain configuration
 
-	db            ethdb.Database                   // Low level persistent database to store final content in
-	snaps         *snapshot.Tree                   // Snapshot tree for fast trie leaf access
-	triegc        *prque.Prque[int64, common.Hash] // Priority queue mapping block numbers to tries to gc
-	gcproc        time.Duration                    // Accumulates canonical block processing for trie dumping
-	lastWrite     uint64                           // Last block when the state was flushed
-	flushInterval atomic.Int64                     // Time interval (processing time) after which to flush a state
-	triedb        *triedb.Database                 // The database handler for maintaining trie nodes.
-	statedb       *state.CachingDB                 // State database to reuse between imports (contains state cache)
-	txIndexer     *txIndexer                       // Transaction indexer, might be nil if not enabled
+	db              ethdb.Database                   // Low level persistent database to store final content in
+	snaps           *snapshot.Tree                   // Snapshot tree for fast trie leaf access
+	triegc          *prque.Prque[int64, common.Hash] // Priority queue mapping block numbers to tries to gc
+	gcproc          time.Duration                    // Accumulates canonical block processing for trie dumping
+	lastWrite       uint64                           // Last block when the state was flushed
+	flushInterval   atomic.Int64                     // Time interval (processing time) after which to flush a state
+	triedb          *triedb.Database                 // The database handler for maintaining trie nodes.
+	statedb         *state.CachingDB                 // State database to reuse between imports (contains state cache)
+	jumpDest        *JumpDestCache
+	precompileCache vm.PrecompileCache
+	txIndexer       *txIndexer // Transaction indexer, might be nil if not enabled
 
 	hc               *HeaderChain
 	rmLogsFeed       event.Feed
@@ -382,6 +384,8 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		db:                 db,
 		triedb:             triedb,
 		triegc:             prque.New[int64, common.Hash](nil),
+		jumpDest:           NewJumpDestCache(),
+		precompileCache:    NewPrecompileCache(precompileCacheSize),
 		chainmu:            syncx.NewClosableMutex(),
 		bodyCache:          lru.NewCache[common.Hash, *types.Body](bodyCacheLimit),
 		bodyRLPCache:       lru.NewCache[common.Hash, rlp.RawValue](bodyCacheLimit),
@@ -2065,7 +2069,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 			// Disable tracing for prefetcher executions.
 			vmCfg := bc.cfg.VmConfig
 			vmCfg.Tracer = nil
-			bc.prefetcher.Prefetch(block, throwaway, vmCfg, &interrupt)
+			bc.prefetcher.Prefetch(block, throwaway, bc.jumpDest, bc.precompileCache, vmCfg, &interrupt)
 
 			blockPrefetchExecuteTimer.Update(time.Since(start))
 			if interrupt.Load() {
@@ -2113,7 +2117,8 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 
 	// Process block using the parent state as reference point
 	pstart := time.Now()
-	res, err := bc.processor.Process(block, statedb, bc.cfg.VmConfig)
+	cache := NewPrecompileCacheWithStats(bc.precompileCache)
+	res, err := bc.processor.Process(block, statedb, bc.jumpDest, cache, bc.cfg.VmConfig)
 	if err != nil {
 		bc.reportBadBlock(block, res, err)
 		return nil, err
@@ -2178,6 +2183,9 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 	stats.Execution = ptime - (statedb.AccountReads + statedb.StorageReads)                              // The time spent on EVM processing
 	stats.Validation = vtime - (statedb.AccountHashes + statedb.AccountUpdates + statedb.StorageUpdates) // The time spent on block validation
 	stats.CrossValidation = xvtime                                                                       // The time spent on stateless cross validation
+
+	precompileHit, precompileMiss := cache.Stats()
+	stats.PrecompileHit, stats.PrecompileMiss = precompileHit, precompileMiss
 
 	// Write the block to the chain and get the status.
 	var (
