@@ -297,7 +297,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// Enable the newest optimizations and features from Pebble, especially
 		// the ValueBlock which separates the values at the dedicated value block
 		// for better block cache utilization and improved compaction performance.
-		// FormatMajorVersion: pebble.FormatNewest,
+		FormatMajorVersion: pebble.FormatNewest,
 	}
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.
