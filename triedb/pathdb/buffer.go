@@ -192,7 +192,7 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, freezers []ethd
 		// TODO (rjl493456442) buffer itself is not thread-safe, add the lock
 		// protection if try to reset the buffer here.
 		// b.reset()
-		log.Debug("Persisted buffer content", "nodes", nodes, "accounts", accounts, "slots", slots, "bytes", common.StorageSize(size), "elapsed", common.PrettyDuration(time.Since(start)))
+		log.Info("Persisted buffer content", "nodes", nodes, "accounts", accounts, "slots", slots, "bytes", common.StorageSize(size), "elapsed", common.PrettyDuration(time.Since(start)))
 	}()
 }
 

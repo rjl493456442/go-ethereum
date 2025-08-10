@@ -18,9 +18,11 @@
 package pebble
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/bloom"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
@@ -87,6 +90,57 @@ type Database struct {
 	liveIterGauge          *metrics.Gauge   // Gauge for tracking the number of live database iterators
 	levelsGauge            []*metrics.Gauge // Gauge for tracking the number of tables in levels
 
+	flushPeakRate    *metrics.Gauge
+	flushRate        *metrics.Gauge
+	flushUtilization *metrics.Gauge
+
+	filterBlockHitGauge  *metrics.Gauge
+	filterBlockMissGauge *metrics.Gauge
+	dataBlockHitGauge    *metrics.Gauge
+	dataBlockMissGauge   *metrics.Gauge
+	indexBlockHitGauge   *metrics.Gauge
+	indexBlockMissGauge  *metrics.Gauge
+	metaBlockHitGauge    *metrics.Gauge
+	metaBlockMissGauge   *metrics.Gauge
+	valueBlockHitGauge   *metrics.Gauge
+	valueBlockMissGauge  *metrics.Gauge
+
+	readBlockLoadBytes      *metrics.ResettingTimer
+	readBlockLoadBytesCache *metrics.ResettingTimer
+	readBlockLoads          *metrics.ResettingTimer
+	readBlockCacheLoads     *metrics.ResettingTimer
+
+	readBlockLoadAvgDuration *metrics.ResettingTimer
+
+	readBlockLoadDuration       *metrics.ResettingTimer
+	readBlockCacheLoadDuration  *metrics.ResettingTimer
+	readBlockChecksumDuration   *metrics.ResettingTimer
+	readBlockDecompressDuration *metrics.ResettingTimer
+	readBlockPrepareDuration    *metrics.ResettingTimer
+	readBlockMemoryDuration     *metrics.ResettingTimer
+
+	readBlockLevelZeroDuration         *metrics.ResettingTimer
+	readBlockLevelZeroFindFileDuration *metrics.ResettingTimer
+	readBlockLevelZeroScanFileDuration *metrics.ResettingTimer
+
+	readBlockLevelNonZeroDuration         *metrics.ResettingTimer
+	readBlockLevelNonZeroInitDuration     *metrics.ResettingTimer
+	readBlockLevelNonZeroFindFileDuration *metrics.ResettingTimer
+	readBlockLevelNonZeroScanFileDuration *metrics.ResettingTimer
+
+	readLatency     *metrics.ResettingTimer
+	readTotalTables *metrics.ResettingTimer
+
+	compBlockLoadBytes      *metrics.ResettingTimer
+	compBlockLoadBytesCache *metrics.ResettingTimer
+	compBlockLoads          *metrics.ResettingTimer
+	compBlockCacheLoads     *metrics.ResettingTimer
+
+	compBlockLoadDuration       *metrics.ResettingTimer
+	compBlockCacheLoadDuration  *metrics.ResettingTimer
+	compBlockChecksumDuration   *metrics.ResettingTimer
+	compBlockDecompressDuration *metrics.ResettingTimer
+
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
 	closed   bool            // keep track of whether we're Closed
@@ -108,6 +162,32 @@ type Database struct {
 	writeOptions *pebble.WriteOptions
 }
 
+func calDuration(ts []time.Duration) (time.Duration, time.Duration) {
+	if len(ts) == 0 {
+		return 0, 0
+	}
+	var sum time.Duration
+	for _, t := range ts {
+		sum += t
+	}
+	return sum, sum / time.Duration(len(ts))
+}
+
+func calSize(sizes []uint64) (uint64, uint64, uint64, uint64) {
+	if len(sizes) == 0 {
+		return 0, 0, 0, 0
+	}
+	var sum uint64
+	for _, t := range sizes {
+		sum += t
+	}
+	return sum, sum / uint64(len(sizes)), slices.Max(sizes), slices.Min(sizes)
+}
+
+func (d *Database) onFlushBegin(info pebble.FlushInfo) {}
+
+func (d *Database) onFlushEnd(info pebble.FlushInfo) {}
+
 func (d *Database) onCompactionBegin(info pebble.CompactionInfo) {
 	if d.activeComp == 0 {
 		d.compStartTime = time.Now()
@@ -128,6 +208,25 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		panic("should not happen")
 	}
 	d.activeComp--
+
+	d.compBlockLoadBytes.Update(time.Duration(info.BytesRead))
+	d.compBlockLoadBytesCache.Update(time.Duration(info.BytesCache))
+	d.compBlockLoads.Update(time.Duration(info.BlockLoad))
+	d.compBlockCacheLoads.Update(time.Duration(info.BlockLoadCache))
+
+	ldTotal, ldAvg := calDuration(info.BlockLoadDurations)
+	if ldTotal != 0 {
+		d.compBlockLoadDuration.Update(ldAvg)
+	}
+	d.compBlockCacheLoadDuration.Update(info.BlockCacheLoadDuration)
+	csTotal, csAvg := calDuration(info.BlockCheckSumDurations)
+	if csTotal != 0 {
+		d.compBlockChecksumDuration.Update(csAvg)
+	}
+	deTotal, deAvg := calDuration(info.BlockDecompressDurations)
+	if deTotal != 0 {
+		d.compBlockDecompressDuration.Update(deAvg)
+	}
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
@@ -174,6 +273,12 @@ func (l panicLogger) Errorf(format string, args ...interface{}) {
 func (l panicLogger) Fatalf(format string, args ...interface{}) {
 	panic(fmt.Errorf("fatal: "+format, args...))
 }
+
+func (l panicLogger) Eventf(ctx context.Context, format string, args ...interface{}) {
+	log.Warn(fmt.Sprintf(format, args...))
+}
+
+func (l panicLogger) IsTracingEnabled(ctx context.Context) bool { return false }
 
 // New returns a wrapped pebble DB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
@@ -273,12 +378,14 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		},
 		ReadOnly: readonly,
 		EventListener: &pebble.EventListener{
+			FlushBegin:      db.onFlushBegin,
+			FlushEnd:        db.onFlushEnd,
 			CompactionBegin: db.onCompactionBegin,
 			CompactionEnd:   db.onCompactionEnd,
 			WriteStallBegin: db.onWriteStallBegin,
 			WriteStallEnd:   db.onWriteStallEnd,
 		},
-		Logger: panicLogger{}, // TODO(karalabe): Delete when this is upstreamed in Pebble
+		LoggerAndTracer: panicLogger{}, // TODO(karalabe): Delete when this is upstreamed in Pebble
 
 		// Pebble is configured to use asynchronous write mode, meaning write operations
 		// return as soon as the data is cached in memory, without waiting for the WAL
@@ -288,6 +395,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// By setting the WALBytesPerSync, the cached WAL writes will be periodically
 		// flushed at the background if the accumulated size exceeds this threshold.
 		WALBytesPerSync: 5 * ethdb.IdealBatchSize,
+
+		BytesPerSync: 256 * 1024 * 1024, // Disable in-middle fsync
 
 		// L0CompactionThreshold specifies the number of L0 read-amplification
 		// necessary to trigger an L0 compaction. It essentially refers to the
@@ -299,10 +408,16 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// the compaction debt as around 10GB. By reducing it to 2, the compaction
 		// debt will be less than 1GB, but with more frequent compactions scheduled.
 		L0CompactionThreshold: 2,
+
+		// Enable the newest optimizations and features from Pebble, especially
+		// the ValueBlock which separates the values at the dedicated value block
+		// for better block cache utilization and improved compaction performance.
+		//FormatMajorVersion: pebble.FormatNewest,
 	}
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.
 	opt.Experimental.ReadSamplingMultiplier = -1
+	opt.Experimental.MaxWriterConcurrency = runtime.NumCPU()
 
 	// These two settings define the conditions under which compaction concurrency
 	// is increased. Specifically, one additional compaction job will be enabled when:
@@ -346,6 +461,53 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.liveCompGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/count", nil)
 	db.liveCompSizeGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/size", nil)
 	db.liveIterGauge = metrics.GetOrRegisterGauge(namespace+"iter/count", nil)
+
+	db.flushPeakRate = metrics.NewRegisteredGauge(namespace+"flush/peakrate", nil)
+	db.flushRate = metrics.NewRegisteredGauge(namespace+"flush/rate", nil)
+	db.flushUtilization = metrics.NewRegisteredGauge(namespace+"flush/util", nil)
+
+	db.filterBlockHitGauge = metrics.NewRegisteredGauge(namespace+"cache/block/filter/hit", nil)
+	db.filterBlockMissGauge = metrics.NewRegisteredGauge(namespace+"cache/block/filter/miss", nil)
+	db.dataBlockHitGauge = metrics.NewRegisteredGauge(namespace+"cache/block/data/hit", nil)
+	db.dataBlockMissGauge = metrics.NewRegisteredGauge(namespace+"cache/block/data/miss", nil)
+	db.indexBlockHitGauge = metrics.NewRegisteredGauge(namespace+"cache/block/index/hit", nil)
+	db.indexBlockMissGauge = metrics.NewRegisteredGauge(namespace+"cache/block/index/miss", nil)
+	db.metaBlockHitGauge = metrics.NewRegisteredGauge(namespace+"cache/block/meta/hit", nil)
+	db.metaBlockMissGauge = metrics.NewRegisteredGauge(namespace+"cache/block/meta/miss", nil)
+	db.valueBlockHitGauge = metrics.NewRegisteredGauge(namespace+"cache/block/value/hit", nil)
+	db.valueBlockMissGauge = metrics.NewRegisteredGauge(namespace+"cache/block/value/miss", nil)
+
+	db.readBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"read/block/bytes", nil)
+	db.readBlockLoadBytesCache = metrics.NewRegisteredResettingTimer(namespace+"read/block/bytes/cache", nil)
+	db.readBlockLoads = metrics.NewRegisteredResettingTimer(namespace+"read/block/count", nil)
+	db.readBlockCacheLoads = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/count", nil)
+	db.readBlockLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/disk/duration", nil)
+	db.readBlockLoadAvgDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/disk/duration/avg", nil)
+	db.readBlockCacheLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/duration", nil)
+	db.readBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/checksum/duration", nil)
+	db.readBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/decompress/duration", nil)
+	db.readBlockPrepareDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/prepare/duration", nil)
+	db.readBlockMemoryDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/memory/duration", nil)
+	db.readBlockLevelZeroDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/duration", nil)
+	db.readBlockLevelZeroFindFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/findfile/duration", nil)
+	db.readBlockLevelZeroScanFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/scanfile/duration", nil)
+
+	db.readBlockLevelNonZeroDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/duration", nil)
+	db.readBlockLevelNonZeroInitDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/init/duration", nil)
+	db.readBlockLevelNonZeroFindFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/findfile/duration", nil)
+	db.readBlockLevelNonZeroScanFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/scanfile/duration", nil)
+
+	db.readLatency = metrics.NewRegisteredResettingTimer(namespace+"read/latency", nil)
+	db.readTotalTables = metrics.NewRegisteredResettingTimer(namespace+"read/totaltables", nil)
+
+	db.compBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes", nil)
+	db.compBlockLoadBytesCache = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes/cache", nil)
+	db.compBlockLoads = metrics.NewRegisteredResettingTimer(namespace+"comp/block/count", nil)
+	db.compBlockCacheLoads = metrics.NewRegisteredResettingTimer(namespace+"comp/block/cache/count", nil)
+	db.compBlockLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/disk/duration", nil)
+	db.compBlockCacheLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/cache/duration", nil)
+	db.compBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/checksum/duration", nil)
+	db.compBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/decompress/duration", nil)
 
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
@@ -399,7 +561,8 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
-	dat, closer, err := d.db.Get(key)
+	ss := time.Now()
+	dat, closer, stats, err := d.db.GetWithStats(key)
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +571,57 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if err = closer.Close(); err != nil {
 		return nil, err
 	}
+
+	d.readBlockLoadBytes.Update(time.Duration(stats.BlockBytes))
+	d.readBlockLoadBytesCache.Update(time.Duration(stats.BlockBytesCache))
+	d.readBlockLoads.Update(time.Duration(stats.BlockReadCount))
+	d.readBlockCacheLoads.Update(time.Duration(stats.BlockReadCountCache))
+
+	ldTotal, ldAvg := calDuration(stats.BlockReadDurations)
+	if ldTotal != 0 {
+		d.readBlockLoadDuration.Update(ldTotal)
+		d.readBlockLoadAvgDuration.Update(ldAvg)
+	}
+	d.readBlockCacheLoadDuration.Update(stats.BlockCacheReadDuration)
+
+	csTotal, _ := calDuration(stats.BlockCheckSumDurations)
+	if csTotal != 0 {
+		d.readBlockChecksumDuration.Update(csTotal)
+	}
+	deTotal, _ := calDuration(stats.BlockDecompressDurations)
+	if deTotal != 0 {
+		d.readBlockDecompressDuration.Update(deTotal)
+	}
+
+	d.readBlockPrepareDuration.Update(stats.PrepareDuration)
+	d.readBlockMemoryDuration.Update(stats.MemoryLookupDuration)
+
+	if stats.LevelZeroLookupDuration != 0 {
+		d.readBlockLevelZeroDuration.Update(stats.LevelZeroLookupDuration)
+	}
+	if stats.LevelZeroFindFileDuration != 0 {
+		d.readBlockLevelZeroFindFileDuration.Update(stats.LevelZeroFindFileDuration)
+	}
+	if stats.LevelZeroScanFileDuration != 0 {
+		d.readBlockLevelZeroScanFileDuration.Update(stats.LevelZeroScanFileDuration)
+	}
+
+	if stats.LevelNonZeroLookupDuration != 0 {
+		d.readBlockLevelNonZeroDuration.Update(stats.LevelNonZeroLookupDuration)
+	}
+	if stats.LevelNonZeroInitDuration != 0 {
+		d.readBlockLevelNonZeroInitDuration.Update(stats.LevelNonZeroInitDuration)
+	}
+	if stats.LevelNonZeroFindFileDuration != 0 {
+		d.readBlockLevelNonZeroFindFileDuration.Update(stats.LevelNonZeroFindFileDuration)
+	}
+	if stats.LevelNonZeroScanFileDuration != 0 {
+		d.readBlockLevelNonZeroScanFileDuration.Update(stats.LevelNonZeroScanFileDuration)
+	}
+
+	latency := time.Since(ss)
+	d.readLatency.Update(latency)
+	d.readTotalTables.Update(time.Duration(stats.TotalTables))
 	return ret, nil
 }
 
@@ -538,6 +752,7 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		compTimes  [2]int64
 		compWrites [2]int64
 		compReads  [2]int64
+		flushStats [2]pebble.ThroughputMetric
 
 		nWrites [2]int64
 
@@ -621,6 +836,33 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 			}
 			d.levelsGauge[i].Update(level.NumFiles)
 		}
+
+		flush := stats.Flush.WriteThroughput
+		flushStats[i%2] = flush
+		flushLast := flushStats[(i-1)%2]
+		if flush.Bytes-flushLast.Bytes > 0 && flush.WorkDuration-flushLast.WorkDuration > 0 {
+			bytes := flush.Bytes - flushLast.Bytes
+			work := flush.WorkDuration - flushLast.WorkDuration
+			idle := flush.IdleDuration - flushLast.IdleDuration
+
+			peakRate := int64((float64(bytes) / float64(work)) * float64(time.Second))
+			d.flushPeakRate.Update(peakRate)
+
+			rate := int64((float64(bytes) / float64(work+idle)) * float64(time.Second))
+			d.flushRate.Update(rate)
+		}
+		d.flushUtilization.Update(int64(flush.Utilization() * 100))
+
+		d.filterBlockHitGauge.Update(sstable.BCacheStats.FilterHits.Load())
+		d.filterBlockMissGauge.Update(sstable.BCacheStats.FilterMisses.Load())
+		d.dataBlockHitGauge.Update(sstable.BCacheStats.DataHits.Load())
+		d.dataBlockMissGauge.Update(sstable.BCacheStats.DataMisses.Load())
+		d.indexBlockHitGauge.Update(sstable.BCacheStats.IndexHits.Load())
+		d.indexBlockMissGauge.Update(sstable.BCacheStats.IndexMisses.Load())
+		d.metaBlockHitGauge.Update(sstable.BCacheStats.MetaIndexHits.Load())
+		d.metaBlockMissGauge.Update(sstable.BCacheStats.MetaIndexMisses.Load())
+		d.valueBlockHitGauge.Update(sstable.BCacheStats.ValueHits.Load())
+		d.valueBlockMissGauge.Update(sstable.BCacheStats.ValueMisses.Load())
 
 		// Sleep a bit, then repeat the stats collection
 		select {
