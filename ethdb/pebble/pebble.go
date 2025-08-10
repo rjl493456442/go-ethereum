@@ -107,15 +107,20 @@ type Database struct {
 	readBlockLoadBytes          *metrics.ResettingTimer
 	readBlockLoadBytesCache     *metrics.ResettingTimer
 	readBlockLoads              *metrics.ResettingTimer
+	readBlockCacheLoads         *metrics.ResettingTimer
 	readBlockLoadDuration       *metrics.ResettingTimer
+	readBlockCacheLoadDuration  *metrics.ResettingTimer
 	readBlockChecksumDuration   *metrics.ResettingTimer
 	readBlockDecompressDuration *metrics.ResettingTimer
 	readLatency                 *metrics.ResettingTimer
 
-	compBlockLoadBytes          *metrics.ResettingTimer
-	compBlockLoadBytesCache     *metrics.ResettingTimer
-	compBlockLoads              *metrics.ResettingTimer
+	compBlockLoadBytes      *metrics.ResettingTimer
+	compBlockLoadBytesCache *metrics.ResettingTimer
+	compBlockLoads          *metrics.ResettingTimer
+	compBlockCacheLoads     *metrics.ResettingTimer
+
 	compBlockLoadDuration       *metrics.ResettingTimer
+	compBlockCacheLoadDuration  *metrics.ResettingTimer
 	compBlockChecksumDuration   *metrics.ResettingTimer
 	compBlockDecompressDuration *metrics.ResettingTimer
 
@@ -179,11 +184,13 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 	d.compBlockLoadBytes.Update(time.Duration(info.BytesRead))
 	d.compBlockLoadBytesCache.Update(time.Duration(info.BytesCache))
 	d.compBlockLoads.Update(time.Duration(info.BlockLoad))
+	d.compBlockCacheLoads.Update(time.Duration(info.BlockLoadCache))
 
 	ldTotal, ldAvg := calDuration(info.BlockLoadDurations)
 	if ldTotal != 0 {
 		d.compBlockLoadDuration.Update(ldAvg)
 	}
+	d.compBlockCacheLoadDuration.Update(info.BlockCacheLoadDuration)
 	csTotal, csAvg := calDuration(info.BlockCheckSumDurations)
 	if csTotal != 0 {
 		d.compBlockChecksumDuration.Update(csAvg)
@@ -427,7 +434,9 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.readBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"read/block/bytes", nil)
 	db.readBlockLoadBytesCache = metrics.NewRegisteredResettingTimer(namespace+"read/block/bytes/cache", nil)
 	db.readBlockLoads = metrics.NewRegisteredResettingTimer(namespace+"read/block/count", nil)
+	db.readBlockCacheLoads = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/count", nil)
 	db.readBlockLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/disk/duration", nil)
+	db.readBlockCacheLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/duration", nil)
 	db.readBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/checksum/duration", nil)
 	db.readBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/decompress/duration", nil)
 	db.readLatency = metrics.NewRegisteredResettingTimer(namespace+"read/latency", nil)
@@ -435,7 +444,9 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.compBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes", nil)
 	db.compBlockLoadBytesCache = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes/cache", nil)
 	db.compBlockLoads = metrics.NewRegisteredResettingTimer(namespace+"comp/block/count", nil)
+	db.compBlockCacheLoads = metrics.NewRegisteredResettingTimer(namespace+"comp/block/cache/count", nil)
 	db.compBlockLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/disk/duration", nil)
+	db.compBlockCacheLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/cache/duration", nil)
 	db.compBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/checksum/duration", nil)
 	db.compBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"comp/block/decompress/duration", nil)
 
@@ -505,11 +516,14 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	d.readBlockLoadBytes.Update(time.Duration(stats.BlockBytes))
 	d.readBlockLoadBytesCache.Update(time.Duration(stats.BlockBytesCache))
 	d.readBlockLoads.Update(time.Duration(stats.BlockReadCount))
+	d.readBlockCacheLoads.Update(time.Duration(stats.BlockReadCountCache))
 
 	ldTotal, ldAvg := calDuration(stats.BlockReadDurations)
 	if ldTotal != 0 {
 		d.readBlockLoadDuration.Update(ldAvg)
 	}
+	d.readBlockCacheLoadDuration.Update(stats.BlockCacheReadDuration)
+
 	csTotal, csAvg := calDuration(stats.BlockCheckSumDurations)
 	if csTotal != 0 {
 		d.readBlockChecksumDuration.Update(csAvg)

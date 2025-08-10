@@ -2,7 +2,7 @@ module github.com/ethereum/go-ethereum
 
 go 1.24.0
 
-replace github.com/cockroachdb/pebble => github.com/rjl493456442/pebble v0.0.0-20250810104121-61f191917bd3
+replace github.com/cockroachdb/pebble => github.com/rjl493456442/pebble v0.0.0-20250810112527-d6ab18ff32b1
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.2.0
