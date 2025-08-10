@@ -110,6 +110,7 @@ type Database struct {
 	readBlockLoadDuration       *metrics.ResettingTimer
 	readBlockChecksumDuration   *metrics.ResettingTimer
 	readBlockDecompressDuration *metrics.ResettingTimer
+	readLatency                 *metrics.ResettingTimer
 
 	compBlockLoadBytes          *metrics.ResettingTimer
 	compBlockLoadBytesCache     *metrics.ResettingTimer
@@ -429,6 +430,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.readBlockLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/disk/duration", nil)
 	db.readBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/checksum/duration", nil)
 	db.readBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/decompress/duration", nil)
+	db.readLatency = metrics.NewRegisteredResettingTimer(namespace+"read/latency", nil)
 
 	db.compBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes", nil)
 	db.compBlockLoadBytesCache = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes/cache", nil)
@@ -489,6 +491,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
+	ss := time.Now()
 	dat, closer, stats, err := d.db.GetWithStats(key)
 	if err != nil {
 		return nil, err
@@ -515,6 +518,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if deTotal != 0 {
 		d.readBlockDecompressDuration.Update(deAvg)
 	}
+	d.readLatency.UpdateSince(ss)
 	return ret, nil
 }
 
