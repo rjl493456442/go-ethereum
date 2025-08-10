@@ -292,10 +292,16 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// the compaction debt as around 10GB. By reducing it to 2, the compaction
 		// debt will be less than 1GB, but with more frequent compactions scheduled.
 		L0CompactionThreshold: 2,
+
+		// Enable the newest optimizations and features from Pebble, especially
+		// the ValueBlock which separates the values at the dedicated value block
+		// for better block cache utilization and improved compaction performance.
+		// FormatMajorVersion: pebble.FormatNewest,
 	}
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.
 	opt.Experimental.ReadSamplingMultiplier = -1
+	opt.Experimental.MaxWriterConcurrency = runtime.NumCPU()
 
 	// Open the db and recover any potential corruptions
 	innerDB, err := pebble.Open(file, opt)
