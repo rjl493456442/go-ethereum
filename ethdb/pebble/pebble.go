@@ -21,7 +21,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,6 +172,17 @@ func calDuration(ts []time.Duration) (time.Duration, time.Duration) {
 		sum += t
 	}
 	return sum, sum / time.Duration(len(ts))
+}
+
+func calSize(sizes []uint64) (uint64, uint64, uint64, uint64) {
+	if len(sizes) == 0 {
+		return 0, 0, 0, 0
+	}
+	var sum uint64
+	for _, t := range sizes {
+		sum += t
+	}
+	return sum, sum / uint64(len(sizes)), slices.Max(sizes), slices.Min(sizes)
 }
 
 func (d *Database) onFlushBegin(info pebble.FlushInfo) {}
@@ -591,6 +604,14 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 
 	d.readLatency.UpdateSince(ss)
 	d.readTotalTables.Update(time.Duration(stats.TotalTables))
+
+	sum, avg, max, min := calSize(stats.BlockByteSlice)
+	if sum != stats.BlockBytes {
+		log.Error("Read stats", "sum", sum, "total", stats.BlockBytes, "min", min, "max", max)
+	}
+	if rand.Uint64() == 5000 {
+		log.Info("Read stats", "sum", sum, "avg", avg, "max", max, "min", min, "number", len(stats.BlockByteSlice), "type", stats.Types)
+	}
 	return ret, nil
 }
 
