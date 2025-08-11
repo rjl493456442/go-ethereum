@@ -104,21 +104,31 @@ type Database struct {
 	valueBlockHitGauge   *metrics.Gauge
 	valueBlockMissGauge  *metrics.Gauge
 
-	readBlockLoadBytes                    *metrics.ResettingTimer
-	readBlockLoadBytesCache               *metrics.ResettingTimer
-	readBlockLoads                        *metrics.ResettingTimer
-	readBlockCacheLoads                   *metrics.ResettingTimer
-	readBlockLoadDuration                 *metrics.ResettingTimer
-	readBlockCacheLoadDuration            *metrics.ResettingTimer
-	readBlockChecksumDuration             *metrics.ResettingTimer
-	readBlockDecompressDuration           *metrics.ResettingTimer
-	readBlockPrepareDuration              *metrics.ResettingTimer
-	readBlockMemoryDuration               *metrics.ResettingTimer
-	readBlockLevelZeroDuration            *metrics.ResettingTimer
+	readBlockLoadBytes      *metrics.ResettingTimer
+	readBlockLoadBytesCache *metrics.ResettingTimer
+	readBlockLoads          *metrics.ResettingTimer
+	readBlockCacheLoads     *metrics.ResettingTimer
+
+	readBlockLoadAvgDuration *metrics.ResettingTimer
+
+	readBlockLoadDuration       *metrics.ResettingTimer
+	readBlockCacheLoadDuration  *metrics.ResettingTimer
+	readBlockChecksumDuration   *metrics.ResettingTimer
+	readBlockDecompressDuration *metrics.ResettingTimer
+	readBlockPrepareDuration    *metrics.ResettingTimer
+	readBlockMemoryDuration     *metrics.ResettingTimer
+
+	readBlockLevelZeroDuration         *metrics.ResettingTimer
+	readBlockLevelZeroFindFileDuration *metrics.ResettingTimer
+	readBlockLevelZeroScanFileDuration *metrics.ResettingTimer
+
 	readBlockLevelNonZeroDuration         *metrics.ResettingTimer
+	readBlockLevelNonZeroInitDuration     *metrics.ResettingTimer
 	readBlockLevelNonZeroFindFileDuration *metrics.ResettingTimer
 	readBlockLevelNonZeroScanFileDuration *metrics.ResettingTimer
-	readLatency                           *metrics.ResettingTimer
+
+	readLatency     *metrics.ResettingTimer
+	readTotalTables *metrics.ResettingTimer
 
 	compBlockLoadBytes      *metrics.ResettingTimer
 	compBlockLoadBytesCache *metrics.ResettingTimer
@@ -442,16 +452,23 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.readBlockLoads = metrics.NewRegisteredResettingTimer(namespace+"read/block/count", nil)
 	db.readBlockCacheLoads = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/count", nil)
 	db.readBlockLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/disk/duration", nil)
+	db.readBlockLoadAvgDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/disk/duration/avg", nil)
 	db.readBlockCacheLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/duration", nil)
 	db.readBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/checksum/duration", nil)
 	db.readBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/decompress/duration", nil)
 	db.readBlockPrepareDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/prepare/duration", nil)
 	db.readBlockMemoryDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/memory/duration", nil)
 	db.readBlockLevelZeroDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/duration", nil)
+	db.readBlockLevelZeroFindFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/findfile/duration", nil)
+	db.readBlockLevelZeroScanFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/scanfile/duration", nil)
+
 	db.readBlockLevelNonZeroDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/duration", nil)
+	db.readBlockLevelNonZeroInitDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/init/duration", nil)
 	db.readBlockLevelNonZeroFindFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/findfile/duration", nil)
 	db.readBlockLevelNonZeroScanFileDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/scanfile/duration", nil)
+
 	db.readLatency = metrics.NewRegisteredResettingTimer(namespace+"read/latency", nil)
+	db.readTotalTables = metrics.NewRegisteredResettingTimer(namespace+"read/totaltables", nil)
 
 	db.compBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes", nil)
 	db.compBlockLoadBytesCache = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes/cache", nil)
@@ -532,26 +549,38 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 
 	ldTotal, ldAvg := calDuration(stats.BlockReadDurations)
 	if ldTotal != 0 {
-		d.readBlockLoadDuration.Update(ldAvg)
+		d.readBlockLoadDuration.Update(ldTotal)
+		d.readBlockLoadAvgDuration.Update(ldAvg)
 	}
 	d.readBlockCacheLoadDuration.Update(stats.BlockCacheReadDuration)
 
-	csTotal, csAvg := calDuration(stats.BlockCheckSumDurations)
+	csTotal, _ := calDuration(stats.BlockCheckSumDurations)
 	if csTotal != 0 {
-		d.readBlockChecksumDuration.Update(csAvg)
+		d.readBlockChecksumDuration.Update(csTotal)
 	}
-	deTotal, deAvg := calDuration(stats.BlockDecompressDurations)
+	deTotal, _ := calDuration(stats.BlockDecompressDurations)
 	if deTotal != 0 {
-		d.readBlockDecompressDuration.Update(deAvg)
+		d.readBlockDecompressDuration.Update(deTotal)
 	}
+
 	d.readBlockPrepareDuration.Update(stats.PrepareDuration)
 	d.readBlockMemoryDuration.Update(stats.MemoryLookupDuration)
 
 	if stats.LevelZeroLookupDuration != 0 {
 		d.readBlockLevelZeroDuration.Update(stats.LevelZeroLookupDuration)
 	}
+	if stats.LevelZeroFindFileDuration != 0 {
+		d.readBlockLevelZeroFindFileDuration.Update(stats.LevelZeroFindFileDuration)
+	}
+	if stats.LevelZeroScanFileDuration != 0 {
+		d.readBlockLevelZeroScanFileDuration.Update(stats.LevelZeroScanFileDuration)
+	}
+
 	if stats.LevelNonZeroLookupDuration != 0 {
 		d.readBlockLevelNonZeroDuration.Update(stats.LevelNonZeroLookupDuration)
+	}
+	if stats.LevelNonZeroInitDuration != 0 {
+		d.readBlockLevelNonZeroInitDuration.Update(stats.LevelNonZeroInitDuration)
 	}
 	if stats.LevelNonZeroFindFileDuration != 0 {
 		d.readBlockLevelNonZeroFindFileDuration.Update(stats.LevelNonZeroFindFileDuration)
@@ -559,7 +588,9 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if stats.LevelNonZeroScanFileDuration != 0 {
 		d.readBlockLevelNonZeroScanFileDuration.Update(stats.LevelNonZeroScanFileDuration)
 	}
+
 	d.readLatency.UpdateSince(ss)
+	d.readTotalTables.Update(time.Duration(stats.TotalTables))
 	return ret, nil
 }
 
