@@ -542,8 +542,13 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	}
 	d.readBlockPrepareDuration.Update(stats.PrepareDuration)
 	d.readBlockMemoryDuration.Update(stats.MemoryLookupDuration)
-	d.readBlockLevelZeroDuration.Update(stats.LevelZeroLookupDuration)
-	d.readBlockLevelNonZeroDuration.Update(stats.LevelNonZeroLookupDuration)
+
+	if stats.LevelZeroLookupDuration != 0 {
+		d.readBlockLevelZeroDuration.Update(stats.LevelZeroLookupDuration)
+	}
+	if stats.LevelNonZeroLookupDuration != 0 {
+		d.readBlockLevelNonZeroDuration.Update(stats.LevelNonZeroLookupDuration)
+	}
 	d.readLatency.UpdateSince(ss)
 	return ret, nil
 }
