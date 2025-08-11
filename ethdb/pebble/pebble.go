@@ -104,15 +104,19 @@ type Database struct {
 	valueBlockHitGauge   *metrics.Gauge
 	valueBlockMissGauge  *metrics.Gauge
 
-	readBlockLoadBytes          *metrics.ResettingTimer
-	readBlockLoadBytesCache     *metrics.ResettingTimer
-	readBlockLoads              *metrics.ResettingTimer
-	readBlockCacheLoads         *metrics.ResettingTimer
-	readBlockLoadDuration       *metrics.ResettingTimer
-	readBlockCacheLoadDuration  *metrics.ResettingTimer
-	readBlockChecksumDuration   *metrics.ResettingTimer
-	readBlockDecompressDuration *metrics.ResettingTimer
-	readLatency                 *metrics.ResettingTimer
+	readBlockLoadBytes            *metrics.ResettingTimer
+	readBlockLoadBytesCache       *metrics.ResettingTimer
+	readBlockLoads                *metrics.ResettingTimer
+	readBlockCacheLoads           *metrics.ResettingTimer
+	readBlockLoadDuration         *metrics.ResettingTimer
+	readBlockCacheLoadDuration    *metrics.ResettingTimer
+	readBlockChecksumDuration     *metrics.ResettingTimer
+	readBlockDecompressDuration   *metrics.ResettingTimer
+	readBlockPrepareDuration      *metrics.ResettingTimer
+	readBlockMemoryDuration       *metrics.ResettingTimer
+	readBlockLevelZeroDuration    *metrics.ResettingTimer
+	readBlockLevelNonZeroDuration *metrics.ResettingTimer
+	readLatency                   *metrics.ResettingTimer
 
 	compBlockLoadBytes      *metrics.ResettingTimer
 	compBlockLoadBytesCache *metrics.ResettingTimer
@@ -439,6 +443,10 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.readBlockCacheLoadDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/cache/duration", nil)
 	db.readBlockChecksumDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/checksum/duration", nil)
 	db.readBlockDecompressDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/decompress/duration", nil)
+	db.readBlockPrepareDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/prepare/duration", nil)
+	db.readBlockMemoryDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/memory/duration", nil)
+	db.readBlockLevelZeroDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelzero/duration", nil)
+	db.readBlockLevelNonZeroDuration = metrics.NewRegisteredResettingTimer(namespace+"read/block/levelnonzero/duration", nil)
 	db.readLatency = metrics.NewRegisteredResettingTimer(namespace+"read/latency", nil)
 
 	db.compBlockLoadBytes = metrics.NewRegisteredResettingTimer(namespace+"comp/block/bytes", nil)
@@ -532,6 +540,10 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if deTotal != 0 {
 		d.readBlockDecompressDuration.Update(deAvg)
 	}
+	d.readBlockPrepareDuration.Update(stats.PrepareDuration)
+	d.readBlockMemoryDuration.Update(stats.MemoryLookupDuration)
+	d.readBlockLevelZeroDuration.Update(stats.LevelZeroLookupDuration)
+	d.readBlockLevelNonZeroDuration.Update(stats.LevelNonZeroLookupDuration)
 	d.readLatency.UpdateSince(ss)
 	return ret, nil
 }
