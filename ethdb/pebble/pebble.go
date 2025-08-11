@@ -609,7 +609,7 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	if sum != stats.BlockBytes {
 		log.Error("Read stats", "sum", sum, "total", stats.BlockBytes, "min", min, "max", max)
 	}
-	if rand.Uint64() == 5000 {
+	if rand.Uint64()%5000 == 0 {
 		log.Info("Read stats", "sum", sum, "avg", avg, "max", max, "min", min, "number", len(stats.BlockByteSlice), "type", stats.Types)
 	}
 	return ret, nil
