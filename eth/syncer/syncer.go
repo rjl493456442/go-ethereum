@@ -127,7 +127,9 @@ func (s *Syncer) run() {
 				target = header
 				break
 			}
-			req.errc <- s.backend.Downloader().BeaconDevSync(ethconfig.SnapSync, target)
+			if target != nil {
+				req.errc <- s.backend.Downloader().BeaconDevSync(ethconfig.SnapSync, target)
+			}
 
 		case <-ticker.C:
 			if target == nil {
