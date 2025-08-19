@@ -87,14 +87,18 @@ func (s *Syncer) run() {
 
 	var (
 		target *types.Header
-		ticker = time.NewTicker(time.Second * 5)
+		ticker = time.NewTicker(time.Second * 12)
 	)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case req := <-s.request:
+			if target != nil {
+				req.errc <- fmt.Errorf("snap sync is running, target: %d-%x", target.Number, target.Hash())
+				continue
+			}
 			var (
-				resync  bool
 				retries int
 				logged  bool
 			)
@@ -120,27 +124,28 @@ func (s *Syncer) run() {
 					retries++
 					continue
 				}
-				if target != nil && header.Number.Cmp(target.Number) <= 0 {
-					req.errc <- fmt.Errorf("stale sync target, current: %d, received: %d", target.Number, header.Number)
-					break
-				}
 				target = header
-				resync = true
 				break
 			}
-			if resync {
-				req.errc <- s.backend.Downloader().BeaconDevSync(ethconfig.FullSync, target)
-			}
+			req.errc <- s.backend.Downloader().BeaconDevSync(ethconfig.SnapSync, target)
 
 		case <-ticker.C:
-			if target == nil || !s.exitWhenSynced {
+			if target == nil {
 				continue
 			}
-			if block := s.backend.BlockChain().GetBlockByHash(target.Hash()); block != nil {
-				log.Info("Sync target reached", "number", block.NumberU64(), "hash", block.Hash())
-				go s.stack.Close() // async since we need to close ourselves
-				return
+			chainHead, err := s.backend.Downloader().GetOptimisticChainHead(target.Hash())
+			if err != nil {
+				continue
 			}
+			if chainHead.Number.Cmp(target.Number) <= 0 {
+				continue
+			}
+			if err := s.backend.Downloader().BeaconSync(ethconfig.SnapSync, chainHead, target); err != nil {
+				log.Info("Failed to extend the beacon sync", "err", err)
+				continue
+			}
+			log.Info("Extended the beacon sync head", "from", target.Number, "to", chainHead.Number, "finalized", target.Number)
+			target = chainHead
 
 		case <-s.closed:
 			return

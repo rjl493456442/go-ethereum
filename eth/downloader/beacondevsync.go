@@ -71,3 +71,42 @@ func (d *Downloader) GetHeader(hash common.Hash) (*types.Header, error) {
 	}
 	return nil, errors.New("failed to fetch sync target")
 }
+
+// GetOptimisticChainHead tries to retrieve the chain head from the network
+// optimistically based on the given block hash.
+func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, error) {
+	// Pick a random peer to sync from and keep retrying if none are yet
+	// available due to fresh startup
+	d.peers.lock.RLock()
+	defer d.peers.lock.RUnlock()
+
+	for {
+		for _, peer := range d.peers.peers {
+			if peer == nil {
+				log.Warn("Encountered nil peer while retrieving sync target", "hash", hash)
+				continue
+			}
+			// Found a peer, attempt to retrieve the header whilst blocking and
+			// retry if it fails for whatever reason
+			log.Debug("Attempting to retrieve sync target", "peer", peer.id, "hash", hash)
+			headers, metas, err := d.fetchHeadersByHash(peer, hash, MaxHeaderFetch, 0, false)
+			if err != nil {
+				continue
+			}
+			if len(headers) == 0 {
+				continue
+			}
+			// Head header retrieved, if the hash matches, start the actual sync
+			if metas[0] != hash {
+				log.Warn("Received invalid sync target", "peer", peer.id, "want", hash, "have", metas[0])
+				continue
+			}
+			if len(headers) == MaxHeaderFetch {
+				hash = headers[len(headers)-1].Hash()
+			} else {
+				return headers[len(headers)-1], nil
+			}
+		}
+		return nil, errors.New("failed to fetch sync target")
+	}
+}
