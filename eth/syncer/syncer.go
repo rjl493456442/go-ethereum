@@ -80,6 +80,24 @@ func (s *Syncer) APIs() []rpc.API {
 	}
 }
 
+func updateFinalizedHeader(headers []*types.Header, finalized *types.Header) *types.Header {
+	if len(headers) == 0 {
+		return nil
+	}
+	latest := headers[len(headers)-1]
+
+	if finalized.Number.Uint64()+128 < latest.Number.Uint64() {
+		target := latest.Number.Uint64() - 64
+
+		for i := len(headers) - 1; i >= 0; i-- {
+			if headers[i].Number.Uint64() <= target {
+				return headers[i]
+			}
+		}
+	}
+	return nil
+}
+
 // run is the main loop that monitors sync requests from users and initiates
 // sync operations when necessary. It also checks whether the specified target
 // has been reached and shuts down Geth if requested by the user.
@@ -147,7 +165,7 @@ func (s *Syncer) run() {
 			}
 			chainHead, err := s.backend.Downloader().GetOptimisticChainHead(final.Hash())
 			if err != nil {
-				log.Warn("Failed to retrieve the chain head", "err", err)
+				log.Warn("Failed to retrieve the chain head", "finalnumber", final.Number, "finalhash", final.Hash(), "targetnumber", target.Number, "targethash", target.Hash(), "err", err)
 				continue
 			}
 			if chainHead.Number.Cmp(target.Number) <= 0 {
@@ -157,19 +175,21 @@ func (s *Syncer) run() {
 			headers = append(headers, chainHead)
 			log.Info("Optimistically retrieved chain head", "finalnumber", final.Number, "finalhash", final.Hash(), "headnumber", chainHead.Number, "headhash", chainHead.Hash())
 
-			if len(headers) > 0 {
-				diff := headers[0].Number.Int64() - final.Number.Int64()
-				if diff > 64 {
-					log.Info("Finalized header is outdated", "old", final.Number, "new", headers[0].Number, "hash", headers[0].Hash())
-					final = headers[0]
+			for len(headers) > 0 {
+				if headers[0].Number.Uint64() < final.Number.Uint64() {
 					headers = headers[1:]
+					continue
 				}
+			}
+			if got := updateFinalizedHeader(headers, target); got != nil {
+				log.Info("Finalized header is outdated", "old", final.Number, "new", got.Number, "hash", got.Hash())
+				final = got
 			}
 			if err := s.backend.Downloader().BeaconSync(ethconfig.SnapSync, chainHead, final); err != nil {
 				log.Info("Failed to extend the beacon sync", "err", err)
 				continue
 			}
-			log.Info("Extended the beacon sync head", "from", target.Number, "to", chainHead.Number, "finalized", final.Number)
+			log.Info("Extended the beacon sync head", "number", chainHead.Number, "hash", chainHead.Hash(), "finalized", final.Number)
 
 		case stat := <-status:
 			if stat.Start {
