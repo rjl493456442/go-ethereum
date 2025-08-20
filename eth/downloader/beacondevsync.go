@@ -92,6 +92,7 @@ func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, er
 			log.Debug("Attempting to retrieve sync target", "peer", peer.id, "hash", hash)
 			headers, metas, err := d.fetchHeadersByHash(peer, hash, MaxHeaderFetch, 0, false)
 			if err != nil {
+				log.Warn("Failed to retrieve sync target", "peer", peer.id, "hash", hash, "err", err)
 				continue
 			}
 			if len(headers) == 0 {
@@ -104,12 +105,14 @@ func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, er
 			}
 			if len(headers) == MaxHeaderFetch {
 				chainHead = headers[len(headers)-1]
-				hash = headers[len(headers)-1].Hash()
+				hash = chainHead.Hash()
+				log.Info("Retrieve next batch", "number", chainHead.Number, "hash", chainHead.Hash())
 			} else {
 				return headers[len(headers)-1], nil
 			}
 		}
 		if chainHead != nil {
+			log.Info("Return the head of last batch", "number", chainHead.Number, "hash", chainHead.Hash())
 			return chainHead, nil
 		}
 		return nil, errors.New("failed to fetch sync target")
