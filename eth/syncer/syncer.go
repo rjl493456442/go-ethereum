@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -86,10 +87,17 @@ func (s *Syncer) run() {
 	defer s.wg.Done()
 
 	var (
-		target *types.Header
-		ticker = time.NewTicker(time.Second * 12)
+		target  *types.Header
+		final   *types.Header
+		headers []*types.Header
+
+		status = make(chan downloader.SyncStatus, 100)
+		ticker = time.NewTicker(time.Second * 3)
 	)
 	defer ticker.Stop()
+
+	sub := s.backend.Downloader().SubscribeSyncStatus(status)
+	defer sub.Unsubscribe()
 
 	for {
 		select {
@@ -125,6 +133,7 @@ func (s *Syncer) run() {
 					continue
 				}
 				target = header
+				final = header
 				break
 			}
 			if target != nil {
@@ -135,19 +144,42 @@ func (s *Syncer) run() {
 			if target == nil {
 				continue
 			}
-			chainHead, err := s.backend.Downloader().GetOptimisticChainHead(target.Hash())
+			chainHead, err := s.backend.Downloader().GetOptimisticChainHead(final.Hash())
 			if err != nil {
 				continue
 			}
 			if chainHead.Number.Cmp(target.Number) <= 0 {
 				continue
 			}
-			if err := s.backend.Downloader().BeaconSync(ethconfig.SnapSync, chainHead, target); err != nil {
+			target = chainHead
+			headers = append(headers, chainHead)
+
+			if len(headers) > 0 {
+				diff := headers[0].Number.Int64() - final.Number.Int64()
+				if diff > 64 {
+					final = headers[0]
+					headers = headers[1:]
+				}
+			}
+			if err := s.backend.Downloader().BeaconSync(ethconfig.SnapSync, chainHead, final); err != nil {
 				log.Info("Failed to extend the beacon sync", "err", err)
 				continue
 			}
-			log.Info("Extended the beacon sync head", "from", target.Number, "to", chainHead.Number, "finalized", target.Number)
-			target = chainHead
+			log.Info("Extended the beacon sync head", "from", target.Number, "to", chainHead.Number, "finalized", final.Number)
+
+		case stat := <-status:
+			if stat.Start {
+				log.Info("Synchronization starts", "number", stat.Latest.Number, "hash", stat.Latest.Hash())
+				continue
+			}
+			if stat.Done {
+				log.Info("Synchronization is finished", "number", stat.Latest.Number, "hash", stat.Latest.Hash())
+				target = nil
+				final = nil
+				headers = nil
+				continue
+			}
+			log.Info("Synchronization is failed", "err", stat.Err)
 
 		case <-s.closed:
 			return

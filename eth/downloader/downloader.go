@@ -100,6 +100,9 @@ type Downloader struct {
 	mode atomic.Uint32  // Synchronisation mode defining the strategy used (per sync cycle), use d.getMode() to get the SyncMode
 	mux  *event.TypeMux // Event multiplexer to announce sync operation events
 
+	scope event.SubscriptionScope
+	feed  event.Feed
+
 	queue *queue   // Scheduler for selecting the hashes to download
 	peers *peerSet // Set of active peers from which download can proceed
 
@@ -414,13 +417,22 @@ func (d *Downloader) getMode() SyncMode {
 // the specified head hash.
 func (d *Downloader) syncToHead() (err error) {
 	d.mux.Post(StartEvent{})
+	d.feed.Send(SyncStatus{
+		Start:  true,
+		Latest: d.blockchain.CurrentHeader(),
+	})
 	defer func() {
 		// reset on error
 		if err != nil {
 			d.mux.Post(FailedEvent{err})
+			d.feed.Send(SyncStatus{Err: err})
 		} else {
 			latest := d.blockchain.CurrentHeader()
 			d.mux.Post(DoneEvent{latest})
+			d.feed.Send(SyncStatus{
+				Latest: latest,
+				Done:   true,
+			})
 		}
 	}()
 	mode := d.getMode()
@@ -1182,4 +1194,15 @@ func (d *Downloader) reportSnapSyncProgress(force bool) {
 	)
 	log.Info("Syncing: chain download in progress", "synced", progress, "chain", syncedBytes, "headers", headers, "bodies", bodies, "receipts", receipts, "eta", common.PrettyDuration(eta))
 	d.syncLogTime = time.Now()
+}
+
+type SyncStatus struct {
+	Latest *types.Header
+	Done   bool
+	Start  bool
+	Err    error
+}
+
+func (d *Downloader) SubscribeSyncStatus(ch chan<- SyncStatus) event.Subscription {
+	return d.scope.Track(d.feed.Subscribe(ch))
 }
