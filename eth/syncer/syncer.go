@@ -138,6 +138,7 @@ func (s *Syncer) run() {
 			}
 			if target != nil {
 				req.errc <- s.backend.Downloader().BeaconDevSync(ethconfig.SnapSync, target)
+				log.Info("Initiated the snap sync", "number", target.Number, "hash", target.Hash())
 			}
 
 		case <-ticker.C:
@@ -146,6 +147,7 @@ func (s *Syncer) run() {
 			}
 			chainHead, err := s.backend.Downloader().GetOptimisticChainHead(final.Hash())
 			if err != nil {
+				log.Warn("Failed to retrieve the chain head", "err", err)
 				continue
 			}
 			if chainHead.Number.Cmp(target.Number) <= 0 {
@@ -153,10 +155,12 @@ func (s *Syncer) run() {
 			}
 			target = chainHead
 			headers = append(headers, chainHead)
+			log.Info("Optimistically retrieved chain head", "finalnumber", final.Number, "finalhash", final.Hash(), "headnumber", chainHead.Number, "headhash", chainHead.Hash())
 
 			if len(headers) > 0 {
 				diff := headers[0].Number.Int64() - final.Number.Int64()
 				if diff > 64 {
+					log.Info("Finalized header is outdated", "old", final.Number, "new", headers[0].Number, "hash", headers[0].Hash())
 					final = headers[0]
 					headers = headers[1:]
 				}
