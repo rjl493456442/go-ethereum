@@ -80,6 +80,7 @@ func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, er
 	d.peers.lock.RLock()
 	defer d.peers.lock.RUnlock()
 
+	var chainHead *types.Header
 	for {
 		for _, peer := range d.peers.peers {
 			if peer == nil {
@@ -102,10 +103,14 @@ func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, er
 				continue
 			}
 			if len(headers) == MaxHeaderFetch {
+				chainHead = headers[len(headers)-1]
 				hash = headers[len(headers)-1].Hash()
 			} else {
 				return headers[len(headers)-1], nil
 			}
+		}
+		if chainHead != nil {
+			return chainHead, nil
 		}
 		return nil, errors.New("failed to fetch sync target")
 	}
