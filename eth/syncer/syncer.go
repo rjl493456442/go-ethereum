@@ -175,11 +175,8 @@ func (s *Syncer) run() {
 			headers = append(headers, chainHead)
 			log.Info("Optimistically retrieved chain head", "finalnumber", final.Number, "finalhash", final.Hash(), "headnumber", chainHead.Number, "headhash", chainHead.Hash())
 
-			for len(headers) > 0 {
-				if headers[0].Number.Uint64() < final.Number.Uint64() {
-					headers = headers[1:]
-					continue
-				}
+			for len(headers) > 0 && headers[0].Number.Uint64() < final.Number.Uint64() {
+				headers = headers[1:]
 			}
 			if got := updateFinalizedHeader(headers, target); got != nil {
 				log.Info("Finalized header is outdated", "old", final.Number, "new", got.Number, "hash", got.Hash())
