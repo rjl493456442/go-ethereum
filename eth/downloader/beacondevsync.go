@@ -82,6 +82,7 @@ func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, er
 
 	var chainHead *types.Header
 	for {
+		var makeProgress bool
 		for _, peer := range d.peers.peers {
 			if peer == nil {
 				log.Warn("Encountered nil peer while retrieving sync target", "hash", hash)
@@ -106,15 +107,19 @@ func (d *Downloader) GetOptimisticChainHead(hash common.Hash) (*types.Header, er
 			if len(headers) == MaxHeaderFetch {
 				chainHead = headers[len(headers)-1]
 				hash = chainHead.Hash()
+				makeProgress = true
 				log.Info("Retrieve next batch", "number", chainHead.Number, "hash", chainHead.Hash())
 			} else {
 				return headers[len(headers)-1], nil
 			}
 		}
-		if chainHead != nil {
-			log.Info("Return the head of last batch", "number", chainHead.Number, "hash", chainHead.Hash())
-			return chainHead, nil
+		if !makeProgress {
+			break
 		}
-		return nil, errors.New("failed to fetch sync target")
 	}
+	if chainHead != nil {
+		log.Info("Return the head of last batch", "number", chainHead.Number, "hash", chainHead.Hash())
+		return chainHead, nil
+	}
+	return nil, errors.New("failed to fetch sync target")
 }
