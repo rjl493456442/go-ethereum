@@ -18,6 +18,7 @@
 package pebble
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -602,7 +603,8 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 		d.readBlockLevelNonZeroScanFileDuration.Update(stats.LevelNonZeroScanFileDuration)
 	}
 
-	d.readLatency.UpdateSince(ss)
+	latency := time.Since(ss)
+	d.readLatency.Update(latency)
 	d.readTotalTables.Update(time.Duration(stats.TotalTables))
 
 	sum, avg, max, min := calSize(stats.BlockByteSlice)
@@ -611,6 +613,17 @@ func (d *Database) Get(key []byte) ([]byte, error) {
 	}
 	if rand.Uint64()%5000 == 0 {
 		log.Info("Read stats", "sum", sum, "avg", avg, "max", max, "min", min, "number", len(stats.BlockByteSlice), "size", stats.BlockByteSlice, "type", stats.Types)
+	}
+	if bytes.Equal(key, []byte("TransactionIndexTail")) {
+		log.Info("Read target key stats", "sum", sum, "avg", avg, "max", max, "min", min, "number", len(stats.BlockByteSlice), "size", stats.BlockByteSlice, "type", stats.Types)
+		log.Info("Read target key",
+			"latency", common.PrettyDuration(latency),
+			"prepare", common.PrettyDuration(stats.PrepareDuration),
+			"read-memory", common.PrettyDuration(stats.MemoryLookupDuration),
+			"level0", common.PrettyDuration(stats.LevelZeroLookupDuration),
+			"non-level0", common.PrettyDuration(stats.LevelNonZeroLookupDuration),
+			"totalTables", stats.TotalTables,
+		)
 	}
 	return ret, nil
 }
