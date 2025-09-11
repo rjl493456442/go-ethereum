@@ -392,6 +392,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// flushed at the background if the accumulated size exceeds this threshold.
 		WALBytesPerSync: 5 * ethdb.IdealBatchSize,
 
+		BytesPerSync: 256 * 1024 * 1024, // Disable in-middle fsync
+
 		// L0CompactionThreshold specifies the number of L0 read-amplification
 		// necessary to trigger an L0 compaction. It essentially refers to the
 		// number of sub-levels at the L0. For each sub-level, it contains several
