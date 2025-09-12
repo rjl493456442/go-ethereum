@@ -88,6 +88,9 @@ type Database struct {
 	liveIterGauge          *metrics.Gauge   // Gauge for tracking the number of live database iterators
 	levelsGauge            []*metrics.Gauge // Gauge for tracking the number of tables in levels
 
+	// TODO(rjl493456442) it should be disabled in the production!!
+	readLatencyTimer *metrics.ResettingTimer // Timer for tracking the latency of frontend reads
+
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
 	closed   bool            // keep track of whether we're Closed
@@ -339,6 +342,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.liveCompGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/count", nil)
 	db.liveCompSizeGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/size", nil)
 	db.liveIterGauge = metrics.GetOrRegisterGauge(namespace+"iter/count", nil)
+	db.readLatencyTimer = metrics.NewRegisteredResettingTimer(namespace+"read/latency/time", nil)
 
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
@@ -370,9 +374,15 @@ func (d *Database) Close() error {
 func (d *Database) Has(key []byte) (bool, error) {
 	d.quitLock.RLock()
 	defer d.quitLock.RUnlock()
+
 	if d.closed {
 		return false, pebble.ErrClosed
 	}
+	// TODO(rjl493456442) remove it before merge
+	defer func(start time.Time) {
+		d.readLatencyTimer.UpdateSince(start)
+	}(time.Now())
+
 	_, closer, err := d.db.Get(key)
 	if err == pebble.ErrNotFound {
 		return false, nil
@@ -389,9 +399,15 @@ func (d *Database) Has(key []byte) (bool, error) {
 func (d *Database) Get(key []byte) ([]byte, error) {
 	d.quitLock.RLock()
 	defer d.quitLock.RUnlock()
+
 	if d.closed {
 		return nil, pebble.ErrClosed
 	}
+	// TODO(rjl493456442) remove it before merge
+	defer func(start time.Time) {
+		d.readLatencyTimer.UpdateSince(start)
+	}(time.Now())
+
 	dat, closer, err := d.db.Get(key)
 	if err != nil {
 		return nil, err
