@@ -20,6 +20,7 @@ package pebble
 import (
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -293,6 +294,14 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// the compaction debt as around 10GB. By reducing it to 2, the compaction
 		// debt will be less than 1GB, but with more frequent compactions scheduled.
 		L0CompactionThreshold: 2,
+
+		// Disable periodic fsync during sstable writes to reduce fsync calls
+		// and mitigate frontend performance degradation under heavy write
+		// workloads (e.g., compaction).
+		//
+		// Note, the sstable will still be synced once it's fully written on
+		// Close. Persistence guarantee is not changed.
+		BytesPerSync: math.MaxInt,
 	}
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.
