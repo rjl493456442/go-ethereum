@@ -279,7 +279,7 @@ func (l panicLogger) Eventf(ctx context.Context, format string, args ...interfac
 	log.Warn(fmt.Sprintf(format, args...))
 }
 
-func (l panicLogger) IsTracingEnabled(ctx context.Context) bool { return true }
+func (l panicLogger) IsTracingEnabled(ctx context.Context) bool { return false }
 
 // New returns a wrapped pebble DB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
