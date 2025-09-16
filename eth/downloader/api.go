@@ -75,6 +75,13 @@ type SyncingResult struct {
 
 // SubscribeSyncStatus creates a subscription that will broadcast new synchronisation updates.
 // The given channel must receive interface values, the result can either be a SyncingResult or false.
+//
+// The sync status pushed to subscriptions can be a stream like:
+// >>> {Syncing: true, Progress: {...}}
+// >>> {false}
+//
+// If the node is already synced up, then only a single event subscribers will
+// receive is {false}.
 func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) {
 	eventCh := make(chan SyncEvent, 16)
 	sub := api.d.SubscribeSyncEvents(eventCh)
@@ -87,7 +94,6 @@ func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) {
 			checkInterval = time.Second * 60
 			checkTimer    = time.NewTimer(checkInterval)
 			started       bool
-			done          bool
 
 			getProgress = func() ethereum.SyncProgress {
 				prog := api.d.Progress()
@@ -103,6 +109,16 @@ func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) {
 			}
 		)
 		defer checkTimer.Stop()
+
+		// Send immediate status to new subscriber if already synced
+		prog := getProgress()
+		if prog.Done() {
+			select {
+			case status <- false:
+			case <-sub.Err():
+				return
+			}
+		}
 
 		for {
 			select {
@@ -129,15 +145,12 @@ func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) {
 					checkTimer.Reset(checkInterval)
 					continue
 				}
-				if !done {
-					select {
-					case status <- false:
-					case <-sub.Err():
-						return
-					}
-					done = true
+
+				select {
+				case status <- false:
+				case <-sub.Err():
+					return
 				}
-				checkTimer.Reset(checkInterval)
 			case <-sub.Err():
 				return
 			}
