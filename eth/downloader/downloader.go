@@ -97,8 +97,9 @@ type headerTask struct {
 }
 
 type Downloader struct {
-	mode atomic.Uint32           // Synchronisation mode defining the strategy used (per sync cycle), use d.getMode() to get the SyncMode
-	feed event.FeedOf[SyncEvent] // Event feed to announce sync operation events
+	mode  atomic.Uint32           // Synchronisation mode defining the strategy used (per sync cycle), use d.getMode() to get the SyncMode
+	feed  event.FeedOf[SyncEvent] // Event feed to announce sync operation events
+	scope event.SubscriptionScope
 
 	queue *queue   // Scheduler for selecting the hashes to download
 	peers *peerSet // Set of active peers from which download can proceed
@@ -411,7 +412,7 @@ func (d *Downloader) getMode() SyncMode {
 
 // SubscribeSyncEvents creates a subscription for downloader sync events
 func (d *Downloader) SubscribeSyncEvents(ch chan<- SyncEvent) event.Subscription {
-	return d.feed.Subscribe(ch)
+	return d.scope.Track(d.feed.Subscribe(ch))
 }
 
 // syncToHead starts a block synchronization based on the hash chain from
@@ -649,6 +650,9 @@ func (d *Downloader) Cancel() {
 // Terminate interrupts the downloader, canceling all pending operations.
 // The downloader cannot be reused after calling Terminate.
 func (d *Downloader) Terminate() {
+	// Unsubscribe all subscriptions registered from downloader
+	d.scope.Close()
+
 	// Close the termination channel (make sure double close is allowed)
 	d.quitLock.Lock()
 	select {

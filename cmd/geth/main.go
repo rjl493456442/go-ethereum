@@ -23,14 +23,10 @@ import (
 	"slices"
 	"sort"
 	"strconv"
-	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/cmd/utils"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/console/prompt"
-	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/internal/debug"
 	"github.com/ethereum/go-ethereum/internal/flags"
@@ -322,17 +318,17 @@ func geth(ctx *cli.Context) error {
 	}
 
 	prepare(ctx)
-	stack, eth := makeFullNode(ctx)
+	stack := makeFullNode(ctx)
 	defer stack.Close()
 
-	startNode(ctx, stack, eth, false)
+	startNode(ctx, stack, false)
 	stack.Wait()
 	return nil
 }
 
 // startNode boots up the system node and all registered protocols, after which
 // it starts the RPC/IPC interfaces and the miner.
-func startNode(ctx *cli.Context, stack *node.Node, eth *eth.Ethereum, isConsole bool) {
+func startNode(ctx *cli.Context, stack *node.Node, isConsole bool) {
 	// Start up the node itself
 	utils.StartNode(ctx, stack, isConsole)
 
@@ -380,26 +376,4 @@ func startNode(ctx *cli.Context, stack *node.Node, eth *eth.Ethereum, isConsole 
 			}
 		}
 	}()
-
-	// Spawn a standalone goroutine for status synchronization monitoring,
-	// close the node when synchronization is complete if user required.
-	if ctx.Bool(utils.ExitWhenSyncedFlag.Name) && eth != nil {
-		go func() {
-			eventCh := make(chan downloader.SyncEvent, 16)
-			sub := eth.Downloader().SubscribeSyncEvents(eventCh)
-			defer sub.Unsubscribe()
-
-			for {
-				event := <-eventCh
-				if event.Type != downloader.SyncCompleted {
-					continue
-				}
-				if timestamp := time.Unix(int64(event.Latest.Time), 0); time.Since(timestamp) < 10*time.Minute {
-					log.Info("Synchronisation completed", "latestnum", event.Latest.Number, "latesthash", event.Latest.Hash(),
-						"age", common.PrettyAge(timestamp))
-					stack.Close()
-				}
-			}
-		}()
-	}
 }
