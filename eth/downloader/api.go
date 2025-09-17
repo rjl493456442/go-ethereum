@@ -18,6 +18,7 @@ package downloader
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -29,15 +30,101 @@ import (
 // synchronisation status. It offers only methods that operates on data that
 // can be available to anyone without security risks.
 type DownloaderAPI struct {
-	d     *Downloader
-	chain *core.BlockChain
+	d                         *Downloader
+	chain                     *core.BlockChain
+	installSyncSubscription   chan chan interface{}
+	uninstallSyncSubscription chan *uninstallSyncSubscriptionRequest
 }
 
-// NewDownloaderAPI creates a new DownloaderAPI.
+// NewDownloaderAPI creates a new DownloaderAPI. The API has an internal event loop that
+// listens for events from the downloader through the global event mux. In case it receives one of
+// these events it broadcasts it to all syncing subscriptions that are installed through the
+// installSyncSubscription channel.
 func NewDownloaderAPI(d *Downloader, chain *core.BlockChain) *DownloaderAPI {
-	return &DownloaderAPI{
-		d:     d,
-		chain: chain,
+	api := &DownloaderAPI{
+		d:                         d,
+		chain:                     chain,
+		installSyncSubscription:   make(chan chan interface{}),
+		uninstallSyncSubscription: make(chan *uninstallSyncSubscriptionRequest),
+	}
+	go api.eventLoop()
+	return api
+}
+
+// eventLoop runs a loop until the event mux closes. It will install and uninstall
+// new sync subscriptions and broadcasts sync status updates to the installed sync
+// subscriptions.
+//
+// The sync status pushed to subscriptions can be a stream like:
+// >>> {Syncing: true, Progress: {...}}
+// >>> {false}
+//
+// If the node is already synced up, then only a single event subscribers will
+// receive is {false}.
+func (api *DownloaderAPI) eventLoop() {
+	var (
+		events            = make(chan SyncEvent, 16)
+		sub               = api.d.SubscribeSyncEvents(events)
+		syncSubscriptions = make(map[chan interface{}]struct{})
+		checkInterval     = time.Second * 60
+		checkTimer        = time.NewTimer(checkInterval)
+
+		// status flags
+		started bool
+		done    bool
+
+		getProgress = func() ethereum.SyncProgress {
+			prog := api.d.Progress()
+			if txProg, err := api.chain.TxIndexProgress(); err == nil {
+				prog.TxIndexFinishedBlocks = txProg.Indexed
+				prog.TxIndexRemainingBlocks = txProg.Remaining
+			}
+			remain, err := api.chain.StateIndexProgress()
+			if err == nil {
+				prog.StateIndexRemaining = remain
+			}
+			return prog
+		}
+	)
+	defer checkTimer.Stop()
+	defer sub.Unsubscribe()
+
+	for {
+		select {
+		case i := <-api.installSyncSubscription:
+			syncSubscriptions[i] = struct{}{}
+			if done {
+				i <- false
+			}
+		case u := <-api.uninstallSyncSubscription:
+			delete(syncSubscriptions, u.c)
+			close(u.uninstalled)
+		case ev := <-events:
+			if ev.Type == SyncStarted {
+				started = true
+			}
+		case <-checkTimer.C:
+			if !started {
+				checkTimer.Reset(checkInterval)
+				continue
+			}
+			prog := getProgress()
+			if !prog.Done() {
+				notification := &SyncingResult{
+					Syncing: true,
+					Status:  prog,
+				}
+				for c := range syncSubscriptions {
+					c <- notification
+				}
+				checkTimer.Reset(checkInterval)
+				continue
+			}
+			for c := range syncSubscriptions {
+				c <- false
+			}
+			done = true
+		}
 	}
 }
 
@@ -52,7 +139,8 @@ func (api *DownloaderAPI) Syncing(ctx context.Context) (*rpc.Subscription, error
 
 	go func() {
 		statuses := make(chan interface{})
-		api.SubscribeSyncStatus(statuses)
+		sub := api.SubscribeSyncStatus(statuses)
+		defer sub.Unsubscribe()
 
 		for {
 			select {
@@ -73,87 +161,42 @@ type SyncingResult struct {
 	Status  ethereum.SyncProgress `json:"status"`
 }
 
-// SubscribeSyncStatus creates a subscription that will broadcast new synchronisation updates.
-// The given channel must receive interface values, the result can either be a SyncingResult or false.
-//
-// The sync status pushed to subscriptions can be a stream like:
-// >>> {Syncing: true, Progress: {...}}
-// >>> {false}
-//
-// If the node is already synced up, then only a single event subscribers will
-// receive is {false}.
-func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) {
-	eventCh := make(chan SyncEvent, 16)
-	sub := api.d.SubscribeSyncEvents(eventCh)
+// uninstallSyncSubscriptionRequest uninstalls a syncing subscription in the API event loop.
+type uninstallSyncSubscriptionRequest struct {
+	c           chan interface{}
+	uninstalled chan interface{}
+}
 
-	go func() {
-		defer close(status)
-		defer sub.Unsubscribe()
+// SyncStatusSubscription represents a syncing subscription.
+type SyncStatusSubscription struct {
+	api       *DownloaderAPI   // register subscription in event loop of this api instance
+	c         chan interface{} // channel where events are broadcasted to
+	unsubOnce sync.Once        // make sure unsubscribe logic is executed once
+}
 
-		var (
-			checkInterval = time.Second * 60
-			checkTimer    = time.NewTimer(checkInterval)
-			started       bool
-
-			getProgress = func() ethereum.SyncProgress {
-				prog := api.d.Progress()
-				if txProg, err := api.chain.TxIndexProgress(); err == nil {
-					prog.TxIndexFinishedBlocks = txProg.Indexed
-					prog.TxIndexRemainingBlocks = txProg.Remaining
-				}
-				remain, err := api.chain.StateIndexProgress()
-				if err == nil {
-					prog.StateIndexRemaining = remain
-				}
-				return prog
-			}
-		)
-		defer checkTimer.Stop()
-
-		// Send immediate status to new subscriber if already synced
-		prog := getProgress()
-		if prog.Done() {
-			select {
-			case status <- false:
-			case <-sub.Err():
-				return
-			}
-		}
+// Unsubscribe uninstalls the subscription from the DownloadAPI event loop.
+// The status channel that was passed to subscribeSyncStatus isn't used anymore
+// after this method returns.
+func (s *SyncStatusSubscription) Unsubscribe() {
+	s.unsubOnce.Do(func() {
+		req := uninstallSyncSubscriptionRequest{s.c, make(chan interface{})}
+		s.api.uninstallSyncSubscription <- &req
 
 		for {
 			select {
-			case event := <-eventCh:
-				if event.Type == SyncStarted {
-					started = true
-				}
-			case <-checkTimer.C:
-				if !started {
-					checkTimer.Reset(checkInterval)
-					continue
-				}
-				prog := getProgress()
-				if !prog.Done() {
-					notification := &SyncingResult{
-						Syncing: true,
-						Status:  prog,
-					}
-					select {
-					case status <- notification:
-					case <-sub.Err():
-						return
-					}
-					checkTimer.Reset(checkInterval)
-					continue
-				}
-
-				select {
-				case status <- false:
-				case <-sub.Err():
-					return
-				}
-			case <-sub.Err():
+			case <-s.c:
+				// drop new status events until uninstall confirmation
+				continue
+			case <-req.uninstalled:
 				return
 			}
 		}
-	}()
+	})
+}
+
+// SubscribeSyncStatus creates a subscription that will broadcast new synchronisation updates.
+// The given channel must receive interface values, the result can either be a SyncingResult or false.
+func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) *SyncStatusSubscription {
+	api.installSyncSubscription <- status
+	return &SyncStatusSubscription{api: api, c: status}
 }
