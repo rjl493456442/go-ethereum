@@ -50,6 +50,22 @@ func stateAvail(id uint64, env *tester) bool {
 	return id+1 >= firstID
 }
 
+func trienodeAvail(id uint64, env *tester) bool {
+	if env.db.config.TrienodeHistory == 0 {
+		return true
+	}
+	if env.db.config.TrienodeHistory < 0 {
+		return false
+	}
+	dl := env.db.tree.bottom()
+	if dl.stateID() <= uint64(env.db.config.TrienodeHistory) {
+		return true
+	}
+	firstID := dl.stateID() - uint64(env.db.config.TrienodeHistory) + 1
+
+	return id+1 >= firstID
+}
+
 func checkHistoricalState(env *tester, root common.Hash, id uint64, hr *historyReader) error {
 	if !stateAvail(id, env) {
 		return nil
@@ -133,6 +149,65 @@ func checkHistoricalState(env *tester, root common.Hash, id uint64, hr *historyR
 	return nil
 }
 
+func checkHistoricalTrienode(env *tester, root common.Hash, id uint64, hr *historyReader) error {
+	if !trienodeAvail(id, env) {
+		return nil
+	}
+	// Short circuit if the historical state is no longer available
+	if rawdb.ReadStateID(env.db.diskdb, root) == nil {
+		return fmt.Errorf("state not found %d %x", id, root)
+	}
+
+	var (
+		dl        = env.db.tree.bottom()
+		stateID   = rawdb.ReadStateID(env.db.diskdb, root)
+		snapnodes = env.snapXnodes[root]
+	)
+	for owner, nodes := range snapnodes {
+		for path, n := range nodes {
+			latest, _, _, err := dl.node(owner, []byte(path), 0)
+			if err != nil {
+				return err
+			}
+			blob, err := hr.read(newTrienodeIdentQuery(owner, []byte(path)), *stateID, dl.stateID(), latest)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(n, blob) {
+				return fmt.Errorf("wrong account data, expected %v, got %v", n, blob)
+			}
+		}
+	}
+	for i := 0; i < len(env.roots); i++ {
+		if env.roots[i] == root {
+			break
+		}
+		// Find all storage slots deleted in the past, ensure the associated data is null
+		for addrHash, nodes := range env.snapXnodes[env.roots[i]] {
+			for path := range nodes {
+				_, ok := snapnodes[addrHash]
+				if ok {
+					_, ok = snapnodes[addrHash][path]
+				}
+				if !ok {
+					latest, _, _, err := dl.node(addrHash, []byte(path), 0)
+					if err != nil {
+						return err
+					}
+					blob, err := hr.read(newTrienodeIdentQuery(addrHash, []byte(path)), *stateID, dl.stateID(), latest)
+					if err != nil {
+						return err
+					}
+					if len(blob) != 0 {
+						return fmt.Errorf("wrong storage data, expected null, got %x", blob)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func TestHistoryReader(t *testing.T) {
 	testHistoryReader(t, 0)  // with all histories reserved
 	testHistoryReader(t, 10) // with latest 10 histories reserved
@@ -157,7 +232,7 @@ func testHistoryReader(t *testing.T, historyLimit uint64) {
 	var (
 		roots = env.roots
 		dl    = env.db.tree.bottom()
-		hr    = newHistoryReader(env.db.diskdb, env.db.stateFreezer)
+		hr    = newHistoryReader(typeStateHistory, env.db.diskdb, env.db.stateFreezer)
 	)
 	for i, root := range roots {
 		if root == dl.rootHash() {
@@ -213,5 +288,40 @@ func TestHistoricalStateReader(t *testing.T) {
 	_, err = env.db.HistoricalStateReader(realRoot)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestHistoricalTrienodeReader(t *testing.T) {
+	maxDiffLayers = 4
+	defer func() {
+		maxDiffLayers = 128
+	}()
+
+	//log.SetDefault(log.NewLogger(log.NewTerminalHandlerWithLevel(os.Stderr, log.LevelDebug, true)))
+	tn := int64(0)
+	config := &testerConfig{
+		stateHistory: 0,
+		trieHistory:  &tn,
+		layers:       128,
+		enableIndex:  true,
+	}
+	env := newTester(t, config)
+	defer env.release()
+	waitIndexing(env.db)
+
+	var (
+		roots = env.roots
+		dl    = env.db.tree.bottom()
+		hr    = newHistoryReader(typeTrienodeHistory, env.db.diskdb, env.db.trienodeFreezer)
+	)
+	for i, root := range roots {
+		if root == dl.rootHash() {
+			break
+		}
+		//fmt.Println("================== TESTING ================", "id", i+1, "root", root.Hex())
+		if err := checkHistoricalTrienode(env, root, uint64(i+1), hr); err != nil {
+			t.Fatal(err)
+		}
+		//fmt.Println("================== TESTING DONE ================", "id", i+1, "root", root.Hex())
 	}
 }

@@ -25,10 +25,10 @@ import (
 )
 
 const (
-	indexBlockDescSize   = 14        // The size of index block descriptor
-	indexBlockEntriesCap = 4096      // The maximum number of entries can be grouped in a block
-	indexBlockRestartLen = 256       // The restart interval length of index block
-	historyIndexBatch    = 1_000_000 // The number of state history indexes for constructing or deleting as batch
+	indexBlockDescSize   = 14      // The size of index block descriptor
+	indexBlockEntriesCap = 4096    // The maximum number of entries can be grouped in a block
+	indexBlockRestartLen = 256     // The restart interval length of index block
+	historyIndexBatch    = 600_000 // The number of state history indexes for constructing or deleting as batch
 )
 
 // indexBlockDesc represents a descriptor for an index block, which contains a
@@ -99,17 +99,19 @@ func (d *indexBlockDesc) decode(blob []byte) {
 // Each chunk begins with the full value of the first integer, followed by
 // subsequent integers representing the differences between the current value
 // and the preceding one. Integers are encoded with variable-size for best
-// storage efficiency. Each chunk can be illustrated as below.
+// storage efficiency. Apart from that, each element can have a fixed-size
+// extension field for carrying more metadata if necessary. Each chunk can be
+// illustrated as below.
 //
-//		  Restart ---> +----------------+
-//	                   |  Full integer  |
-//		               +----------------+
-//		               | Diff with prev |
-//		               +----------------+
-//		               |      ...       |
-//		               +----------------+
-//		               | Diff with prev |
-//		               +----------------+
+//		  Restart ---> +-------------------------------------+
+//	                   |  Full integer (optional extension)  |
+//		               +-------------------------------------+
+//		               | Diff with prev (optional extension) |
+//		               +-------------------------------------+
+//		               |                ...                  |
+//		               +-------------------------------------+
+//		               | Diff with prev (optional extension) |
+//		               +-------------------------------------+
 //
 // Empty index block is regarded as invalid.
 func parseIndexBlock(blob []byte) ([]uint16, []byte, error) {
@@ -147,10 +149,11 @@ func parseIndexBlock(blob []byte) ([]uint16, []byte, error) {
 type blockReader struct {
 	restarts []uint16
 	data     []byte
+	extLen   int // The length of extension for every element, 0 is allowed
 }
 
 // newBlockReader constructs the block reader with the supplied block data.
-func newBlockReader(blob []byte) (*blockReader, error) {
+func newBlockReader(blob []byte, extLen int) (*blockReader, error) {
 	restarts, data, err := parseIndexBlock(blob)
 	if err != nil {
 		return nil, err
@@ -158,12 +161,23 @@ func newBlockReader(blob []byte) (*blockReader, error) {
 	return &blockReader{
 		restarts: restarts,
 		data:     data, // safe to own the slice
+		extLen:   extLen,
 	}, nil
+}
+
+func readExt(data []byte, offset int, length int) ([]byte, error) {
+	if length == 0 {
+		return nil, nil
+	}
+	if len(data) < offset+length {
+		return nil, errors.New("slice out of range")
+	}
+	return data[offset : offset+length], nil
 }
 
 // readGreaterThan locates the first element in the block that is greater than
 // the specified value. If no such element is found, MaxUint64 is returned.
-func (br *blockReader) readGreaterThan(id uint64) (uint64, error) {
+func (br *blockReader) readGreaterThan(id uint64) (uint64, []byte, error) {
 	var err error
 	index := sort.Search(len(br.restarts), func(i int) bool {
 		item, n := binary.Uvarint(br.data[br.restarts[i]:])
@@ -173,11 +187,15 @@ func (br *blockReader) readGreaterThan(id uint64) (uint64, error) {
 		return item > id
 	})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if index == 0 {
-		item, _ := binary.Uvarint(br.data[br.restarts[0]:])
-		return item, nil
+		item, n := binary.Uvarint(br.data[br.restarts[0]:])
+		ext, err := readExt(br.data, int(br.restarts[0])+n, br.extLen)
+		if err != nil {
+			return 0, nil, err
+		}
+		return item, ext, nil
 	}
 	var (
 		start  int
@@ -204,31 +222,41 @@ func (br *blockReader) readGreaterThan(id uint64) (uint64, error) {
 			result += x
 		}
 		if result > id {
-			return result, nil
+			ext, err := readExt(br.data, pos+n, br.extLen)
+			if err != nil {
+				return 0, nil, err
+			}
+			return result, ext, nil
 		}
-		pos += n
+		pos = pos + n + br.extLen
 	}
 	// The element which is greater than specified id is not found.
 	if index == len(br.restarts) {
-		return math.MaxUint64, nil
+		return math.MaxUint64, nil, nil
 	}
 	// The element which is the first one greater than the specified id
 	// is exactly the one located at the restart point.
-	item, _ := binary.Uvarint(br.data[br.restarts[index]:])
-	return item, nil
+	item, n := binary.Uvarint(br.data[br.restarts[index]:])
+	ext, err := readExt(br.data, int(br.restarts[index])+n, br.extLen)
+	if err != nil {
+		return 0, nil, err
+	}
+	return item, ext, nil
 }
 
 type blockWriter struct {
 	desc     *indexBlockDesc // Descriptor of the block
 	restarts []uint16        // Offsets into the data slice, marking the start of each section
 	data     []byte          // Aggregated encoded data slice
+	extLen   int             // The length of extension for every element, 0 is allowed
 }
 
-func newBlockWriter(blob []byte, desc *indexBlockDesc) (*blockWriter, error) {
+func newBlockWriter(blob []byte, desc *indexBlockDesc, extLen int) (*blockWriter, error) {
 	if len(blob) == 0 {
 		return &blockWriter{
-			desc: desc,
-			data: make([]byte, 0, 1024),
+			desc:   desc,
+			data:   make([]byte, 0, 1024),
+			extLen: extLen,
 		}, nil
 	}
 	restarts, data, err := parseIndexBlock(blob)
@@ -239,17 +267,21 @@ func newBlockWriter(blob []byte, desc *indexBlockDesc) (*blockWriter, error) {
 		desc:     desc,
 		restarts: restarts,
 		data:     data, // safe to own the slice
+		extLen:   extLen,
 	}, nil
 }
 
 // append adds a new element to the block. The new element must be greater than
 // the previous one. The provided ID is assumed to always be greater than 0.
-func (b *blockWriter) append(id uint64) error {
+func (b *blockWriter) append(id uint64, ext []byte) error {
 	if id == 0 {
 		return errors.New("invalid zero id")
 	}
 	if id <= b.desc.max {
 		return fmt.Errorf("append element out of order, last: %d, this: %d", b.desc.max, id)
+	}
+	if len(ext) != b.extLen {
+		return fmt.Errorf("unexpected extension, length: %d, required: %d", len(ext), b.extLen)
 	}
 	// Rotate the current restart section if it's full
 	if b.desc.entries%indexBlockRestartLen == 0 {
@@ -271,13 +303,16 @@ func (b *blockWriter) append(id uint64) error {
 		// element.
 		b.data = binary.AppendUvarint(b.data, id-b.desc.max)
 	}
+	if len(ext) > 0 {
+		b.data = append(b.data, ext...)
+	}
 	b.desc.entries++
 	b.desc.max = id
 	return nil
 }
 
 // scanSection traverses the specified section and terminates if fn returns true.
-func (b *blockWriter) scanSection(section int, fn func(uint64, int) bool) {
+func (b *blockWriter) scanSection(section int, fn func(uint64, int, []byte) bool) {
 	var (
 		value uint64
 		start = int(b.restarts[section])
@@ -296,17 +331,22 @@ func (b *blockWriter) scanSection(section int, fn func(uint64, int) bool) {
 		} else {
 			value += x
 		}
-		if fn(value, pos) {
+		var ext []byte
+		if b.extLen != 0 {
+			// TODO(rjl493456442) what if `pos+n+b.extLen` exceeds the limit?
+			ext = b.data[pos+n : pos+n+b.extLen]
+		}
+		if fn(value, pos, ext) {
 			return
 		}
-		pos += n
+		pos += n + b.extLen
 	}
 }
 
 // sectionLast returns the last element in the specified section.
 func (b *blockWriter) sectionLast(section int) uint64 {
 	var n uint64
-	b.scanSection(section, func(v uint64, _ int) bool {
+	b.scanSection(section, func(v uint64, _ int, _ []byte) bool {
 		n = v
 		return false
 	})
@@ -316,7 +356,7 @@ func (b *blockWriter) sectionLast(section int) uint64 {
 // sectionSearch looks up the specified value in the given section,
 // the position and the preceding value will be returned if found.
 func (b *blockWriter) sectionSearch(section int, n uint64) (found bool, prev uint64, pos int) {
-	b.scanSection(section, func(v uint64, p int) bool {
+	b.scanSection(section, func(v uint64, p int, _ []byte) bool {
 		if n == v {
 			pos = p
 			found = true

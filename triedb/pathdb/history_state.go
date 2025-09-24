@@ -21,16 +21,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"iter"
-	"maps"
-	"slices"
-	"time"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"iter"
+	"maps"
+	"slices"
+	"time"
 )
 
 // State history records the state changes involved in executing a block. The
@@ -283,11 +282,11 @@ func (h *stateHistory) typ() historyType {
 
 // forEach implements the history interface, returning an iterator to traverse the
 // state entries in the history.
-func (h *stateHistory) forEach() iter.Seq[stateIdent] {
-	return func(yield func(stateIdent) bool) {
+func (h *stateHistory) forEach() iter.Seq[stateIdentWithExtension] {
+	return func(yield func(stateIdentWithExtension) bool) {
 		for _, addr := range h.accountList {
 			addrHash := crypto.Keccak256Hash(addr.Bytes())
-			if !yield(newAccountIdent(addrHash)) {
+			if !yield(newStateIdentWithExtension(newAccountIdent(addrHash), nil)) {
 				return
 			}
 			for _, slotKey := range h.storageList[addr] {
@@ -298,7 +297,7 @@ func (h *stateHistory) forEach() iter.Seq[stateIdent] {
 				if h.meta.version != stateHistoryV0 {
 					slotHash = crypto.Keccak256Hash(slotKey.Bytes())
 				}
-				if !yield(newStorageIdent(addrHash, slotHash)) {
+				if !yield(newStateIdentWithExtension(newStorageIdent(addrHash, slotHash), nil)) {
 					return
 				}
 			}

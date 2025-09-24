@@ -18,6 +18,9 @@ package trie
 
 import (
 	"bytes"
+	"github.com/ethereum/go-ethereum/internal/testrand"
+	"math/rand"
+	"reflect"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -91,6 +94,266 @@ func TestDecodeFullNode(t *testing.T) {
 	_, err := decodeNode([]byte("testdecode"), buf.Bytes())
 	if err != nil {
 		t.Fatalf("decode full node err: %v", err)
+	}
+}
+
+func makeTestShortNode(small bool) []byte {
+	l := leafNodeEncoder{}
+	if small {
+		l.Key = testrand.Bytes(10)
+		l.Val = testrand.Bytes(10)
+	} else {
+		l.Key = testrand.Bytes(10)
+		l.Val = testrand.Bytes(32)
+	}
+	buf := rlp.NewEncoderBuffer(nil)
+	l.encode(buf)
+	return buf.ToBytes()
+}
+
+func TestDecodeRawFullNode(t *testing.T) {
+	var n fullnodeEncoder
+	for i := 0; i < 16; i++ {
+		switch rand.Intn(3) {
+		case 0:
+			// write nil
+		case 1:
+			// write hash
+			n.Children[i] = testrand.Bytes(32)
+		case 2:
+			// write embedded node
+			n.Children[i] = makeTestShortNode(true)
+		}
+	}
+	n.Children[16] = testrand.Bytes(32) // value
+
+	buf := rlp.NewEncoderBuffer(nil)
+	n.encode(buf)
+	enc := buf.ToBytes()
+
+	children, err := decodeRawFullNode(enc)
+	if err != nil {
+		t.Fatalf("Failed to decode raw full node, %v", err)
+	}
+	if len(n.Children) != len(children) {
+		t.Fatalf("Length mismatch, want: %d, got: %d", len(n.Children), len(children))
+	}
+	for i := 0; i < len(n.Children); i++ {
+		if !reflect.DeepEqual(n.Children[i], children[i]) {
+			t.Fatalf("Child at %d mismatch, want: %v, got: %v", i, n.Children[i], children[i])
+		}
+	}
+}
+
+func TestDeriveFullNodeDiffs(t *testing.T) {
+	type testsuite struct {
+		old        []byte
+		new        []byte
+		expErr     bool
+		expIndices []int
+		expValues  [][]byte
+	}
+	makeFullNodes := func() ([]byte, []byte, [][]byte, []int) {
+		var (
+			na      = fullnodeEncoder{}
+			nb      = fullnodeEncoder{}
+			indices []int
+			values  [][]byte
+		)
+		for i := 0; i < 16; i++ {
+			switch rand.Intn(3) {
+			case 0:
+				// write nil
+			case 1:
+				// write same
+				var child []byte
+				if rand.Intn(2) == 0 {
+					child = testrand.Bytes(32) // hashnode
+				} else {
+					child = makeTestShortNode(true) // embedded node
+				}
+				na.Children[i] = child
+				nb.Children[i] = child
+			case 2:
+				// write different
+				var va []byte
+				if rand.Intn(2) == 0 {
+					va = testrand.Bytes(32) // hashnode
+				} else {
+					va = makeTestShortNode(true) // embedded node
+				}
+				vb := testrand.Bytes(32) // hashnode
+				na.Children[i] = va
+				nb.Children[i] = vb
+				indices = append(indices, i)
+				values = append(values, va)
+			}
+		}
+		bufa, bufb := rlp.NewEncoderBuffer(nil), rlp.NewEncoderBuffer(nil)
+		na.encode(bufa)
+		nb.encode(bufb)
+		return bufa.ToBytes(), bufb.ToBytes(), values, indices
+	}
+	makeFullNode := func() []byte {
+		na, _, _, _ := makeFullNodes()
+		return na
+	}
+	makeTestsuite := func() testsuite {
+		oldn, newn, values, indices := makeFullNodes()
+		return testsuite{
+			old:        oldn,
+			new:        newn,
+			expErr:     false,
+			expIndices: indices,
+			expValues:  values,
+		}
+	}
+
+	var tests = []testsuite{
+		// Invalid node data
+		{
+			old: nil, new: nil, expErr: true,
+		},
+		{
+			old: testrand.Bytes(32), new: nil, expErr: true,
+		},
+		{
+			old: nil, new: testrand.Bytes(32), expErr: true,
+		},
+		{
+			old: testrand.Bytes(32), new: testrand.Bytes(32), expErr: true,
+		},
+		// Short node data
+		{
+			old: makeTestShortNode(true), new: makeTestShortNode(true), expErr: true,
+		},
+		{
+			old: makeTestShortNode(false), new: makeTestShortNode(false), expErr: true,
+		},
+		{
+			old: makeTestShortNode(true), new: makeFullNode(), expErr: true,
+		},
+		{
+			old: makeFullNode(), new: makeTestShortNode(true), expErr: true,
+		},
+		{
+			old: makeTestShortNode(false), new: makeFullNode(), expErr: true,
+		},
+		{
+			old: makeFullNode(), new: makeTestShortNode(false), expErr: true,
+		},
+	}
+	for i := 0; i < 10; i++ {
+		tests = append(tests, makeTestsuite())
+	}
+
+	for _, test := range tests {
+		indices, values, err := FullNodeDifference(test.old, test.new)
+		if test.expErr && err == nil {
+			t.Fatal("Expect error, got nil")
+		}
+		if !test.expErr && err != nil {
+			t.Fatalf("Unexpect error, %v", err)
+		}
+		if err == nil {
+			if !reflect.DeepEqual(indices, test.expIndices) {
+				t.Fatalf("Unexpected indices, want: %v, got: %v", test.expIndices, indices)
+			}
+			if !reflect.DeepEqual(values, test.expValues) {
+				t.Fatalf("Unexpected values, want: %v, got: %v", test.expValues, values)
+			}
+		}
+	}
+}
+
+func makeFullNodes() ([]byte, []byte, [][]byte, []int) {
+	var (
+		na      = fullnodeEncoder{}
+		nb      = fullnodeEncoder{}
+		indices []int
+		values  [][]byte
+	)
+	for i := 0; i < 16; i++ {
+		switch rand.Intn(3) {
+		case 0:
+			// write nil
+		case 1:
+			// write same
+			var child []byte
+			if rand.Intn(2) == 0 {
+				child = testrand.Bytes(32) // hashnode
+			} else {
+				child = makeTestShortNode(true) // embedded node
+			}
+			na.Children[i] = child
+			nb.Children[i] = child
+		case 2:
+			// write different
+			var va []byte
+			if rand.Intn(2) == 0 {
+				va = testrand.Bytes(32) // hashnode
+			} else {
+				va = makeTestShortNode(true) // embedded node
+			}
+			vb := testrand.Bytes(32) // hashnode
+			na.Children[i] = va
+			nb.Children[i] = vb
+			indices = append(indices, i)
+			values = append(values, va)
+		}
+	}
+	bufa, bufb := rlp.NewEncoderBuffer(nil), rlp.NewEncoderBuffer(nil)
+	na.encode(bufa)
+	nb.encode(bufb)
+	return bufa.ToBytes(), bufb.ToBytes(), values, indices
+}
+
+func TestReassembleFullNode(t *testing.T) {
+	var fn fullnodeEncoder
+	for i := 0; i < 16; i++ {
+		if rand.Intn(2) == 0 {
+			fn.Children[i] = testrand.Bytes(32)
+		}
+	}
+	buf := rlp.NewEncoderBuffer(nil)
+	fn.encode(buf)
+	enc := buf.ToBytes()
+
+	// Generate a list of diffs
+	var (
+		values  [][][]byte
+		indices [][]int
+	)
+	for i := 0; i < 10; i++ {
+		var (
+			pos       = make(map[int]struct{})
+			poslist   []int
+			valuelist [][]byte
+		)
+		for j := 0; j < 3; j++ {
+			p := rand.Intn(16)
+			if _, ok := pos[p]; ok {
+				continue
+			}
+			pos[p] = struct{}{}
+
+			nh := testrand.Bytes(32)
+			poslist = append(poslist, p)
+			valuelist = append(valuelist, nh)
+			fn.Children[p] = nh
+		}
+		values = append(values, valuelist)
+		indices = append(indices, poslist)
+	}
+	reassembled, err := ReassembleFullNode(enc, values, indices)
+	if err != nil {
+		t.Fatalf("Failed to re-assemble full node %v", err)
+	}
+	buf2 := rlp.NewEncoderBuffer(nil)
+	fn.encode(buf2)
+	enc2 := buf2.ToBytes()
+	if !reflect.DeepEqual(enc2, reassembled) {
+		t.Fatalf("Unexpeted reassembled node")
 	}
 }
 

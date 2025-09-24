@@ -17,6 +17,8 @@
 package trie
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -172,6 +174,66 @@ func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 	}
 }
 
+func decodeElement(buf []byte) ([]byte, []byte, error) {
+	kind, full, val, rest, err := rlp.Split2(buf)
+	if err != nil {
+		return nil, buf, err
+	}
+	switch {
+	case kind == rlp.List:
+		// 'embedded' node reference. The encoding must be smaller
+		// than a hash in order to be valid.
+		if size := len(buf) - len(rest); size > hashLen {
+			return nil, buf, fmt.Errorf("oversized embedded node (size is %d bytes, want size < %d)", size, hashLen)
+		}
+		return full, rest, nil
+	case kind == rlp.String && len(val) == 0:
+		// empty node
+		return nil, rest, nil
+	case kind == rlp.String && len(val) == 32:
+		// hash node
+		var h [32]byte
+		copy(h[:], val[:32])
+		return h[:], rest, nil
+	default:
+		return nil, nil, fmt.Errorf("invalid RLP string size %d (want 0 or 32)", len(val))
+	}
+}
+
+// decodeRawFullNode parses the RLP encoding of a full node and returns
+// all the children in raw byte format.
+func decodeRawFullNode(buf []byte) ([][]byte, error) {
+	if len(buf) == 0 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	elems, _, err := rlp.SplitList(buf)
+	if err != nil {
+		return nil, fmt.Errorf("decode error: %v", err)
+	}
+	switch c, _ := rlp.CountValues(elems); c {
+	case 2:
+		return nil, errors.New("unexpected short node")
+	case 17:
+		children := make([][]byte, 17)
+		for i := 0; i < 16; i++ {
+			cld, rest, err := decodeElement(elems)
+			if err != nil {
+				return nil, wrapError(err, fmt.Sprintf("[%d]", i))
+			}
+			children[i] = cld
+			elems = rest
+		}
+		val, _, err := rlp.SplitString(elems)
+		if err != nil {
+			return nil, err
+		}
+		children[16] = val
+		return children, nil
+	default:
+		return nil, fmt.Errorf("invalid number of list children: %v", c)
+	}
+}
+
 func decodeShort(hash, elems []byte) (node, error) {
 	kbuf, rest, err := rlp.SplitString(elems)
 	if err != nil {
@@ -240,6 +302,55 @@ func decodeRef(buf []byte) (node, []byte, error) {
 	default:
 		return nil, nil, fmt.Errorf("invalid RLP string size %d (want 0 or 32)", len(val))
 	}
+}
+
+// FullNodeDifference accepts two RLP-encoding full node and figures out the
+// difference between this two nodes.
+//
+// An error is returned if any of the provided blob is nil, or it doesn't refer
+// to the full node.
+func FullNodeDifference(oldvalue []byte, newvalue []byte) ([]int, [][]byte, error) {
+	oldChildren, err := decodeRawFullNode(oldvalue)
+	if err != nil {
+		return nil, nil, err
+	}
+	newChildren, err := decodeRawFullNode(newvalue)
+	if err != nil {
+		return nil, nil, err
+	}
+	var (
+		indices = make([]int, 0, 17)
+		diff    = make([][]byte, 0, 17)
+	)
+	for i := 0; i < 17; i++ {
+		if !bytes.Equal(oldChildren[i], newChildren[i]) {
+			indices = append(indices, i)
+			diff = append(diff, oldChildren[i])
+		}
+	}
+	return indices, diff, nil
+}
+
+func ReassembleFullNode(blob []byte, elements [][][]byte, indices [][]int) ([]byte, error) {
+	if len(elements) == 0 && len(indices) == 0 {
+		return blob, nil
+	}
+	var fn fullnodeEncoder
+	children, err := decodeRawFullNode(blob)
+	if err != nil {
+		return nil, err
+	}
+	for i, child := range children {
+		fn.Children[i] = child
+	}
+	for i := 0; i < len(elements); i++ {
+		for j, pos := range indices[i] {
+			fn.Children[pos] = elements[i][j]
+		}
+	}
+	buf := rlp.NewEncoderBuffer(nil)
+	fn.encode(buf)
+	return buf.ToBytes(), nil
 }
 
 // wraps a decoding error with information about the path to the

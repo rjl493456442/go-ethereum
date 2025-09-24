@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/go-ethereum/triedb/pathdb"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -83,6 +84,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbRemoveHistoryIndexCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -206,6 +208,13 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbRemoveHistoryIndexCmd = &cli.Command{
+		Action:      removeHistoryIndex,
+		Name:        "remove-history-index",
+		Usage:       "",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "",
 	}
 )
 
@@ -764,6 +773,17 @@ func showMetaData(ctx *cli.Context) error {
 	table.SetHeader([]string{"Field", "Value"})
 	table.AppendBulk(data)
 	table.Render()
+	return nil
+}
+
+func removeHistoryIndex(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	pathdb.CheckVersion(db, 0, true) // state
+	pathdb.CheckVersion(db, 1, true) // trienode
 	return nil
 }
 

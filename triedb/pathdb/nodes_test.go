@@ -18,6 +18,7 @@ package pathdb
 
 import (
 	"bytes"
+	"github.com/ethereum/go-ethereum/internal/testrand"
 	"reflect"
 	"testing"
 
@@ -124,5 +125,47 @@ func TestNodeSetWithOriginEncode(t *testing.T) {
 	}
 	if dec2.size != s.size {
 		t.Fatalf("Unexpected data size, got: %d, want: %d", dec2.size, s.size)
+	}
+}
+
+func TestEncodeFullNodeCompressed(t *testing.T) {
+	suites := []struct {
+		indices []int
+		element [][]byte
+	}{
+		//{}, // empty
+		{
+			indices: []int{0}, // single element
+			element: [][]byte{testrand.Bytes(32)},
+		},
+		{
+			indices: []int{15}, // single element
+			element: [][]byte{testrand.Bytes(32)},
+		},
+		{
+			indices: []int{0, 5, 15}, // multiple elements
+			element: [][]byte{testrand.Bytes(32), testrand.Bytes(32), testrand.Bytes(32)},
+		},
+		{
+			indices: []int{0, 5, 15}, // zero size element
+			element: [][]byte{nil, testrand.Bytes(32), nil},
+		},
+		{
+			indices: []int{0, 5, 15}, // small element
+			element: [][]byte{testrand.Bytes(32), testrand.Bytes(16), testrand.Bytes(32)},
+		},
+	}
+	for _, suite := range suites {
+		blob := encodeFullNodeCompressed(suite.element, suite.indices)
+		elements, indices, err := decodeFullNodeCompressed(blob)
+		if err != nil {
+			t.Fatalf("Failed to decode compressed full node, %v", err)
+		}
+		if !reflect.DeepEqual(elements, suite.element) {
+			t.Fatalf("Elements are not matched, %v != %v", elements, suite.element)
+		}
+		if !reflect.DeepEqual(indices, suite.indices) {
+			t.Fatalf("Indices are not matched, %v != %v", indices, suite.indices)
+		}
 	}
 }

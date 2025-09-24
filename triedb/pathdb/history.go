@@ -184,11 +184,28 @@ func newStorageIdentQuery(address common.Address, addressHash common.Hash, stora
 // newTrienodeIdentQuery constructs a state identifier for a trie node.
 // the addressHash denotes the address hash of the associated account;
 // the path denotes the path of the node within the trie;
-//
-// nolint:unused
 func newTrienodeIdentQuery(addrHash common.Hash, path []byte) stateIdentQuery {
 	return stateIdentQuery{
-		stateIdent: newTrienodeIdent(addrHash, string(path)),
+		stateIdent: stateIdent{
+			typ:         typeTrienode,
+			addressHash: addrHash,
+			path:        string(path),
+		},
+	}
+}
+
+// stateIdentWithExtension is the wrapper over stateIdent with an extension for
+// containing more metadata.
+type stateIdentWithExtension struct {
+	stateIdent
+	extension []byte
+}
+
+// newStateIdentWithExtension constructs the stateIdentWithExtension.
+func newStateIdentWithExtension(ident stateIdent, extension []byte) stateIdentWithExtension {
+	return stateIdentWithExtension{
+		stateIdent: ident,
+		extension:  extension,
 	}
 }
 
@@ -199,7 +216,7 @@ type history interface {
 	typ() historyType
 
 	// forEach returns an iterator to traverse the state entries in the history.
-	forEach() iter.Seq[stateIdent]
+	forEach() iter.Seq[stateIdentWithExtension]
 }
 
 var (

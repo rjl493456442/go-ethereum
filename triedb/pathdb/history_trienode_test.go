@@ -30,34 +30,43 @@ import (
 )
 
 // randomTrienodes generates a random trienode set.
-func randomTrienodes(n int) (map[common.Hash]map[string][]byte, common.Hash) {
+func randomTrienodes(n int) (map[common.Hash]map[string]nodeWithFlag, common.Hash) {
 	var (
 		root  common.Hash
-		nodes = make(map[common.Hash]map[string][]byte)
+		nodes = make(map[common.Hash]map[string]nodeWithFlag)
 	)
 	for i := 0; i < n; i++ {
 		owner := testrand.Hash()
 		if i == 0 {
 			owner = common.Hash{}
 		}
-		nodes[owner] = make(map[string][]byte)
+		nodes[owner] = make(map[string]nodeWithFlag)
 
 		for j := 0; j < 10; j++ {
 			pathLen := rand.Intn(10)
 			path := testrand.Bytes(pathLen)
 			for z := 0; z < len(path); z++ {
 				valLen := rand.Intn(128)
-				nodes[owner][string(path[:z])] = testrand.Bytes(valLen)
+				nodes[owner][string(path[:z])] = nodeWithFlag{
+					blob: testrand.Bytes(valLen),
+					typ:  typeFull,
+				}
 			}
 		}
 		// zero-size trie node, representing it was non-existent before
 		for j := 0; j < 10; j++ {
 			path := testrand.Bytes(32)
-			nodes[owner][string(path)] = nil
+			nodes[owner][string(path)] = nodeWithFlag{
+				blob: nil,
+				typ:  typeFull,
+			}
 		}
 		// root node with zero-size path
 		rnode := testrand.Bytes(256)
-		nodes[owner][""] = rnode
+		nodes[owner][""] = nodeWithFlag{
+			blob: rnode,
+			typ:  typeFull,
+		}
 		if owner == (common.Hash{}) {
 			root = crypto.Keccak256Hash(rnode)
 		}
@@ -83,6 +92,34 @@ func makeTrienodeHistories(n int) []*trienodeHistory {
 	return result
 }
 
+func compareNodeSet(a, b map[common.Hash]map[string]nodeWithFlag) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, subsetA := range a {
+		subsetB, ok := b[key]
+		if !ok {
+			return false
+		}
+		if len(subsetA) != len(subsetB) {
+			return false
+		}
+		for key, valA := range subsetA {
+			valB, ok := subsetB[key]
+			if !ok {
+				return false
+			}
+			if !bytes.Equal(valA.blob, valB.blob) {
+				return false
+			}
+			if valA.typ != valB.typ {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func TestEncodeDecodeTrienodeHistory(t *testing.T) {
 	var (
 		dec trienodeHistory
@@ -105,7 +142,7 @@ func TestEncodeDecodeTrienodeHistory(t *testing.T) {
 	if !compareMapList(dec.nodeList, obj.nodeList) {
 		t.Fatal("trienode list is mismatched")
 	}
-	if !compareMapSet(dec.nodes, obj.nodes) {
+	if !compareNodeSet(dec.nodes, obj.nodes) {
 		t.Fatal("trienode content is mismatched")
 	}
 }
@@ -135,7 +172,7 @@ func TestTrienodeHistoryReader(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Failed to read trienode history: %v", err)
 				}
-				if !bytes.Equal(blob, value) {
+				if !bytes.Equal(blob, value.blob) {
 					t.Fatalf("Unexpected trie node data, want: %v, got: %v", value, blob)
 				}
 			}
@@ -154,7 +191,7 @@ func TestTrienodeHistoryReader(t *testing.T) {
 
 // TestEmptyTrienodeHistory tests encoding/decoding of empty trienode history
 func TestEmptyTrienodeHistory(t *testing.T) {
-	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, make(map[common.Hash]map[string][]byte))
+	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, make(map[common.Hash]map[string]nodeWithFlag))
 
 	// Test encoding empty history
 	header, keySection, valueSection, err := h.encode()
@@ -192,16 +229,16 @@ func TestEmptyTrienodeHistory(t *testing.T) {
 
 // TestSingleTrieHistory tests encoding/decoding of history with single trie
 func TestSingleTrieHistory(t *testing.T) {
-	nodes := make(map[common.Hash]map[string][]byte)
+	nodes := make(map[common.Hash]map[string]nodeWithFlag)
 	owner := testrand.Hash()
-	nodes[owner] = make(map[string][]byte)
+	nodes[owner] = make(map[string]nodeWithFlag)
 
 	// Add some nodes with various sizes
-	nodes[owner][""] = testrand.Bytes(32)      // empty key
-	nodes[owner]["a"] = testrand.Bytes(1)      // small value
-	nodes[owner]["bb"] = testrand.Bytes(100)   // medium value
-	nodes[owner]["ccc"] = testrand.Bytes(1000) // large value
-	nodes[owner]["dddd"] = testrand.Bytes(0)   // empty value
+	nodes[owner][""] = nodeWithFlag{blob: testrand.Bytes(32), typ: typeFull}      // empty key
+	nodes[owner]["a"] = nodeWithFlag{blob: testrand.Bytes(1), typ: typeFull}      // small value
+	nodes[owner]["bb"] = nodeWithFlag{blob: testrand.Bytes(100), typ: typeFull}   // medium value
+	nodes[owner]["ccc"] = nodeWithFlag{blob: testrand.Bytes(1000), typ: typeFull} // large value
+	nodes[owner]["dddd"] = nodeWithFlag{blob: testrand.Bytes(0), typ: typeFull}   // empty value
 
 	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, nodes)
 	testEncodeDecode(t, h)
@@ -209,30 +246,37 @@ func TestSingleTrieHistory(t *testing.T) {
 
 // TestMultipleTries tests multiple tries with different node counts
 func TestMultipleTries(t *testing.T) {
-	nodes := make(map[common.Hash]map[string][]byte)
+	nodes := make(map[common.Hash]map[string]nodeWithFlag)
 
 	// First trie with many small nodes
 	owner1 := testrand.Hash()
-	nodes[owner1] = make(map[string][]byte)
+	nodes[owner1] = make(map[string]nodeWithFlag)
 	for i := 0; i < 100; i++ {
 		key := string(testrand.Bytes(rand.Intn(10)))
-		nodes[owner1][key] = testrand.Bytes(rand.Intn(50))
+		nodes[owner1][key] = nodeWithFlag{blob: testrand.Bytes(rand.Intn(50)), typ: typeFull}
+
 	}
 
 	// Second trie with few large nodes
 	owner2 := testrand.Hash()
-	nodes[owner2] = make(map[string][]byte)
+	nodes[owner2] = make(map[string]nodeWithFlag)
 	for i := 0; i < 5; i++ {
 		key := string(testrand.Bytes(rand.Intn(20)))
-		nodes[owner2][key] = testrand.Bytes(1000 + rand.Intn(1000))
+		nodes[owner2][key] = nodeWithFlag{
+			blob: testrand.Bytes(1000 + rand.Intn(1000)),
+			typ:  typeFull,
+		}
 	}
 
 	// Third trie with nil values (zero-size nodes)
 	owner3 := testrand.Hash()
-	nodes[owner3] = make(map[string][]byte)
+	nodes[owner3] = make(map[string]nodeWithFlag)
 	for i := 0; i < 10; i++ {
 		key := string(testrand.Bytes(rand.Intn(15)))
-		nodes[owner3][key] = nil
+		nodes[owner3][key] = nodeWithFlag{
+			blob: nil,
+			typ:  typeFull,
+		}
 	}
 
 	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, nodes)
@@ -241,15 +285,15 @@ func TestMultipleTries(t *testing.T) {
 
 // TestLargeNodeValues tests encoding/decoding with very large node values
 func TestLargeNodeValues(t *testing.T) {
-	nodes := make(map[common.Hash]map[string][]byte)
+	nodes := make(map[common.Hash]map[string]nodeWithFlag)
 	owner := testrand.Hash()
-	nodes[owner] = make(map[string][]byte)
+	nodes[owner] = make(map[string]nodeWithFlag)
 
 	// Test with progressively larger values
 	sizes := []int{1024, 10 * 1024, 100 * 1024, 1024 * 1024} // 1KB, 10KB, 100KB, 1MB
 	for _, size := range sizes {
 		key := string(testrand.Bytes(10))
-		nodes[owner][key] = testrand.Bytes(size)
+		nodes[owner][key] = nodeWithFlag{blob: testrand.Bytes(size), typ: typeFull}
 
 		h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, nodes)
 		testEncodeDecode(t, h)
@@ -259,14 +303,14 @@ func TestLargeNodeValues(t *testing.T) {
 
 // TestNilNodeValues tests encoding/decoding with nil (zero-length) node values
 func TestNilNodeValues(t *testing.T) {
-	nodes := make(map[common.Hash]map[string][]byte)
+	nodes := make(map[common.Hash]map[string]nodeWithFlag)
 	owner := testrand.Hash()
-	nodes[owner] = make(map[string][]byte)
+	nodes[owner] = make(map[string]nodeWithFlag)
 
 	// Mix of nil and non-nil values
-	nodes[owner]["nil"] = nil
-	nodes[owner]["data1"] = []byte("some data")
-	nodes[owner]["data2"] = []byte("more data")
+	nodes[owner]["nil"] = nodeWithFlag{blob: nil, typ: typeFull}
+	nodes[owner]["data1"] = nodeWithFlag{blob: []byte("some data"), typ: typeFull}
+	nodes[owner]["data2"] = nodeWithFlag{blob: []byte("more data"), typ: typeFull}
 
 	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, nodes)
 	testEncodeDecode(t, h)
@@ -426,14 +470,14 @@ func TestTrienodeHistoryReaderNonExistentPath(t *testing.T) {
 
 // TestTrienodeHistoryReaderNilValues tests reading nil (zero-length) values
 func TestTrienodeHistoryReaderNilValues(t *testing.T) {
-	nodes := make(map[common.Hash]map[string][]byte)
+	nodes := make(map[common.Hash]map[string]nodeWithFlag)
 	owner := testrand.Hash()
-	nodes[owner] = make(map[string][]byte)
+	nodes[owner] = make(map[string]nodeWithFlag)
 
 	// Add some nil values
-	nodes[owner]["nil1"] = nil
-	nodes[owner]["nil2"] = nil
-	nodes[owner]["data1"] = []byte("some data")
+	nodes[owner]["nil1"] = nodeWithFlag{blob: nil, typ: typeFull}
+	nodes[owner]["nil2"] = nodeWithFlag{blob: nil, typ: typeFull}
+	nodes[owner]["data1"] = nodeWithFlag{blob: []byte("some data"), typ: typeFull}
 
 	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, nodes)
 
@@ -479,13 +523,13 @@ func TestTrienodeHistoryReaderNilValues(t *testing.T) {
 
 // TestTrienodeHistoryReaderNilKey tests reading nil (zero-length) key
 func TestTrienodeHistoryReaderNilKey(t *testing.T) {
-	nodes := make(map[common.Hash]map[string][]byte)
+	nodes := make(map[common.Hash]map[string]nodeWithFlag)
 	owner := testrand.Hash()
-	nodes[owner] = make(map[string][]byte)
+	nodes[owner] = make(map[string]nodeWithFlag)
 
 	// Add some nil values
-	nodes[owner][""] = []byte("some data")
-	nodes[owner]["data1"] = []byte("some data")
+	nodes[owner][""] = nodeWithFlag{blob: []byte("some data"), typ: typeFull}
+	nodes[owner]["data1"] = nodeWithFlag{blob: []byte("some data"), typ: typeFull}
 
 	h := newTrienodeHistory(common.Hash{}, common.Hash{}, 1, nodes)
 
@@ -717,7 +761,7 @@ func testEncodeDecode(t *testing.T, h *trienodeHistory) {
 	if !compareMapList(decoded.nodeList, h.nodeList) {
 		t.Fatal("Trienode list mismatch")
 	}
-	if !compareMapSet(decoded.nodes, h.nodes) {
+	if !compareNodeSet(decoded.nodes, h.nodes) {
 		t.Fatal("Trienode content mismatch")
 	}
 }

@@ -20,9 +20,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"maps"
-
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -30,7 +27,11 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"hash/fnv"
+	"io"
+	"maps"
 )
 
 // nodeSet represents a collection of modified trie nodes resulting from a state
@@ -423,4 +424,172 @@ func (s *nodeSetWithOrigin) decode(r *rlp.Stream) error {
 	}
 	s.computeSize()
 	return nil
+}
+
+// nodeWithFlag is a wrapper of encoded node history element, maintaing
+// additional metadata for this node.
+type nodeWithFlag struct {
+	blob []byte
+	typ  nodeHistoryEncodeType
+}
+
+// encodeFullNodeCompressed encodes the full node differences into byte stream.
+// The format is as below:
+// - 2 bytes bitmap
+// - concatenation of original value of modified children along with its size
+func encodeFullNodeCompressed(elements [][]byte, indices []int) []byte {
+	var (
+		enc    []byte
+		bitmap = make([]byte, 2) // bitmaps for at most 16 children
+	)
+	for _, pos := range indices {
+		bitIndex := uint(pos % 8)
+		bitmap[pos/8] |= 1 << bitIndex
+	}
+	enc = append(enc, bitmap...)
+
+	for _, element := range elements {
+		enc = append(enc, byte(len(element))) // 1 byte is sufficient for element size
+		enc = append(enc, element...)
+	}
+	return enc
+}
+
+// decodeFullNodeCompressed decodes the byte stream of compressed full node
+// back to the original elements and their indices.
+func decodeFullNodeCompressed(data []byte) ([][]byte, []int, error) {
+	if len(data) < 2 {
+		return nil, nil, errors.New("invalid data: too short")
+	}
+	// Reconstruct indices from bitmap
+	var indices []int
+	for index, b := range data[:2] {
+		for bitIdx := 0; bitIdx < 8; bitIdx++ {
+			if b&(1<<uint(bitIdx)) != 0 {
+				pos := index*8 + bitIdx
+				indices = append(indices, pos)
+			}
+		}
+	}
+	// Reconstruct elements
+	data = data[2:]
+	elements := make([][]byte, 0, len(indices))
+	for i := 0; i < len(indices); i++ {
+		if len(data) == 0 {
+			return nil, nil, errors.New("invalid data: missing size byte")
+		}
+		// Read element size
+		size := int(data[0])
+		data = data[1:]
+
+		// Check if we have enough data for the element
+		if len(data) < size {
+			return nil, nil, fmt.Errorf("invalid data: expected %d bytes, got %d", size, len(data))
+		}
+		// Extract element
+		if size == 0 {
+			elements = append(elements, nil)
+		} else {
+			element := make([]byte, size)
+			copy(element, data[:size])
+			data = data[size:]
+			elements = append(elements, element)
+		}
+	}
+	// Check if all data is consumed
+	if len(data) != 0 {
+		return nil, nil, errors.New("invalid data: trailing bytes")
+	}
+	return elements, indices, nil
+}
+
+// encodeFullFrequency specifies the frequency (1/16) for encoding node in full format.
+const encodeFullFrequency = 16
+
+// elementType represents the category of state element.
+type nodeHistoryEncodeType uint8
+
+const (
+	typePartial nodeHistoryEncodeType = 0 // represents the storage slot data
+	typeFull    nodeHistoryEncodeType = 1 // represents the account data
+)
+
+func blobToEncodeType(b byte) nodeHistoryEncodeType {
+	if b == byte(0x0) {
+		return typePartial
+	}
+	return typeFull
+}
+
+func encodeTypeToBlob(typ nodeHistoryEncodeType) []byte {
+	if typ == typePartial {
+		return []byte{0x0}
+	}
+	return []byte{0x1}
+}
+
+// encodeNodeHistory encodes the history of a node. Typically, the original values
+// of dirty nodes serve as the history, but this can lead to significant storage
+// overhead. For full nodes, which often see only a few modified children during
+// state transitions, recording the entire child set (up to 16 children at 32 bytes
+// each) is inefficient. To compress size, we instead record the diff of the full node.
+//
+// However, recovering a full node from a series of diffs requires applying multiple
+// history records, which is computationally and IO intensive. To mitigate this, we
+// periodically record the full original value of a full node as a checkpoint.
+// The frequency of these checkpoints is a tradeoff between the compression rate and
+// read overhead.
+func (s *nodeSetWithOrigin) encodeNodeHistory() (map[common.Hash]map[string]nodeWithFlag, error) {
+	var (
+		// the set of all encoded node history elements
+		nodes = make(map[common.Hash]map[string]nodeWithFlag)
+		root  = s.nodeSet.accountNodes[""].Hash // State root
+
+		// shouldEncodeFull determines whether a node should be encoded in full format
+		shouldEncodeFull = func(owner common.Hash, path string) bool {
+			h := fnv.New32a()
+			h.Write(root.Bytes())
+			h.Write(owner.Bytes())
+			h.Write([]byte(path))
+			return h.Sum32()%uint32(encodeFullFrequency) == 0
+		}
+	)
+	for owner, origins := range s.nodeOrigin {
+		var posts map[string]*trienode.Node
+		if owner == (common.Hash{}) {
+			posts = s.nodeSet.accountNodes
+		} else {
+			posts = s.nodeSet.storageNodes[owner]
+		}
+		nodes[owner] = make(map[string]nodeWithFlag)
+		for path, oldvalue := range origins {
+			n, exists := posts[path]
+			if !exists {
+				// something not expected
+				return nil, fmt.Errorf("node with origin is not found, %x-%v", owner, []byte(path))
+			}
+			encodeFull := shouldEncodeFull(owner, path)
+			if !encodeFull {
+				indices, elements, err := trie.FullNodeDifference(oldvalue, n.Blob)
+				if err != nil {
+					encodeFull = true
+				} else {
+					// Encode the node difference as the history element
+					blob := encodeFullNodeCompressed(elements, indices)
+					nodes[owner][path] = nodeWithFlag{
+						blob: blob,
+						typ:  typePartial,
+					}
+				}
+			}
+			if encodeFull {
+				// Encode the entire original value as the history element
+				nodes[owner][path] = nodeWithFlag{
+					blob: oldvalue,
+					typ:  typeFull,
+				}
+			}
+		}
+	}
+	return nodes, nil
 }

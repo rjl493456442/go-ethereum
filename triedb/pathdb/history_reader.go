@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/trie"
 	"math"
 	"sort"
 
@@ -37,11 +38,12 @@ type indexReaderWithLimitTag struct {
 	reader *indexReader
 	limit  uint64
 	db     ethdb.KeyValueReader
+	extLen int // The length of extension for every element, 0 is allowed
 }
 
 // newIndexReaderWithLimitTag constructs a index reader with indexing position.
-func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, limit uint64) (*indexReaderWithLimitTag, error) {
-	r, err := newIndexReader(db, state)
+func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, limit uint64, extLen int) (*indexReaderWithLimitTag, error) {
+	r, err := newIndexReader(db, state, extLen)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +51,7 @@ func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, limit
 		reader: r,
 		limit:  limit,
 		db:     db,
+		extLen: extLen,
 	}, nil
 }
 
@@ -58,27 +61,27 @@ func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, limit
 // Note: It is possible that additional histories have been indexed since the
 // reader was created. The reader should be refreshed as needed to load the
 // latest indexed data from disk.
-func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uint64, error) {
+func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uint64, []byte, error) {
 	// Mark the index reader as stale if the tracked indexing position moves
 	// backward. This can occur if the pathdb is reverted and certain state
 	// histories are unindexed. For simplicity, the reader is marked as stale
 	// instead of being refreshed, as this scenario is highly unlikely.
 	if r.limit > lastID {
-		return 0, fmt.Errorf("index reader is stale, limit: %d, last-state-id: %d", r.limit, lastID)
+		return 0, nil, fmt.Errorf("index reader is stale, limit: %d, last-state-id: %d", r.limit, lastID)
 	}
 	// Try to find the element which is greater than the specified target
-	res, err := r.reader.readGreaterThan(id)
+	res, ext, err := r.reader.readGreaterThan(id)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	// Short circuit if the element is found within the current index
 	if res != math.MaxUint64 {
-		return res, nil
+		return res, ext, nil
 	}
 	// The element was not found, and no additional histories have been indexed.
 	// Return a not-found result.
 	if r.limit == lastID {
-		return res, nil
+		return res, ext, nil
 	}
 	// Refresh the index reader and attempt again. If the latest indexed position
 	// is even below the ID of the disk layer, it indicates that state histories
@@ -89,10 +92,10 @@ func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uin
 	// an error should be sufficient for now.
 	metadata := loadIndexMetadata(r.db, toHistoryType(r.reader.state.typ))
 	if metadata == nil || metadata.Last < lastID {
-		return 0, errors.New("state history hasn't been indexed yet")
+		return 0, nil, errors.New("state history hasn't been indexed yet")
 	}
 	if err := r.reader.refresh(); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	r.limit = metadata.Last
 
@@ -101,14 +104,16 @@ func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uin
 
 // historyReader is the structure to access historic state data.
 type historyReader struct {
+	typ     historyType
 	disk    ethdb.KeyValueReader
 	freezer ethdb.AncientReader
 	readers map[string]*indexReaderWithLimitTag
 }
 
 // newHistoryReader constructs the history reader with the supplied db.
-func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *historyReader {
+func newHistoryReader(typ historyType, disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *historyReader {
 	return &historyReader{
+		typ:     typ,
 		disk:    disk,
 		freezer: freezer,
 		readers: make(map[string]*indexReaderWithLimitTag),
@@ -231,12 +236,41 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 }
 
 // readTrienode retrieves the trienode data from the specified trienode history.
-func (r *historyReader) readTrienode(addrHash common.Hash, path string, historyID uint64) ([]byte, error) {
-	tr, err := newTrienodeHistoryReader(historyID, r.freezer)
-	if err != nil {
-		return nil, err
+func (r *historyReader) readTrienode(addrHash common.Hash, path string, ids []uint64, lastID uint64, lastValue []byte) ([]byte, error) {
+	var (
+		elements [][][]byte
+		indices  [][]int
+		fullBlob []byte
+		first    = true
+	)
+	for i := len(ids) - 1; i >= 0; i-- {
+		var data []byte
+		if ids[i] == math.MaxUint64 {
+			data = lastValue
+		} else {
+			tr, err := newTrienodeHistoryReader(ids[i], r.freezer)
+			if err != nil {
+				return nil, err
+			}
+			ret, err := tr.read(addrHash, path)
+			if err != nil {
+				return nil, err
+			}
+			data = ret
+		}
+		if first {
+			first = false
+			fullBlob = data
+		} else {
+			element, index, err := decodeFullNodeCompressed(data)
+			if err != nil {
+				return nil, err
+			}
+			elements = append(elements, element)
+			indices = append(indices, index)
+		}
 	}
-	return tr.read(addrHash, path)
+	return trie.ReassembleFullNode(fullBlob, elements, indices)
 }
 
 // read retrieves the state element data associated with the stateID.
@@ -271,13 +305,14 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	// state retrieval
 	ir, ok := r.readers[state.String()]
 	if !ok {
-		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, metadata.Last)
+		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, metadata.Last, extensionLength[r.typ])
 		if err != nil {
 			return nil, err
 		}
 		r.readers[state.String()] = ir
 	}
-	historyID, err := ir.readGreaterThan(stateID, lastID)
+	// Refactor to the iterator with Next supported
+	historyID, ext, err := ir.readGreaterThan(stateID, lastID)
 	if err != nil {
 		return nil, err
 	}
@@ -297,5 +332,25 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	if state.typ == typeStorage {
 		return r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
 	}
-	return r.readTrienode(state.addressHash, state.path, historyID)
+	// Collect all the partial updates until a fully-encoded node
+	var (
+		ids []uint64
+		typ []nodeHistoryEncodeType
+	)
+	ids = append(ids, historyID)
+	typ = append(typ, blobToEncodeType(ext[0]))
+	for typ[len(typ)-1] != typeFull {
+		historyID, ext, err := ir.readGreaterThan(ids[len(ids)-1], lastID)
+		if err != nil {
+			return nil, err
+		}
+		if historyID == math.MaxUint64 {
+			ids = append(ids, historyID)
+			typ = append(typ, typeFull)
+			continue
+		}
+		ids = append(ids, historyID)
+		typ = append(typ, blobToEncodeType(ext[0]))
+	}
+	return r.readTrienode(state.addressHash, state.path, ids, lastID, latestValue)
 }

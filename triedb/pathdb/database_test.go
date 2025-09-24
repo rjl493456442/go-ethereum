@@ -128,10 +128,12 @@ type tester struct {
 	// current state set
 	accounts map[common.Hash][]byte                 // Keyed by the hash of account address
 	storages map[common.Hash]map[common.Hash][]byte // Keyed by the hash of account address and the hash of storage key
+	xnodes   map[common.Hash]map[string][]byte      // Keyed by the hash of account address and the hash of storage key
 
 	// state snapshots
 	snapAccounts map[common.Hash]map[common.Hash][]byte                 // Keyed by the hash of account address
 	snapStorages map[common.Hash]map[common.Hash]map[common.Hash][]byte // Keyed by the hash of account address and the hash of storage key
+	snapXnodes   map[common.Hash]map[common.Hash]map[string][]byte      // Keyed by the hash of account address and the hash of storage key
 
 	// trienode snapshots
 	snapNodes map[common.Hash]*trienode.MergedNodeSet
@@ -145,9 +147,10 @@ type testerConfig struct {
 	journalDir   string // Directory path for persisting journal files
 	isVerkle     bool   // Enables Verkle trie mode if true
 
-	writeBuffer *int // Optional, the size of memory allocated for write buffer
-	trieCache   *int // Optional, the size of memory allocated for trie cache
-	stateCache  *int // Optional, the size of memory allocated for state cache
+	writeBuffer *int   // Optional, the size of memory allocated for write buffer
+	trieCache   *int   // Optional, the size of memory allocated for trie cache
+	stateCache  *int   // Optional, the size of memory allocated for state cache
+	trieHistory *int64 // Number of historical trienodes to retain
 }
 
 func (c *testerConfig) trieCacheSize() int {
@@ -171,11 +174,19 @@ func (c *testerConfig) writeBufferSize() int {
 	return 256 * 1024
 }
 
+func (c *testerConfig) trienodeHistory() int64 {
+	if c.trieHistory != nil {
+		return *c.trieHistory
+	}
+	return -1
+}
+
 func newTester(t *testing.T, config *testerConfig) *tester {
 	var (
 		disk, _ = rawdb.Open(rawdb.NewMemoryDatabase(), rawdb.OpenOptions{Ancient: t.TempDir()})
 		db      = New(disk, &Config{
 			StateHistory:        config.stateHistory,
+			TrienodeHistory:     config.trienodeHistory(),
 			EnableStateIndexing: config.enableIndex,
 			TrieCleanSize:       config.trieCacheSize(),
 			StateCleanSize:      config.stateCacheSize(),
@@ -189,8 +200,10 @@ func newTester(t *testing.T, config *testerConfig) *tester {
 			preimages:    make(map[common.Hash][]byte),
 			accounts:     make(map[common.Hash][]byte),
 			storages:     make(map[common.Hash]map[common.Hash][]byte),
+			xnodes:       make(map[common.Hash]map[string][]byte),
 			snapAccounts: make(map[common.Hash]map[common.Hash][]byte),
 			snapStorages: make(map[common.Hash]map[common.Hash]map[common.Hash][]byte),
+			snapXnodes:   make(map[common.Hash]map[common.Hash]map[string][]byte),
 			snapNodes:    make(map[common.Hash]*trienode.MergedNodeSet),
 		}
 	)
@@ -465,7 +478,7 @@ func (t *tester) generate(parent common.Hash, rawStorageKey bool) (common.Hash, 
 	// Save state snapshot before commit
 	t.snapAccounts[parent] = copyAccounts(t.accounts)
 	t.snapStorages[parent] = copyStorages(t.storages)
-	t.snapNodes[parent] = ctx.nodes
+	t.snapXnodes[parent] = copyTrienodes(t.xnodes)
 
 	// Commit all changes to live state set
 	for addrHash, account := range ctx.accounts {
@@ -488,6 +501,21 @@ func (t *tester) generate(parent common.Hash, rawStorageKey bool) (common.Hash, 
 		}
 		if len(t.storages[addrHash]) == 0 {
 			delete(t.storages, addrHash)
+		}
+	}
+	for addrHash, slots := range ctx.nodes.Sets {
+		if _, ok := t.xnodes[addrHash]; !ok {
+			t.xnodes[addrHash] = make(map[string][]byte)
+		}
+		for path, n := range slots.Nodes {
+			if len(n.Blob) == 0 {
+				delete(t.xnodes[addrHash], path)
+			} else {
+				t.xnodes[addrHash][path] = n.Blob
+			}
+		}
+		if len(t.xnodes[addrHash]) == 0 {
+			delete(t.xnodes, addrHash)
 		}
 	}
 	storageOrigin := ctx.storageOriginSet(rawStorageKey, t)
@@ -918,6 +946,18 @@ func copyStorages(set map[common.Hash]map[common.Hash][]byte) map[common.Hash]ma
 	return copied
 }
 
+// copyStorages returns a deep-copied storage set of the provided one.
+func copyTrienodes(set map[common.Hash]map[string][]byte) map[common.Hash]map[string][]byte {
+	copied := make(map[common.Hash]map[string][]byte, len(set))
+	for addrHash, subset := range set {
+		copied[addrHash] = make(map[string][]byte, len(subset))
+		for key, val := range subset {
+			copied[addrHash][key] = common.CopyBytes(val)
+		}
+	}
+	return copied
+}
+
 func TestDatabaseIndexRecovery(t *testing.T) {
 	maxDiffLayers = 4
 	defer func() {
@@ -950,7 +990,7 @@ func TestDatabaseIndexRecovery(t *testing.T) {
 	var (
 		dIndex int
 		roots  = env.roots
-		hr     = newHistoryReader(env.db.diskdb, env.db.stateFreezer)
+		hr     = newHistoryReader(typeStateHistory, env.db.diskdb, env.db.stateFreezer)
 	)
 	for i, root := range roots {
 		if root == dRoot {
@@ -1011,7 +1051,7 @@ func TestDatabaseIndexRecovery(t *testing.T) {
 
 	// Ensure the truncated state histories become accessible
 	bRoot = env.db.tree.bottom().rootHash()
-	hr = newHistoryReader(env.db.diskdb, env.db.stateFreezer)
+	hr = newHistoryReader(typeStateHistory, env.db.diskdb, env.db.stateFreezer)
 	for i, root := range roots {
 		if root == bRoot {
 			break

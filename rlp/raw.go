@@ -85,6 +85,16 @@ func Split(b []byte) (k Kind, content, rest []byte, err error) {
 	return k, b[ts : ts+cs], b[ts+cs:], nil
 }
 
+// Split2 returns the content of first RLP value and any
+// bytes after the value as subslices of b.
+func Split2(b []byte) (k Kind, full []byte, content []byte, rest []byte, err error) {
+	k, ts, cs, err := readKind(b)
+	if err != nil {
+		return 0, nil, nil, b, err
+	}
+	return k, b[:ts+cs], b[ts : ts+cs], b[ts+cs:], nil
+}
+
 // SplitString splits b into the content of an RLP string
 // and any remaining bytes after the string.
 func SplitString(b []byte) (content, rest []byte, err error) {

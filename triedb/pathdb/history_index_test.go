@@ -33,15 +33,15 @@ func TestIndexReaderBasic(t *testing.T) {
 		1, 5, 10, 11, 20,
 	}
 	db := rawdb.NewMemoryDatabase()
-	bw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	bw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}), 0)
 	for i := 0; i < len(elements); i++ {
-		bw.append(elements[i])
+		bw.append(elements[i], nil)
 	}
 	batch := db.NewBatch()
 	bw.finish(batch)
 	batch.Write()
 
-	br, err := newIndexReader(db, newAccountIdent(common.Hash{0xa}))
+	br, err := newIndexReader(db, newAccountIdent(common.Hash{0xa}), 0)
 	if err != nil {
 		t.Fatalf("Failed to construct the index reader, %v", err)
 	}
@@ -57,7 +57,7 @@ func TestIndexReaderBasic(t *testing.T) {
 		{21, math.MaxUint64},
 	}
 	for _, c := range cases {
-		got, err := br.readGreaterThan(c.value)
+		got, _, err := br.readGreaterThan(c.value)
 		if err != nil {
 			t.Fatalf("Unexpected error, got %v", err)
 		}
@@ -75,15 +75,15 @@ func TestIndexReaderLarge(t *testing.T) {
 	slices.Sort(elements)
 
 	db := rawdb.NewMemoryDatabase()
-	bw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	bw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}), 0)
 	for i := 0; i < len(elements); i++ {
-		bw.append(elements[i])
+		bw.append(elements[i], nil)
 	}
 	batch := db.NewBatch()
 	bw.finish(batch)
 	batch.Write()
 
-	br, err := newIndexReader(db, newAccountIdent(common.Hash{0xa}))
+	br, err := newIndexReader(db, newAccountIdent(common.Hash{0xa}), 0)
 	if err != nil {
 		t.Fatalf("Failed to construct the index reader, %v", err)
 	}
@@ -92,7 +92,7 @@ func TestIndexReaderLarge(t *testing.T) {
 		pos := sort.Search(len(elements), func(i int) bool {
 			return elements[i] > value
 		})
-		got, err := br.readGreaterThan(value)
+		got, _, err := br.readGreaterThan(value)
 		if err != nil {
 			t.Fatalf("Unexpected error, got %v", err)
 		}
@@ -107,11 +107,11 @@ func TestIndexReaderLarge(t *testing.T) {
 }
 
 func TestEmptyIndexReader(t *testing.T) {
-	br, err := newIndexReader(rawdb.NewMemoryDatabase(), newAccountIdent(common.Hash{0xa}))
+	br, err := newIndexReader(rawdb.NewMemoryDatabase(), newAccountIdent(common.Hash{0xa}), 0)
 	if err != nil {
 		t.Fatalf("Failed to construct the index reader, %v", err)
 	}
-	res, err := br.readGreaterThan(100)
+	res, _, err := br.readGreaterThan(100)
 	if err != nil {
 		t.Fatalf("Failed to query, %v", err)
 	}
@@ -122,24 +122,24 @@ func TestEmptyIndexReader(t *testing.T) {
 
 func TestIndexWriterBasic(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
-	iw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
-	iw.append(2)
-	if err := iw.append(1); err == nil {
+	iw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}), 0)
+	iw.append(2, nil)
+	if err := iw.append(1, nil); err == nil {
 		t.Fatal("out-of-order insertion is not expected")
 	}
 	for i := 0; i < 10; i++ {
-		iw.append(uint64(i + 3))
+		iw.append(uint64(i+3), nil)
 	}
 	batch := db.NewBatch()
 	iw.finish(batch)
 	batch.Write()
 
-	iw, err := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	iw, err := newIndexWriter(db, newAccountIdent(common.Hash{0xa}), 0)
 	if err != nil {
 		t.Fatalf("Failed to construct the block writer, %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		if err := iw.append(uint64(i + 100)); err != nil {
+		if err := iw.append(uint64(i+100), nil); err != nil {
 			t.Fatalf("Failed to append item, %v", err)
 		}
 	}
@@ -148,16 +148,16 @@ func TestIndexWriterBasic(t *testing.T) {
 
 func TestIndexWriterDelete(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
-	iw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}))
+	iw, _ := newIndexWriter(db, newAccountIdent(common.Hash{0xa}), 0)
 	for i := 0; i < indexBlockEntriesCap*4; i++ {
-		iw.append(uint64(i + 1))
+		iw.append(uint64(i+1), nil)
 	}
 	batch := db.NewBatch()
 	iw.finish(batch)
 	batch.Write()
 
 	// Delete unknown id, the request should be rejected
-	id, _ := newIndexDeleter(db, newAccountIdent(common.Hash{0xa}))
+	id, _ := newIndexDeleter(db, newAccountIdent(common.Hash{0xa}), 0)
 	if err := id.pop(indexBlockEntriesCap * 5); err == nil {
 		t.Fatal("Expect error to occur for unknown id")
 	}
@@ -212,9 +212,9 @@ func TestBatchIndexerWrite(t *testing.T) {
 		}
 	}
 	for addrHash, indexes := range accounts {
-		ir, _ := newIndexReader(db, newAccountIdent(addrHash))
+		ir, _ := newIndexReader(db, newAccountIdent(addrHash), 0)
 		for i := 0; i < len(indexes)-1; i++ {
-			n, err := ir.readGreaterThan(indexes[i])
+			n, _, err := ir.readGreaterThan(indexes[i])
 			if err != nil {
 				t.Fatalf("Failed to read index, %v", err)
 			}
@@ -222,7 +222,7 @@ func TestBatchIndexerWrite(t *testing.T) {
 				t.Fatalf("Unexpected result, want %d, got %d", indexes[i+1], n)
 			}
 		}
-		n, err := ir.readGreaterThan(indexes[len(indexes)-1])
+		n, _, err := ir.readGreaterThan(indexes[len(indexes)-1])
 		if err != nil {
 			t.Fatalf("Failed to read index, %v", err)
 		}
@@ -232,9 +232,9 @@ func TestBatchIndexerWrite(t *testing.T) {
 	}
 	for addrHash, slots := range storages {
 		for slotHash, indexes := range slots {
-			ir, _ := newIndexReader(db, newStorageIdent(addrHash, slotHash))
+			ir, _ := newIndexReader(db, newStorageIdent(addrHash, slotHash), 0)
 			for i := 0; i < len(indexes)-1; i++ {
-				n, err := ir.readGreaterThan(indexes[i])
+				n, _, err := ir.readGreaterThan(indexes[i])
 				if err != nil {
 					t.Fatalf("Failed to read index, %v", err)
 				}
@@ -242,7 +242,7 @@ func TestBatchIndexerWrite(t *testing.T) {
 					t.Fatalf("Unexpected result, want %d, got %d", indexes[i+1], n)
 				}
 			}
-			n, err := ir.readGreaterThan(indexes[len(indexes)-1])
+			n, _, err := ir.readGreaterThan(indexes[len(indexes)-1])
 			if err != nil {
 				t.Fatalf("Failed to read index, %v", err)
 			}

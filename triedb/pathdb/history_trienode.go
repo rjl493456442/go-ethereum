@@ -131,14 +131,14 @@ type trienodeMetadata struct {
 // trienodeHistory represents a set of trie node changes resulting from a state
 // transition across the main account trie and all associated storage tries.
 type trienodeHistory struct {
-	meta     *trienodeMetadata                 // Metadata of the history
-	owners   []common.Hash                     // List of trie identifier sorted lexicographically
-	nodeList map[common.Hash][]string          // Set of node paths sorted lexicographically
-	nodes    map[common.Hash]map[string][]byte // Set of original value of trie nodes before state transition
+	meta     *trienodeMetadata                       // Metadata of the history
+	owners   []common.Hash                           // List of trie identifier sorted lexicographically
+	nodeList map[common.Hash][]string                // Set of node paths sorted lexicographically
+	nodes    map[common.Hash]map[string]nodeWithFlag // Set of original value of trie nodes before state transition
 }
 
 // newTrienodeHistory constructs a trienode history with the provided trie nodes.
-func newTrienodeHistory(root common.Hash, parent common.Hash, block uint64, nodes map[common.Hash]map[string][]byte) *trienodeHistory {
+func newTrienodeHistory(root common.Hash, parent common.Hash, block uint64, nodes map[common.Hash]map[string]nodeWithFlag) *trienodeHistory {
 	nodeList := make(map[common.Hash][]string)
 	for owner, subset := range nodes {
 		keys := sort.StringSlice(slices.Collect(maps.Keys(subset)))
@@ -179,11 +179,13 @@ func (h *trienodeHistory) typ() historyType {
 
 // forEach implements the history interface, returning an iterator to traverse the
 // state entries in the history.
-func (h *trienodeHistory) forEach() iter.Seq[stateIdent] {
-	return func(yield func(stateIdent) bool) {
+func (h *trienodeHistory) forEach() iter.Seq[stateIdentWithExtension] {
+	return func(yield func(stateIdentWithExtension) bool) {
 		for _, owner := range h.owners {
 			for _, path := range h.nodeList[owner] {
-				if !yield(newTrienodeIdent(owner, path)) {
+				etype := encodeTypeToBlob(h.nodes[owner][path].typ)
+				ident := newStateIdentWithExtension(newTrienodeIdent(owner, path), etype)
+				if !yield(ident) {
 					return
 				}
 			}
@@ -234,12 +236,15 @@ func (h *trienodeHistory) encode() ([]byte, []byte, []byte, error) {
 			} else {
 				prefixLen = sharedLen(prevKey, key)
 			}
-			value := h.nodes[owner][path]
+			node := h.nodes[owner][path]
 
 			// key section
 			n := binary.PutUvarint(buf[0:], uint64(prefixLen))          // key length shared (varint)
 			n += binary.PutUvarint(buf[n:], uint64(len(key)-prefixLen)) // key length not shared (varint)
-			n += binary.PutUvarint(buf[n:], uint64(len(value)))         // value length (varint)
+			n += binary.PutUvarint(buf[n:], uint64(len(node.blob)))     // value length (varint)
+
+			// Node encode flag
+			n += copy(buf[n:], encodeTypeToBlob(node.typ))
 
 			if _, err := keySection.Write(buf[:n]); err != nil {
 				return nil, nil, nil, err
@@ -252,11 +257,11 @@ func (h *trienodeHistory) encode() ([]byte, []byte, []byte, error) {
 			prevKey = key
 
 			// value section
-			if _, err := valueSection.Write(value); err != nil {
+			if _, err := valueSection.Write(node.blob); err != nil {
 				return nil, nil, nil, err
 			}
 			internalKeyOffset += uint32(n)
-			internalValOffset += uint32(len(value))
+			internalValOffset += uint32(len(node.blob))
 		}
 
 		// Encode trailer
@@ -329,7 +334,7 @@ func decodeHeader(data []byte) (*trienodeMetadata, []common.Hash, []uint32, []ui
 	}, owners, keyOffsets, valOffsets, nil
 }
 
-func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]string, error) {
+func decodeSingle(keySection []byte, onValue func([]byte, int, int, nodeHistoryEncodeType) error) ([]string, error) {
 	var (
 		prevKey    []byte
 		items      int
@@ -387,6 +392,10 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 		nValue, nn := binary.Uvarint(keySection[keyOff:]) // value length (varint)
 		keyOff += nn
 
+		// Encode type (1 byte)
+		typ := blobToEncodeType(keySection[keyOff])
+		keyOff += 1
+
 		// Resolve unshared key
 		if keyOff+int(nUnshared) > len(keySection) {
 			return nil, fmt.Errorf("key length too long, unshared key length: %d, off: %d, section size: %d", nUnshared, keyOff, len(keySection))
@@ -415,7 +424,7 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 
 		// Resolve value
 		if onValue != nil {
-			if err := onValue(key, valOff, valOff+int(nValue)); err != nil {
+			if err := onValue(key, valOff, valOff+int(nValue), typ); err != nil {
 				return nil, err
 			}
 		}
@@ -430,12 +439,12 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 	return keys, nil
 }
 
-func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, map[string][]byte, error) {
+func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, map[string]nodeWithFlag, error) {
 	var (
 		offset int
-		nodes  = make(map[string][]byte)
+		nodes  = make(map[string]nodeWithFlag)
 	)
-	paths, err := decodeSingle(keySection, func(key []byte, start int, limit int) error {
+	paths, err := decodeSingle(keySection, func(key []byte, start int, limit int, typ nodeHistoryEncodeType) error {
 		if start != offset {
 			return fmt.Errorf("gapped value section offset: %d, want: %d", start, offset)
 		}
@@ -446,8 +455,10 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		if start > len(valueSection) || limit > len(valueSection) {
 			return fmt.Errorf("value section out of range: start: %d, limit: %d, size: %d", start, limit, len(valueSection))
 		}
-		nodes[string(key)] = valueSection[start:limit]
-
+		nodes[string(key)] = nodeWithFlag{
+			blob: valueSection[start:limit],
+			typ:  typ,
+		}
 		offset = limit
 		return nil
 	})
@@ -469,7 +480,7 @@ func (h *trienodeHistory) decode(header []byte, keySection []byte, valueSection 
 	h.meta = metadata
 	h.owners = owners
 	h.nodeList = make(map[common.Hash][]string)
-	h.nodes = make(map[common.Hash]map[string][]byte)
+	h.nodes = make(map[common.Hash]map[string]nodeWithFlag)
 
 	for i := 0; i < len(owners); i++ {
 		// Resolve the boundary of key section
@@ -534,7 +545,7 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 	}
 
 	valueOffsets := make(map[string]iRange)
-	_, err = decodeSingle(keyData[keyStart:keyLimit], func(key []byte, start int, limit int) error {
+	_, err = decodeSingle(keyData[keyStart:keyLimit], func(key []byte, start int, limit int, typ nodeHistoryEncodeType) error {
 		valueOffsets[string(key)] = iRange{
 			start: uint32(start),
 			limit: uint32(limit),
@@ -663,7 +674,11 @@ func (r *trienodeHistoryReader) read(owner common.Hash, path string) ([]byte, er
 // writeTrienodeHistory persists the trienode history associated with the given diff layer.
 func writeTrienodeHistory(writer ethdb.AncientWriter, dl *diffLayer) error {
 	start := time.Now()
-	h := newTrienodeHistory(dl.rootHash(), dl.parent.rootHash(), dl.block, dl.nodes.nodeOrigin)
+	nodes, err := dl.nodes.encodeNodeHistory()
+	if err != nil {
+		return err
+	}
+	h := newTrienodeHistory(dl.rootHash(), dl.parent.rootHash(), dl.block, nodes)
 	header, keySection, valueSection, err := h.encode()
 	if err != nil {
 		return err

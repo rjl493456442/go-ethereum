@@ -55,6 +55,12 @@ func indexVersion(typ historyType) uint8 {
 	}
 }
 
+// extensionLength defines the extension length of different type history.
+var extensionLength = map[historyType]int{
+	typeStateHistory:    0,
+	typeTrienodeHistory: 1,
+}
+
 // indexMetadata describes the metadata of the historical data index.
 type indexMetadata struct {
 	Version uint8
@@ -120,21 +126,25 @@ func deleteIndexMetadata(db ethdb.KeyValueWriter, typ historyType) {
 // batchIndexer is responsible for performing batch indexing or unindexing
 // of historical data (e.g., state or trie node changes) atomically.
 type batchIndexer struct {
-	index   map[stateIdent][]uint64 // List of history IDs for tracked state entry
-	pending int                     // Number of entries processed in the current batch.
-	delete  bool                    // Operation mode: true for unindex, false for index.
-	lastID  uint64                  // ID of the most recently processed history.
-	typ     historyType             // Type of history being processed (e.g., state or trienode).
-	db      ethdb.KeyValueStore     // Key-value database used to store or delete index data.
+	index     map[stateIdent][]uint64 // List of history IDs for tracked state entry
+	extension map[stateIdent][][]byte // List of extensions corresponding to the tracked IDs
+	extLen    int                     // The length of extension for every element, 0 is allowed
+	pending   int                     // Number of entries processed in the current batch.
+	delete    bool                    // Operation mode: true for unindex, false for index.
+	lastID    uint64                  // ID of the most recently processed history.
+	typ       historyType             // Type of history being processed (e.g., state or trienode).
+	db        ethdb.KeyValueStore     // Key-value database used to store or delete index data.
 }
 
 // newBatchIndexer constructs the batch indexer with the supplied mode.
 func newBatchIndexer(db ethdb.KeyValueStore, delete bool, typ historyType) *batchIndexer {
 	return &batchIndexer{
-		index:  make(map[stateIdent][]uint64),
-		delete: delete,
-		typ:    typ,
-		db:     db,
+		index:     make(map[stateIdent][]uint64),
+		extension: make(map[stateIdent][][]byte),
+		extLen:    extensionLength[typ],
+		delete:    delete,
+		typ:       typ,
+		db:        db,
 	}
 }
 
@@ -142,7 +152,12 @@ func newBatchIndexer(db ethdb.KeyValueStore, delete bool, typ historyType) *batc
 // records for them.
 func (b *batchIndexer) process(h history, id uint64) error {
 	for ident := range h.forEach() {
-		b.index[ident] = append(b.index[ident], id)
+		b.index[ident.stateIdent] = append(b.index[ident.stateIdent], id)
+
+		if len(ident.extension) != b.extLen {
+			return fmt.Errorf("extension length mismatch, provided: %d, required: %d", len(ident.extension), b.extLen)
+		}
+		b.extension[ident.stateIdent] = append(b.extension[ident.stateIdent], ident.extension)
 		b.pending++
 	}
 	b.lastID = id
@@ -170,12 +185,12 @@ func (b *batchIndexer) finish(force bool) error {
 	for ident, list := range b.index {
 		eg.Go(func() error {
 			if !b.delete {
-				iw, err := newIndexWriter(b.db, ident)
+				iw, err := newIndexWriter(b.db, ident, b.extLen)
 				if err != nil {
 					return err
 				}
-				for _, n := range list {
-					if err := iw.append(n); err != nil {
+				for i, n := range list {
+					if err := iw.append(n, b.extension[ident][i]); err != nil {
 						return err
 					}
 				}
@@ -183,7 +198,7 @@ func (b *batchIndexer) finish(force bool) error {
 				iw.finish(batch)
 				batchMu.Unlock()
 			} else {
-				id, err := newIndexDeleter(b.db, ident)
+				id, err := newIndexDeleter(b.db, ident, b.extLen)
 				if err != nil {
 					return err
 				}
@@ -215,9 +230,10 @@ func (b *batchIndexer) finish(force bool) error {
 	if err := batch.Write(); err != nil {
 		return err
 	}
-	log.Debug("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "size", common.StorageSize(batch.ValueSize()), "elapsed", common.PrettyDuration(time.Since(start)))
 	b.pending = 0
 	b.index = make(map[stateIdent][]uint64)
+	b.extension = make(map[stateIdent][][]byte)
 	return nil
 }
 
@@ -670,8 +686,8 @@ type historyIndexer struct {
 	freezer ethdb.AncientStore
 }
 
-// checkVersion checks whether the index data in the database matches the version.
-func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
+// CheckVersion checks whether the index data in the database matches the version.
+func CheckVersion(disk ethdb.KeyValueStore, typ historyType, force bool) {
 	var blob []byte
 	if typ == typeStateHistory {
 		blob = rawdb.ReadStateHistoryIndexMetadata(disk)
@@ -692,8 +708,10 @@ func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
 	}
 	var m indexMetadata
 	err := rlp.DecodeBytes(blob, &m)
-	if err == nil && m.Version == ver {
-		return
+	if !force {
+		if err == nil && m.Version == ver {
+			return
+		}
 	}
 	// Version is not matched, prune the existing data and re-index from scratch
 	batch := disk.NewBatch()
@@ -717,7 +735,7 @@ func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
 // newHistoryIndexer constructs the history indexer and launches the background
 // initer to complete the indexing of any remaining state histories.
 func newHistoryIndexer(disk ethdb.KeyValueStore, freezer ethdb.AncientStore, lastHistoryID uint64, typ historyType) *historyIndexer {
-	checkVersion(disk, typ)
+	CheckVersion(disk, typ, false)
 	return &historyIndexer{
 		initer:  newIndexIniter(disk, freezer, typ, lastHistoryID),
 		typ:     typ,

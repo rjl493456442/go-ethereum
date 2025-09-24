@@ -234,7 +234,7 @@ func (db *Database) HistoricalStateReader(root common.Hash) (*HistoricalStateRea
 	return &HistoricalStateReader{
 		id:     *id,
 		db:     db,
-		reader: newHistoryReader(db.diskdb, db.stateFreezer),
+		reader: newHistoryReader(typeStateHistory, db.diskdb, db.stateFreezer),
 	}, nil
 }
 
@@ -358,7 +358,7 @@ func (db *Database) HistoricalNodeReader(root common.Hash) (*HistoricalNodeReade
 	return &HistoricalNodeReader{
 		id:     *id,
 		db:     db,
-		reader: newHistoryReader(db.diskdb, db.trienodeFreezer),
+		reader: newHistoryReader(typeTrienodeHistory, db.diskdb, db.trienodeFreezer),
 	}, nil
 }
 

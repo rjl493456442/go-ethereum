@@ -74,6 +74,7 @@ type indexReader struct {
 	descList []*indexBlockDesc
 	readers  map[uint32]*blockReader
 	state    stateIdent
+	extLen   int // The length of extension for every element, 0 is allowed
 }
 
 // loadIndexData loads the index data associated with the specified state.
@@ -87,7 +88,7 @@ func loadIndexData(db ethdb.KeyValueReader, state stateIdent) ([]*indexBlockDesc
 
 // newIndexReader constructs a index reader for the specified state. Reader with
 // empty data is allowed.
-func newIndexReader(db ethdb.KeyValueReader, state stateIdent) (*indexReader, error) {
+func newIndexReader(db ethdb.KeyValueReader, state stateIdent, extLen int) (*indexReader, error) {
 	descList, err := loadIndexData(db, state)
 	if err != nil {
 		return nil, err
@@ -97,6 +98,7 @@ func newIndexReader(db ethdb.KeyValueReader, state stateIdent) (*indexReader, er
 		readers:  make(map[uint32]*blockReader),
 		db:       db,
 		state:    state,
+		extLen:   extLen,
 	}, nil
 }
 
@@ -121,12 +123,12 @@ func (r *indexReader) refresh() error {
 
 // readGreaterThan locates the first element that is greater than the specified
 // id. If no such element is found, MaxUint64 is returned.
-func (r *indexReader) readGreaterThan(id uint64) (uint64, error) {
+func (r *indexReader) readGreaterThan(id uint64) (uint64, []byte, error) {
 	index := sort.Search(len(r.descList), func(i int) bool {
 		return id < r.descList[i].max
 	})
 	if index == len(r.descList) {
-		return math.MaxUint64, nil
+		return math.MaxUint64, nil, nil
 	}
 	desc := r.descList[index]
 
@@ -134,9 +136,9 @@ func (r *indexReader) readGreaterThan(id uint64) (uint64, error) {
 	if !ok {
 		var err error
 		blob := readStateIndexBlock(r.state, r.db, desc.id)
-		br, err = newBlockReader(blob)
+		br, err = newBlockReader(blob, r.extLen)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		r.readers[desc.id] = br
 	}
@@ -158,19 +160,21 @@ type indexWriter struct {
 	lastID   uint64            // The ID of the latest tracked history
 	state    stateIdent
 	db       ethdb.KeyValueReader
+	extLen   int // The length of extension for every element, 0 is allowed
 }
 
 // newIndexWriter constructs the index writer for the specified state.
-func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, error) {
+func newIndexWriter(db ethdb.KeyValueReader, state stateIdent, extLen int) (*indexWriter, error) {
 	blob := readStateIndex(state, db)
 	if len(blob) == 0 {
 		desc := newIndexBlockDesc(0)
-		bw, _ := newBlockWriter(nil, desc)
+		bw, _ := newBlockWriter(nil, desc, extLen)
 		return &indexWriter{
 			descList: []*indexBlockDesc{desc},
 			bw:       bw,
 			state:    state,
 			db:       db,
+			extLen:   extLen,
 		}, nil
 	}
 	descList, err := parseIndex(blob)
@@ -179,7 +183,7 @@ func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, er
 	}
 	lastDesc := descList[len(descList)-1]
 	indexBlock := readStateIndexBlock(state, db, lastDesc.id)
-	bw, err := newBlockWriter(indexBlock, lastDesc)
+	bw, err := newBlockWriter(indexBlock, lastDesc, extLen)
 	if err != nil {
 		return nil, err
 	}
@@ -189,11 +193,12 @@ func newIndexWriter(db ethdb.KeyValueReader, state stateIdent) (*indexWriter, er
 		bw:       bw,
 		state:    state,
 		db:       db,
+		extLen:   extLen,
 	}, nil
 }
 
 // append adds the new element into the index writer.
-func (w *indexWriter) append(id uint64) error {
+func (w *indexWriter) append(id uint64, ext []byte) error {
 	if id <= w.lastID {
 		return fmt.Errorf("append element out of order, last: %d, this: %d", w.lastID, id)
 	}
@@ -202,7 +207,7 @@ func (w *indexWriter) append(id uint64) error {
 			return err
 		}
 	}
-	if err := w.bw.append(id); err != nil {
+	if err := w.bw.append(id, ext); err != nil {
 		return err
 	}
 	w.lastID = id
@@ -218,7 +223,7 @@ func (w *indexWriter) rotate() error {
 		desc = newIndexBlockDesc(w.bw.desc.id + 1)
 	)
 	w.frozen = append(w.frozen, w.bw)
-	w.bw, err = newBlockWriter(nil, desc)
+	w.bw, err = newBlockWriter(nil, desc, w.extLen)
 	if err != nil {
 		return err
 	}
@@ -265,21 +270,23 @@ type indexDeleter struct {
 	lastID   uint64            // The ID of the latest tracked history
 	state    stateIdent
 	db       ethdb.KeyValueReader
+	extLen   int // The length of extension for every element, 0 is allowed
 }
 
 // newIndexDeleter constructs the index deleter for the specified state.
-func newIndexDeleter(db ethdb.KeyValueReader, state stateIdent) (*indexDeleter, error) {
+func newIndexDeleter(db ethdb.KeyValueReader, state stateIdent, extLen int) (*indexDeleter, error) {
 	blob := readStateIndex(state, db)
 	if len(blob) == 0 {
 		// TODO(rjl493456442) we can probably return an error here,
 		// deleter with no data is meaningless.
 		desc := newIndexBlockDesc(0)
-		bw, _ := newBlockWriter(nil, desc)
+		bw, _ := newBlockWriter(nil, desc, extLen)
 		return &indexDeleter{
 			descList: []*indexBlockDesc{desc},
 			bw:       bw,
 			state:    state,
 			db:       db,
+			extLen:   extLen,
 		}, nil
 	}
 	descList, err := parseIndex(blob)
@@ -288,7 +295,7 @@ func newIndexDeleter(db ethdb.KeyValueReader, state stateIdent) (*indexDeleter, 
 	}
 	lastDesc := descList[len(descList)-1]
 	indexBlock := readStateIndexBlock(state, db, lastDesc.id)
-	bw, err := newBlockWriter(indexBlock, lastDesc)
+	bw, err := newBlockWriter(indexBlock, lastDesc, extLen)
 	if err != nil {
 		return nil, err
 	}
@@ -298,6 +305,7 @@ func newIndexDeleter(db ethdb.KeyValueReader, state stateIdent) (*indexDeleter, 
 		bw:       bw,
 		state:    state,
 		db:       db,
+		extLen:   extLen,
 	}, nil
 }
 
@@ -334,7 +342,7 @@ func (d *indexDeleter) pop(id uint64) error {
 	// Open the previous block writer for deleting
 	lastDesc := d.descList[len(d.descList)-1]
 	indexBlock := readStateIndexBlock(d.state, d.db, lastDesc.id)
-	bw, err := newBlockWriter(indexBlock, lastDesc)
+	bw, err := newBlockWriter(indexBlock, lastDesc, d.extLen)
 	if err != nil {
 		return err
 	}
