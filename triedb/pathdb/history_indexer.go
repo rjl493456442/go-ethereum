@@ -159,8 +159,13 @@ func (b *batchIndexer) finish(force bool) error {
 	if !force && b.pending < historyIndexBatch {
 		return nil
 	}
+	var batch ethdb.Batch
+	if b.pending >= historyIndexBatch {
+		batch = b.db.NewBatchWithSize(32 * 1024 * 1024)
+	} else {
+		batch = b.db.NewBatchWithSize(4 * 1024 * 1024)
+	}
 	var (
-		batch   = b.db.NewBatchWithSize(4 * 1024 * 1024)
 		batchMu sync.RWMutex
 		start   = time.Now()
 		eg      errgroup.Group
