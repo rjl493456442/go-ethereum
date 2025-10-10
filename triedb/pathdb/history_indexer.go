@@ -212,6 +212,9 @@ func (b *batchIndexer) finish(force bool) error {
 			storeIndexMetadata(batch, b.typ, b.lastID-1)
 		}
 	}
+	if batch.ValueSize() > 1024*1024*128 {
+		log.Warn("Indexer batch is too big", "size", common.StorageSize(batch.ValueSize()))
+	}
 	if err := batch.Write(); err != nil {
 		return err
 	}
@@ -670,8 +673,8 @@ type historyIndexer struct {
 	freezer ethdb.AncientStore
 }
 
-// checkVersion checks whether the index data in the database matches the version.
-func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
+// CheckVersion checks whether the index data in the database matches the version.
+func CheckVersion(disk ethdb.KeyValueStore, typ historyType, force bool) {
 	var blob []byte
 	if typ == typeStateHistory {
 		blob = rawdb.ReadStateHistoryIndexMetadata(disk)
@@ -692,8 +695,10 @@ func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
 	}
 	var m indexMetadata
 	err := rlp.DecodeBytes(blob, &m)
-	if err == nil && m.Version == ver {
-		return
+	if !force {
+		if err == nil && m.Version == ver {
+			return
+		}
 	}
 	// Version is not matched, prune the existing data and re-index from scratch
 	batch := disk.NewBatch()
@@ -717,7 +722,7 @@ func checkVersion(disk ethdb.KeyValueStore, typ historyType) {
 // newHistoryIndexer constructs the history indexer and launches the background
 // initer to complete the indexing of any remaining state histories.
 func newHistoryIndexer(disk ethdb.KeyValueStore, freezer ethdb.AncientStore, lastHistoryID uint64, typ historyType) *historyIndexer {
-	checkVersion(disk, typ)
+	CheckVersion(disk, typ, false)
 	return &historyIndexer{
 		initer:  newIndexIniter(disk, freezer, typ, lastHistoryID),
 		typ:     typ,
