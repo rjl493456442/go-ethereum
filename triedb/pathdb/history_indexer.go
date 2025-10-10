@@ -223,7 +223,7 @@ func (b *batchIndexer) finish(force bool) error {
 	if err := batch.Write(); err != nil {
 		return err
 	}
-	log.Debug("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "size", common.StorageSize(batch.ValueSize()), "elapsed", common.PrettyDuration(time.Since(start)))
 	b.pending = 0
 	b.index = make(map[stateIdent][]uint64)
 	return nil
