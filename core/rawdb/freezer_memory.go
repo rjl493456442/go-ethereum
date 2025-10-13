@@ -413,16 +413,17 @@ func (f *MemoryFreezer) AncientDatadir() (string, error) {
 	return "", nil
 }
 
-// AncientBytes retrieves a byte range [offset:offset+length] from the specified ancient item in memory.
-func (f *MemoryFreezer) AncientBytes(kind string, item, offset, length uint64) ([]byte, error) {
+// AncientBytes retrieves the value segment of the element specified by the id
+// and value offsets.
+func (f *MemoryFreezer) AncientBytes(kind string, id, offset, length uint64) ([]byte, error) {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 
-	table := f.tables[kind]
-	if table == nil {
+	t := f.tables[kind]
+	if t == nil {
 		return nil, errUnknownTable
 	}
-	entries, err := table.retrieve(item, 1, 0)
+	entries, err := t.retrieve(id, 1, 0)
 	if err != nil {
 		return nil, err
 	}
