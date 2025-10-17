@@ -59,10 +59,12 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		RPCGasCap               uint64
 		RPCEVMTimeout           time.Duration
 		RPCTxFeeCap             float64
-		OverrideOsaka           *uint64 `toml:",omitempty"`
-		OverrideBPO1            *uint64 `toml:",omitempty"`
-		OverrideBPO2            *uint64 `toml:",omitempty"`
-		OverrideVerkle          *uint64 `toml:",omitempty"`
+		OverrideOsaka           *uint64       `toml:",omitempty"`
+		OverrideBPO1            *uint64       `toml:",omitempty"`
+		OverrideBPO2            *uint64       `toml:",omitempty"`
+		OverrideVerkle          *uint64       `toml:",omitempty"`
+		TxSyncDefaultTimeout    time.Duration `toml:",omitempty"`
+		TxSyncMaxTimeout        time.Duration `toml:",omitempty"`
 	}
 	var enc Config
 	enc.Genesis = c.Genesis
@@ -111,6 +113,8 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.OverrideBPO1 = c.OverrideBPO1
 	enc.OverrideBPO2 = c.OverrideBPO2
 	enc.OverrideVerkle = c.OverrideVerkle
+	enc.TxSyncDefaultTimeout = c.TxSyncDefaultTimeout
+	enc.TxSyncMaxTimeout = c.TxSyncMaxTimeout
 	return &enc, nil
 }
 
@@ -159,10 +163,12 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		RPCGasCap               *uint64
 		RPCEVMTimeout           *time.Duration
 		RPCTxFeeCap             *float64
-		OverrideOsaka           *uint64 `toml:",omitempty"`
-		OverrideBPO1            *uint64 `toml:",omitempty"`
-		OverrideBPO2            *uint64 `toml:",omitempty"`
-		OverrideVerkle          *uint64 `toml:",omitempty"`
+		OverrideOsaka           *uint64        `toml:",omitempty"`
+		OverrideBPO1            *uint64        `toml:",omitempty"`
+		OverrideBPO2            *uint64        `toml:",omitempty"`
+		OverrideVerkle          *uint64        `toml:",omitempty"`
+		TxSyncDefaultTimeout    *time.Duration `toml:",omitempty"`
+		TxSyncMaxTimeout        *time.Duration `toml:",omitempty"`
 	}
 	var dec Config
 	if err := unmarshal(&dec); err != nil {
@@ -305,6 +311,12 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.OverrideVerkle != nil {
 		c.OverrideVerkle = dec.OverrideVerkle
+	}
+	if dec.TxSyncDefaultTimeout != nil {
+		c.TxSyncDefaultTimeout = *dec.TxSyncDefaultTimeout
+	}
+	if dec.TxSyncMaxTimeout != nil {
+		c.TxSyncMaxTimeout = *dec.TxSyncMaxTimeout
 	}
 	return nil
 }
