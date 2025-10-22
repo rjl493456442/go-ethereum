@@ -25,10 +25,29 @@ import (
 )
 
 const (
-	indexBlockDescSize   = 14         // The size of index block descriptor
-	indexBlockEntriesCap = 4096       // The maximum number of entries can be grouped in a block
-	indexBlockRestartLen = 256        // The restart interval length of index block
-	historyIndexBatch    = 512 * 1024 // The number of state history indexes for constructing or deleting as batch
+	indexBlockDescSize = 14 // The size of index block descriptor
+
+	// indexBlockEntriesCap defines the maximum number of entries that can be
+	// grouped into a single block. Given that each element occupies approximately
+	// 2–3 bytes on average. With additional metadata included at the end of block,
+	// a cap of 1K entries keeps the block size under 4 KB. This limit will be
+	// applied to both state history and trienode history index.
+	//
+	// Note, this number was chosen as 4K for state history before, the parameter
+	// change is fully backward compatible.
+	indexBlockEntriesCap = 1024
+	indexBlockRestartLen = 256 // The restart interval length of index block
+
+	// historyIndexBatch defines the number of history indexes to construct or delete
+	// in a single batch. In theory, processing more index entries per batch improves
+	// indexing efficiency by reducing database read/write amplification. However,
+	// due to Pebble's batch size limit (4 GB) and potential memory constraints, we
+	// must make a balance between efficiency and stability.
+	//
+	// This value is chosen as a balanced point. In the worst case, each index entry
+	// may reference an almost full index block, resulting in a total batch size of
+	// roughly 2 GB.
+	historyIndexBatch = 512 * 1024
 )
 
 // indexBlockDesc represents a descriptor for an index block, which contains a
