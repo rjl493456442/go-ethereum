@@ -661,7 +661,11 @@ func (r *trienodeHistoryReader) read(owner common.Hash, path string) ([]byte, er
 // writeTrienodeHistory persists the trienode history associated with the given diff layer.
 func writeTrienodeHistory(writer ethdb.AncientWriter, dl *diffLayer) error {
 	start := time.Now()
-	h := newTrienodeHistory(dl.rootHash(), dl.parent.rootHash(), dl.block, dl.nodes.nodeOrigin)
+	nodes, err := dl.nodes.encodeNodeHistory(dl.root)
+	if err != nil {
+		return err
+	}
+	h := newTrienodeHistory(dl.rootHash(), dl.parent.rootHash(), dl.block, nodes)
 	header, keySection, valueSection, err := h.encode()
 	if err != nil {
 		return err
