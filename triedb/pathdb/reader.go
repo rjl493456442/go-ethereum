@@ -200,7 +200,7 @@ func (db *Database) StateReader(root common.Hash) (database.StateReader, error) 
 // historical state.
 type HistoricalStateReader struct {
 	db     *Database
-	reader *historyReader
+	reader *stateHistoryReader
 	id     uint64
 }
 
@@ -234,7 +234,7 @@ func (db *Database) HistoricalStateReader(root common.Hash) (*HistoricalStateRea
 	return &HistoricalStateReader{
 		id:     *id,
 		db:     db,
-		reader: newHistoryReader(db.diskdb, db.stateFreezer),
+		reader: newStateHistoryReader(db.diskdb, db.stateFreezer),
 	}, nil
 }
 
@@ -323,7 +323,7 @@ func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash)
 // historical trie node data.
 type HistoricalNodeReader struct {
 	db     *Database
-	reader *historyReader
+	reader *trienodeReader
 	id     uint64
 }
 
@@ -331,7 +331,7 @@ type HistoricalNodeReader struct {
 func (db *Database) HistoricalNodeReader(root common.Hash) (*HistoricalNodeReader, error) {
 	// Bail out if the state history hasn't been fully indexed
 	if db.trienodeIndexer == nil || db.trienodeFreezer == nil {
-		return nil, fmt.Errorf("historical trienode %x is not available", root)
+		return nil, fmt.Errorf("historical state %x is not available", root)
 	}
 	if !db.trienodeIndexer.inited() {
 		return nil, errors.New("trienode histories haven't been fully indexed yet")
@@ -347,7 +347,6 @@ func (db *Database) HistoricalNodeReader(root common.Hash) (*HistoricalNodeReade
 	}
 	// Ensure the requested trienode history is canonical, states on side chain
 	// are not accessible.
-	// TODO(rjl493456442)
 	meta, err := readTrienodeMetadata(db.trienodeFreezer, *id+1)
 	if err != nil {
 		return nil, err // e.g., the referred trienode history has been pruned
@@ -358,7 +357,7 @@ func (db *Database) HistoricalNodeReader(root common.Hash) (*HistoricalNodeReade
 	return &HistoricalNodeReader{
 		id:     *id,
 		db:     db,
-		reader: newHistoryReader(db.diskdb, db.trienodeFreezer),
+		reader: newTrienodeReader(db.diskdb, db.trienodeFreezer),
 	}, nil
 }
 
@@ -391,7 +390,7 @@ func (r *HistoricalNodeReader) Node(owner common.Hash, path []byte, hash common.
 	if h == hash {
 		return latest, nil
 	}
-	blob, err := r.reader.read(newTrienodeIdentQuery(owner, path), r.id, dl.stateID(), latest)
+	blob, err := r.reader.read(newTrienodeIdent(owner, string(path)), r.id, dl.stateID(), latest)
 	if err != nil {
 		return nil, err
 	}
@@ -401,8 +400,8 @@ func (r *HistoricalNodeReader) Node(owner common.Hash, path []byte, hash common.
 		if len(blob) > 0 {
 			blobHex = hexutil.Encode(blob)
 		}
-		log.Error("Unexpected trie node", "owner", owner.Hex(), "path", path, "blob", blobHex)
-		return nil, fmt.Errorf("unexpected node: (%x %v), blob: %s", owner, path, blobHex)
+		log.Error("Unexpected historical trie node", "owner", owner.Hex(), "path", path, "blob", blobHex)
+		return nil, fmt.Errorf("unexpected historical trie node: (%x %v), blob: %s", owner, path, blobHex)
 	}
 	return blob, nil
 }

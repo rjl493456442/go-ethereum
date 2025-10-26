@@ -22,11 +22,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // indexReaderWithLimitTag is a wrapper around indexReader that includes an
@@ -99,16 +101,17 @@ func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uin
 	return r.reader.readGreaterThan(id)
 }
 
-// historyReader is the structure to access historic state data.
-type historyReader struct {
+// stateHistoryReader is the structure to access historic state data.
+type stateHistoryReader struct {
 	disk    ethdb.KeyValueReader
 	freezer ethdb.AncientReader
 	readers map[string]*indexReaderWithLimitTag
 }
 
-// newHistoryReader constructs the history reader with the supplied db.
-func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *historyReader {
-	return &historyReader{
+// newStateHistoryReader constructs the history reader with the supplied db
+// for accessing historical states.
+func newStateHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *stateHistoryReader {
+	return &stateHistoryReader{
 		disk:    disk,
 		freezer: freezer,
 		readers: make(map[string]*indexReaderWithLimitTag),
@@ -117,7 +120,7 @@ func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *h
 
 // readAccountMetadata resolves the account metadata within the specified
 // state history.
-func (r *historyReader) readAccountMetadata(address common.Address, historyID uint64) ([]byte, error) {
+func (r *stateHistoryReader) readAccountMetadata(address common.Address, historyID uint64) ([]byte, error) {
 	blob := rawdb.ReadStateAccountIndex(r.freezer, historyID)
 	if len(blob) == 0 {
 		return nil, fmt.Errorf("account index is truncated, historyID: %d", historyID)
@@ -143,7 +146,7 @@ func (r *historyReader) readAccountMetadata(address common.Address, historyID ui
 
 // readStorageMetadata resolves the storage slot metadata within the specified
 // state history.
-func (r *historyReader) readStorageMetadata(storageKey common.Hash, storageHash common.Hash, historyID uint64, slotOffset, slotNumber int) ([]byte, error) {
+func (r *stateHistoryReader) readStorageMetadata(storageKey common.Hash, storageHash common.Hash, historyID uint64, slotOffset, slotNumber int) ([]byte, error) {
 	data, err := rawdb.ReadStateStorageIndex(r.freezer, historyID, slotIndexSize*slotOffset, slotIndexSize*slotNumber)
 	if err != nil {
 		msg := fmt.Sprintf("id: %d, slot-offset: %d, slot-length: %d", historyID, slotOffset, slotNumber)
@@ -178,7 +181,7 @@ func (r *historyReader) readStorageMetadata(storageKey common.Hash, storageHash 
 }
 
 // readAccount retrieves the account data from the specified state history.
-func (r *historyReader) readAccount(address common.Address, historyID uint64) ([]byte, error) {
+func (r *stateHistoryReader) readAccount(address common.Address, historyID uint64) ([]byte, error) {
 	metadata, err := r.readAccountMetadata(address, historyID)
 	if err != nil {
 		return nil, err
@@ -194,7 +197,7 @@ func (r *historyReader) readAccount(address common.Address, historyID uint64) ([
 }
 
 // readStorage retrieves the storage slot data from the specified state history.
-func (r *historyReader) readStorage(address common.Address, storageKey common.Hash, storageHash common.Hash, historyID uint64) ([]byte, error) {
+func (r *stateHistoryReader) readStorage(address common.Address, storageKey common.Hash, storageHash common.Hash, historyID uint64) ([]byte, error) {
 	metadata, err := r.readAccountMetadata(address, historyID)
 	if err != nil {
 		return nil, err
@@ -220,48 +223,20 @@ func (r *historyReader) readStorage(address common.Address, storageKey common.Ha
 	return data, nil
 }
 
-// readTrienode retrieves the trienode data from the specified trienode history.
-func (r *historyReader) readTrienode(addrHash common.Hash, path string, historyID uint64) ([]byte, error) {
-	tr, err := newTrienodeHistoryReader(historyID, r.freezer)
-	if err != nil {
-		return nil, err
-	}
-	return tr.read(addrHash, path)
-}
-
 // read retrieves the state element data associated with the stateID.
 // stateID: represents the ID of the state of the specified version;
 // lastID: represents the ID of the latest/newest state history;
 // latestValue: represents the state value at the current disk layer with ID == lastID;
-func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
-	tail, err := r.freezer.Tail()
+func (r *stateHistoryReader) read(state stateIdentQuery, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
+	lastIndexed, err := checkStateAvail(state.stateIdent, typeStateHistory, r.freezer, stateID, lastID, r.disk)
 	if err != nil {
 		return nil, err
-	} // firstID = tail+1
-
-	// stateID+1 == firstID is allowed, as all the subsequent state histories
-	// are present with no gap inside.
-	if stateID < tail {
-		return nil, fmt.Errorf("historical state has been pruned, first: %d, state: %d", tail+1, stateID)
 	}
-
-	// To serve the request, all state histories from stateID+1 to lastID
-	// must be indexed. It's not supposed to happen unless system is very
-	// wrong.
-	metadata := loadIndexMetadata(r.disk, toHistoryType(state.typ))
-	if metadata == nil || metadata.Last < lastID {
-		indexed := "null"
-		if metadata != nil {
-			indexed = fmt.Sprintf("%d", metadata.Last)
-		}
-		return nil, fmt.Errorf("state history is not fully indexed, requested: %d, indexed: %s", stateID, indexed)
-	}
-
 	// Construct the index reader to locate the corresponding history for
 	// state retrieval
 	ir, ok := r.readers[state.String()]
 	if !ok {
-		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, metadata.Last)
+		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, lastIndexed)
 		if err != nil {
 			return nil, err
 		}
@@ -284,8 +259,151 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	if state.typ == typeAccount {
 		return r.readAccount(state.address, historyID)
 	}
-	if state.typ == typeStorage {
-		return r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
+	return r.readStorage(state.address, state.storageKey, state.storageHash, historyID)
+}
+
+// trienodeReader is the structure to access historical trienode data.
+type trienodeReader struct {
+	disk    ethdb.KeyValueReader
+	freezer ethdb.AncientReader
+}
+
+// newTrienodeReader constructs the history reader with the supplied db
+// for accessing historical trie nodes.
+func newTrienodeReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *trienodeReader {
+	return &trienodeReader{
+		disk:    disk,
+		freezer: freezer,
 	}
-	return r.readTrienode(state.addressHash, state.path, historyID)
+}
+
+// readTrienode retrieves the trienode data from the specified trienode history.
+func (r *trienodeReader) readTrienode(addrHash common.Hash, path string, historyID uint64) ([]byte, error) {
+	tr, err := newTrienodeHistoryReader(historyID, r.freezer)
+	if err != nil {
+		return nil, err
+	}
+	return tr.read(addrHash, path)
+}
+
+// assembleNode takes a complete node value as the base and applies a list of
+// mutation records to assemble the final node value accordingly.
+func assembleNode(blob []byte, elements [][][]byte, indices [][]int) ([]byte, error) {
+	if len(elements) == 0 && len(indices) == 0 {
+		return blob, nil
+	}
+	children, err := rlp.SplitListValues(blob)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(elements); i++ {
+		for j, pos := range indices[i] {
+			children[pos] = elements[i][j]
+		}
+	}
+	return rlp.MergeListValues(children)
+}
+
+// read retrieves the trie node data associated with the stateID.
+// stateID: represents the ID of the state of the specified version;
+// lastID: represents the ID of the latest/newest trie node history;
+// latestValue: represents the trie node value at the current disk layer with ID == lastID;
+func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
+	_, err := checkStateAvail(state, typeTrienodeHistory, r.freezer, stateID, lastID, r.disk)
+	if err != nil {
+		return nil, err
+	}
+
+	// Construct the index iterator to traverse the trienode history, finding
+	// a list of mutation records since the provided stateID. The iterator will
+	// be terminated once:
+	// - the record with complete node value is found;
+	// - the iterator is exhausted;
+	ir, err := newIndexReader(r.disk, state)
+	if err != nil {
+		return nil, err
+	}
+	it := ir.newIterator()
+
+	found := it.SeekGT(stateID)
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+	// The state was not found in the trie node histories, as it has not been
+	// modified since stateID. Use the data from the associated disk layer
+	// instead (full value node as always)
+	if !found {
+		return latestValue, nil
+	}
+	var (
+		elements [][][]byte
+		indices  [][]int
+		blob     []byte
+	)
+	for {
+		data, err := r.readTrienode(state.addressHash, state.path, it.ID())
+		if err != nil {
+			return nil, err
+		}
+		isComplete, fullBlob, err := isNodeComplete(data)
+		if err != nil {
+			return nil, err
+		}
+		// Terminate the loop is the node with full value has been found
+		if isComplete {
+			blob = fullBlob
+			break
+		}
+		// Decode the partial encoded node and keep iterating the node history
+		// until the node with full value being reached.
+		element, index, err := decodeNodeCompressed(data)
+		if err != nil {
+			return nil, err
+		}
+		elements, indices = append(elements, element), append(indices, index)
+
+		// Move the iterator to the next element. If the iterator is exhausted,
+		// then use the node value from the disk layer as the base.
+		if !it.Next() {
+			blob = latestValue
+			break
+		}
+	}
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+	slices.Reverse(elements)
+	slices.Reverse(indices)
+	return assembleNode(blob, elements, indices)
+}
+
+// checkStateAvail determines whether the requested historical state is available
+// for accessing. What's more, it also returns the ID of the latest indexed history
+// entry for subsequent usage.
+func checkStateAvail(state stateIdent, exptyp historyType, freezer ethdb.AncientReader, stateID uint64, lastID uint64, db ethdb.KeyValueReader) (uint64, error) {
+	if toHistoryType(state.typ) != exptyp {
+		return 0, fmt.Errorf("unsupported history type: %d, want: %v", toHistoryType(state.typ), exptyp)
+	}
+	// firstID = tail+1
+	tail, err := freezer.Tail()
+	if err != nil {
+		return 0, err
+	}
+	// stateID+1 == firstID is allowed, as all the subsequent history entries
+	// are present with no gap inside.
+	if stateID < tail {
+		return 0, fmt.Errorf("historical state has been pruned, first: %d, state: %d", tail+1, stateID)
+	}
+	// To serve the request, all history entries from stateID+1 to lastID
+	// must be indexed. It's not supposed to happen unless system is very
+	// wrong.
+	metadata := loadIndexMetadata(db, exptyp)
+	if metadata == nil || metadata.Last < lastID {
+		indexed := "null"
+		if metadata != nil {
+			indexed = fmt.Sprintf("%d", metadata.Last)
+		}
+		return 0, fmt.Errorf("history is not fully indexed, requested: %d, indexed: %s", stateID, indexed)
+	}
+	return metadata.Last, nil
 }

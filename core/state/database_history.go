@@ -272,7 +272,6 @@ func (db *HistoricalStateDB) Reader(stateRoot common.Hash) (Reader, error) {
 
 // OpenTrie opens the main account trie. It's not supported by historic database.
 func (db *HistoricalStateDB) OpenTrie(root common.Hash) (Trie, error) {
-	// TODO(rjl493456442) reuse the same historical node reader
 	nr, err := db.triedb.HistoricalNodeReader(root)
 	if err != nil {
 		return nil, err
@@ -287,7 +286,6 @@ func (db *HistoricalStateDB) OpenTrie(root common.Hash) (Trie, error) {
 // OpenStorageTrie opens the storage trie of an account. It's not supported by
 // historic database.
 func (db *HistoricalStateDB) OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash, _ Trie) (Trie, error) {
-	// TODO(rjl493456442) reuse the same historical node reader
 	nr, err := db.triedb.HistoricalNodeReader(stateRoot)
 	if err != nil {
 		return nil, err
