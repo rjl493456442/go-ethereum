@@ -577,16 +577,13 @@ func decodeNodeCompressed(data []byte) ([][]byte, []int, error) {
 	return elements, indices, nil
 }
 
-// decodeNodeFull decodes the byte stream of full value trie node.
-func decodeNodeFull(data []byte) ([]byte, error) {
-	if len(data) < 1 {
-		return nil, errors.New("invalid data: too short")
+// isNodeComplete returns a flag indicating whether the node is encoded with
+// full value.
+func isNodeComplete(data []byte) (bool, []byte, error) {
+	if len(data) == 0 {
+		return false, nil, errors.New("invalid data: too short")
 	}
-	flag := data[0]
-	if flag != byte(0) {
-		return nil, errors.New("invalid data: compressed node value")
-	}
-	return data[1:], nil
+	return data[0] == byte(0), data[1:], nil
 }
 
 // encodeFullFrequency specifies the frequency (1/16) for encoding node in
