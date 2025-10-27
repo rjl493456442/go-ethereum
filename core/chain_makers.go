@@ -18,6 +18,7 @@ package core
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -431,7 +432,7 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 	defer triedb.Close()
 
 	for i := 0; i < n; i++ {
-		statedb, err := state.New(parent.Root(), state.NewDatabase(triedb, nil))
+		statedb, err := state.New(parent.Root(), state.NewDatabase(triedb, codedb.New(db)))
 		if err != nil {
 			panic(err)
 		}
@@ -540,7 +541,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 		return block, b.receipts
 	}
 
-	sdb := state.NewDatabase(trdb, nil)
+	sdb := state.NewDatabase(trdb, codedb.New(db))
 
 	for i := 0; i < n; i++ {
 		statedb, err := state.New(parent.Root(), sdb)

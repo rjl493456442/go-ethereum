@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -649,7 +650,7 @@ func dump(ctx *cli.Context) error {
 	triedb := utils.MakeTrieDatabase(ctx, stack, db, true, true, false) // always enable preimage lookup
 	defer triedb.Close()
 
-	state, err := state.New(root, state.NewDatabase(triedb, nil))
+	state, err := state.New(root, state.NewDatabase(triedb, codedb.New(db)))
 	if err != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"math/big"
 	"reflect"
 	"slices"
@@ -113,7 +114,7 @@ func TestAccountRange(t *testing.T) {
 
 	var (
 		mdb     = rawdb.NewMemoryDatabase()
-		statedb = state.NewDatabase(triedb.NewDatabase(mdb, &triedb.Config{Preimages: true}), nil)
+		statedb = state.NewDatabase(triedb.NewDatabase(mdb, &triedb.Config{Preimages: true}), codedb.New(mdb))
 		sdb, _  = state.New(types.EmptyRootHash, statedb)
 		addrs   = [AccountRangeMaxResults * 2]common.Address{}
 		m       = map[common.Address]bool{}
@@ -212,7 +213,7 @@ func TestStorageRangeAt(t *testing.T) {
 	var (
 		mdb    = rawdb.NewMemoryDatabase()
 		tdb    = triedb.NewDatabase(mdb, &triedb.Config{Preimages: true})
-		db     = state.NewDatabase(tdb, nil)
+		db     = state.NewDatabase(tdb, codedb.New(mdb))
 		sdb, _ = state.New(types.EmptyRootHash, db)
 		addr   = common.Address{0x01}
 		keys   = []common.Hash{ // hashes of Keys of storage

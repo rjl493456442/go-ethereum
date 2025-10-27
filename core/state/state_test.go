@@ -19,6 +19,7 @@ package state
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -41,7 +42,7 @@ func newStateEnv() *stateEnv {
 func TestDump(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 	triedb := triedb.NewDatabase(db, &triedb.Config{Preimages: true})
-	tdb := NewDatabase(triedb, nil)
+	tdb := NewDatabase(triedb, codedb.New(db))
 	sdb, _ := New(types.EmptyRootHash, tdb)
 	s := &stateEnv{state: sdb}
 
@@ -97,7 +98,7 @@ func TestDump(t *testing.T) {
 func TestIterativeDump(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 	triedb := triedb.NewDatabase(db, &triedb.Config{Preimages: true})
-	tdb := NewDatabase(triedb, nil)
+	tdb := NewDatabase(triedb, codedb.New(db))
 	sdb, _ := New(types.EmptyRootHash, tdb)
 	s := &stateEnv{state: sdb}
 

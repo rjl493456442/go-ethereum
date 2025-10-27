@@ -18,9 +18,9 @@ package state
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/overlay"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -34,12 +34,6 @@ import (
 )
 
 const (
-	// Number of codehash->size associations to keep.
-	codeSizeCacheSize = 1_000_000 // 4 megabytes in total
-
-	// Cache size granted for caching clean code.
-	codeCacheSize = 256 * 1024 * 1024
-
 	// Number of address->curve point associations to keep.
 	pointCacheSize = 4096
 )
@@ -60,6 +54,9 @@ type Database interface {
 
 	// TrieDB returns the underlying trie database for managing trie nodes.
 	TrieDB() *triedb.Database
+
+	// CodeDB returns the underlying code database for managing contract code.
+	CodeDB() *codedb.Database
 
 	// Snapshot returns the underlying state snapshot.
 	Snapshot() *snapshot.Tree
@@ -154,34 +151,40 @@ type Trie interface {
 // state snapshot to provide functionalities for state access. It's meant to be a
 // long-live object and has a few caches inside for sharing between blocks.
 type CachingDB struct {
-	disk          ethdb.KeyValueStore
-	triedb        *triedb.Database
-	snap          *snapshot.Tree
-	codeCache     *lru.SizeConstrainedCache[common.Hash, []byte]
-	codeSizeCache *lru.Cache[common.Hash, int]
-	pointCache    *utils.PointCache
+	triedb *triedb.Database
+	codedb *codedb.Database
 
-	// Transition-specific fields
-	TransitionStatePerRoot *lru.Cache[common.Hash, *overlay.TransitionState]
+	snap       *snapshot.Tree    // Optional
+	pointCache *utils.PointCache // Optional
 }
 
 // NewDatabase creates a state database with the provided data sources.
-func NewDatabase(triedb *triedb.Database, snap *snapshot.Tree) *CachingDB {
+func NewDatabase(triedb *triedb.Database, codedb *codedb.Database) *CachingDB {
 	return &CachingDB{
-		disk:                   triedb.Disk(),
-		triedb:                 triedb,
-		snap:                   snap,
-		codeCache:              lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
-		codeSizeCache:          lru.NewCache[common.Hash, int](codeSizeCacheSize),
-		pointCache:             utils.NewPointCache(pointCacheSize),
-		TransitionStatePerRoot: lru.NewCache[common.Hash, *overlay.TransitionState](1000),
+		triedb: triedb,
+		codedb: codedb,
 	}
+}
+
+// WithSnapshot configures the provided contract code cache. Note that this
+// registration must be performed before the cachingDB is used.
+func (db *CachingDB) WithSnapshot(snapshot *snapshot.Tree) *CachingDB {
+	db.snap = snapshot
+	return db
+}
+
+// WithPointCache configures the provided point cache. Note that this
+// registration must be performed before the cachingDB is used.
+func (db *CachingDB) WithPointCache(pointCache *utils.PointCache) *CachingDB {
+	db.pointCache = pointCache
+	return db
 }
 
 // NewDatabaseForTesting is similar to NewDatabase, but it initializes the caching
 // db by using an ephemeral memory db with default config for testing.
 func NewDatabaseForTesting() *CachingDB {
-	return NewDatabase(triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil), nil)
+	memoryDb := rawdb.NewMemoryDatabase()
+	return NewDatabase(triedb.NewDatabase(memoryDb, nil), codedb.New(memoryDb))
 }
 
 // Reader returns a state reader associated with the specified state root.
@@ -219,7 +222,7 @@ func (db *CachingDB) Reader(stateRoot common.Hash) (Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newReader(newCachingCodeReader(db.disk, db.codeCache, db.codeSizeCache), combined), nil
+	return newReader(db.codedb.Reader(), combined), nil
 }
 
 // ReadersWithCacheStats creates a pair of state readers sharing the same internal cache and
@@ -264,25 +267,14 @@ func (db *CachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Addre
 	return tr, nil
 }
 
-// ContractCodeWithPrefix retrieves a particular contract's code. If the
-// code can't be found in the cache, then check the existence with **new**
-// db scheme.
-func (db *CachingDB) ContractCodeWithPrefix(address common.Address, codeHash common.Hash) []byte {
-	code, _ := db.codeCache.Get(codeHash)
-	if len(code) > 0 {
-		return code
-	}
-	code = rawdb.ReadCodeWithPrefix(db.disk, codeHash)
-	if len(code) > 0 {
-		db.codeCache.Add(codeHash, code)
-		db.codeSizeCache.Add(codeHash, len(code))
-	}
-	return code
-}
-
 // TrieDB retrieves any intermediate trie-node caching layer.
 func (db *CachingDB) TrieDB() *triedb.Database {
 	return db.triedb
+}
+
+// CodeDB retrieves any intermediate contract code caching layer.
+func (db *CachingDB) CodeDB() *codedb.Database {
+	return db.codedb
 }
 
 // PointCache returns the cache of evaluated curve points.

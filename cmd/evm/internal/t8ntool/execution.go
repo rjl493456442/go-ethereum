@@ -18,6 +18,7 @@ package t8ntool
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -373,7 +374,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig, 
 
 func MakePreState(db ethdb.Database, accounts types.GenesisAlloc) *state.StateDB {
 	tdb := triedb.NewDatabase(db, &triedb.Config{Preimages: true})
-	sdb := state.NewDatabase(tdb, nil)
+	sdb := state.NewDatabase(tdb, codedb.New(db))
 	statedb, err := state.New(types.EmptyRootHash, sdb)
 	if err != nil {
 		panic(fmt.Errorf("failed to create initial state: %v", err))

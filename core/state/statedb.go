@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -1318,12 +1317,12 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 		return nil, err
 	}
 	// Commit dirty contract code if any exists
-	if db := s.db.TrieDB().Disk(); db != nil && len(ret.codes) > 0 {
-		batch := db.NewBatch()
+	if db := s.db.CodeDB(); db != nil && len(ret.codes) > 0 {
+		writer := db.Writer()
 		for _, code := range ret.codes {
-			rawdb.WriteCode(batch, code.hash, code.blob)
+			writer.Put(code.hash, code.blob)
 		}
-		if err := batch.Write(); err != nil {
+		if err := writer.Commit(); err != nil {
 			return nil, err
 		}
 	}

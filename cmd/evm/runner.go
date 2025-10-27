@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"io"
 	"math/big"
 	"os"
@@ -227,7 +228,7 @@ func runCmd(ctx *cli.Context) error {
 	})
 	defer triedb.Close()
 	genesis := genesisConfig.MustCommit(db, triedb)
-	sdb := state.NewDatabase(triedb, nil)
+	sdb := state.NewDatabase(triedb, codedb.New(db))
 	prestate, _ = state.New(genesis.Root(), sdb)
 	chainConfig = genesisConfig.Config
 

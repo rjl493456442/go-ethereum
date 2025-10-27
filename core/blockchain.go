@@ -20,6 +20,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"io"
 	"math/big"
 	"runtime"
@@ -295,7 +296,8 @@ type BlockChain struct {
 	gcproc        time.Duration                    // Accumulates canonical block processing for trie dumping
 	lastWrite     uint64                           // Last block when the state was flushed
 	flushInterval atomic.Int64                     // Time interval (processing time) after which to flush a state
-	triedb        *triedb.Database                 // The database handler for maintaining trie nodes.
+	triedb        *triedb.Database                 // The database handler for maintaining trie nodes
+	codedb        *codedb.Database                 // The database handler for maintaining contract codes
 	statedb       *state.CachingDB                 // State database to reuse between imports (contains state cache)
 	txIndexer     *txIndexer                       // Transaction indexer, might be nil if not enabled
 
@@ -376,6 +378,7 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		cfg:           cfg,
 		db:            db,
 		triedb:        triedb,
+		codedb:        codedb.New(db),
 		triegc:        prque.New[int64, common.Hash](nil),
 		chainmu:       syncx.NewClosableMutex(),
 		bodyCache:     lru.NewCache[common.Hash, *types.Body](bodyCacheLimit),
@@ -391,7 +394,7 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		return nil, err
 	}
 	bc.flushInterval.Store(int64(cfg.TrieTimeLimit))
-	bc.statedb = state.NewDatabase(bc.triedb, nil)
+	bc.statedb = state.NewDatabase(bc.triedb, bc.codedb)
 	bc.validator = NewBlockValidator(chainConfig, bc)
 	bc.prefetcher = newStatePrefetcher(chainConfig, bc.hc)
 	bc.processor = NewStateProcessor(bc.hc)
@@ -570,7 +573,7 @@ func (bc *BlockChain) setupSnapshot() {
 		bc.snaps, _ = snapshot.New(snapconfig, bc.db, bc.triedb, head.Root)
 
 		// Re-initialize the state database with snapshot
-		bc.statedb = state.NewDatabase(bc.triedb, bc.snaps)
+		bc.statedb = bc.statedb.WithSnapshot(bc.snaps)
 	}
 }
 

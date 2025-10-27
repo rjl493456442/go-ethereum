@@ -17,6 +17,7 @@
 package state
 
 import (
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestSizeTracker(t *testing.T) {
 	defer db.Close()
 
 	tdb := triedb.NewDatabase(db, &triedb.Config{PathDB: pathdb.Defaults})
-	sdb := NewDatabase(tdb, nil)
+	sdb := NewDatabase(tdb, codedb.New(db))
 
 	// Generate 50 blocks to establish a baseline
 	baselineBlockNum := uint64(50)
@@ -100,7 +101,7 @@ func TestSizeTracker(t *testing.T) {
 		t.Fatalf("Failed to close triedb before baseline measurement: %v", err)
 	}
 	tdb = triedb.NewDatabase(db, &triedb.Config{PathDB: pathdb.Defaults})
-	sdb = NewDatabase(tdb, nil)
+	sdb = NewDatabase(tdb, codedb.New(db))
 
 	// Wait for snapshot completion
 	for !tdb.SnapshotCompleted() {

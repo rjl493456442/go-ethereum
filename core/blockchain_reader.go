@@ -19,6 +19,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/core/state/codedb"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -403,7 +404,7 @@ func (bc *BlockChain) stateRecoverable(root common.Hash) bool {
 func (bc *BlockChain) ContractCodeWithPrefix(hash common.Hash) []byte {
 	// TODO(rjl493456442) The associated account address is also required
 	// in Verkle scheme. Fix it once snap-sync is supported for Verkle.
-	return bc.statedb.ContractCodeWithPrefix(common.Address{}, hash)
+	return bc.codedb.Reader().CodeWithPrefix(common.Address{}, hash)
 }
 
 // State returns a new mutable state based on the current HEAD block.
@@ -420,7 +421,7 @@ func (bc *BlockChain) StateAt(root common.Hash) (*state.StateDB, error) {
 // Live states are not available and won't be served, please use `State`
 // or `StateAt` instead.
 func (bc *BlockChain) HistoricState(root common.Hash) (*state.StateDB, error) {
-	return state.New(root, state.NewHistoricDatabase(bc.db, bc.triedb))
+	return state.New(root, state.NewHistoricDatabase(bc.triedb, bc.codedb))
 }
 
 // Config retrieves the chain's fork configuration.
@@ -490,6 +491,11 @@ func (bc *BlockChain) HistoryPruningCutoff() (uint64, common.Hash) {
 // TrieDB retrieves the low level trie database used for data storage.
 func (bc *BlockChain) TrieDB() *triedb.Database {
 	return bc.triedb
+}
+
+// CodeDB retrieves the low level contract code database used for data storage.
+func (bc *BlockChain) CodeDB() *codedb.Database {
+	return bc.codedb
 }
 
 // HeaderChain returns the underlying header chain.
