@@ -372,7 +372,7 @@ func (bc *BlockChain) TxIndexDone() bool {
 
 // HasState checks if state trie is fully present in the database or not.
 func (bc *BlockChain) HasState(hash common.Hash) bool {
-	_, err := bc.statedb.OpenTrie(hash)
+	_, err := bc.triedb.NodeReader(hash)
 	return err == nil
 }
 
@@ -414,7 +414,7 @@ func (bc *BlockChain) State() (*state.StateDB, error) {
 
 // StateAt returns a new mutable state based on a particular point in time.
 func (bc *BlockChain) StateAt(root common.Hash) (*state.StateDB, error) {
-	return state.New(root, bc.statedb)
+	return state.New(root, state.NewDatabase(bc.triedb, bc.codedb).WithSnapshot(bc.snaps))
 }
 
 // HistoricState returns a historic state specified by the given root.
@@ -443,11 +443,6 @@ func (bc *BlockChain) Validator() Validator {
 // Processor returns the current processor.
 func (bc *BlockChain) Processor() Processor {
 	return bc.processor
-}
-
-// StateCache returns the caching database underpinning the blockchain instance.
-func (bc *BlockChain) StateCache() state.Database {
-	return bc.statedb
 }
 
 // GasLimit returns the gas limit of the current HEAD block.
