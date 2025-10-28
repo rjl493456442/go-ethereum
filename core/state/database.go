@@ -43,6 +43,9 @@ type Database interface {
 	// Reader returns a state reader associated with the specified state root.
 	Reader(root common.Hash) (Reader, error)
 
+	// Writer returns a state writer associated with the specified state root.
+	Writer(originRoot common.Hash, root common.Hash, blockNumber uint64) (Writer, error)
+
 	// OpenTrie opens the main account trie.
 	OpenTrie(root common.Hash) (Trie, error)
 
@@ -235,6 +238,10 @@ func (db *CachingDB) ReadersWithCacheStats(stateRoot common.Hash) (ReaderWithSta
 	}
 	shared := newReaderWithCache(reader)
 	return newReaderWithCacheStats(shared), newReaderWithCacheStats(shared), nil
+}
+
+func (db *CachingDB) Writer(stateRoot common.Hash) (Writer, error) {
+
 }
 
 // OpenTrie opens the main account trie at a specific root hash.

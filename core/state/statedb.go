@@ -1305,7 +1305,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 
 	origin := s.originalRoot
 	s.originalRoot = root
-
+	s.reader, _ = s.db.Reader(root)
 	return newStateUpdate(noStorageWiping, origin, root, blockNumber, deletes, updates, nodes), nil
 }
 
@@ -1317,41 +1317,14 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 		return nil, err
 	}
 	// Commit dirty contract code if any exists
-	if db := s.db.CodeDB(); db != nil && len(ret.codes) > 0 {
-		writer := db.Writer()
-		for _, code := range ret.codes {
-			writer.Put(code.hash, code.blob)
-		}
-		if err := writer.Commit(); err != nil {
-			return nil, err
-		}
+	writer, err := s.db.Writer(ret.originRoot, ret.root, block)
+	if err != nil {
+		return nil, err
 	}
-	if !ret.empty() {
-		// If snapshotting is enabled, update the snapshot tree with this new version
-		if snap := s.db.Snapshot(); snap != nil && snap.Snapshot(ret.originRoot) != nil {
-			start := time.Now()
-			if err := snap.Update(ret.root, ret.originRoot, ret.accounts, ret.storages); err != nil {
-				log.Warn("Failed to update snapshot tree", "from", ret.originRoot, "to", ret.root, "err", err)
-			}
-			// Keep 128 diff layers in the memory, persistent layer is 129th.
-			// - head layer is paired with HEAD state
-			// - head-1 layer is paired with HEAD-1 state
-			// - head-127 layer(bottom-most diff layer) is paired with HEAD-127 state
-			if err := snap.Cap(ret.root, TriesInMemory); err != nil {
-				log.Warn("Failed to cap snapshot tree", "root", ret.root, "layers", TriesInMemory, "err", err)
-			}
-			s.SnapshotCommits += time.Since(start)
-		}
-		// If trie database is enabled, commit the state update as a new layer
-		if db := s.db.TrieDB(); db != nil {
-			start := time.Now()
-			if err := db.Update(ret.root, ret.originRoot, block, ret.nodes, ret.stateSet()); err != nil {
-				return nil, err
-			}
-			s.TrieDBCommits += time.Since(start)
-		}
+	writer.Write(ret)
+	if err := writer.Commit(); err != nil {
+		return nil, err
 	}
-	s.reader, _ = s.db.Reader(s.originalRoot)
 	return ret, err
 }
 

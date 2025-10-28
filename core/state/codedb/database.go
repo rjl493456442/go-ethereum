@@ -120,7 +120,8 @@ func (r *Reader) CodeWithPrefix(addr common.Address, codeHash common.Hash) []byt
 	return code
 }
 
-// Writer implements the interface for committing the dirty contract code.
+// Writer implements the state.ContractCodeWriter for committing the dirty contract
+// code into database.
 type Writer struct {
 	db         *Database
 	codes      [][]byte
