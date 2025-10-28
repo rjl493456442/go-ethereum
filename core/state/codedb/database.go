@@ -40,7 +40,7 @@ type Cache struct {
 	codeSizeCache *lru.Cache[common.Hash, int]
 }
 
-// NewCache initializes the contract code cache with the predefined size.
+// NewCache initializes the contract code cache with the predefined capacity.
 func NewCache() *Cache {
 	return &Cache{
 		codeCache:     lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
@@ -48,18 +48,17 @@ func NewCache() *Cache {
 	}
 }
 
-// Get returns the contract code associated with the provided hash.
+// Get returns the contract code associated with the provided code hash.
 func (c *Cache) Get(hash common.Hash) ([]byte, bool) {
 	return c.codeCache.Get(hash)
 }
 
-// GetSize returns the contract code size associated with the provided hash.
+// GetSize returns the contract code size associated with the provided code hash.
 func (c *Cache) GetSize(hash common.Hash) (int, bool) {
 	return c.codeSizeCache.Get(hash)
 }
 
-// Put adds the provided contract code along with its length information into
-// the cache.
+// Put adds the provided contract code along with its size information into the cache.
 func (c *Cache) Put(hash common.Hash, code []byte) {
 	c.codeCache.Add(hash, code)
 	c.codeSizeCache.Add(hash, len(code))
@@ -83,6 +82,7 @@ func newReader(db ethdb.KeyValueReader, cache *Cache) *Reader {
 }
 
 // Code implements state.ContractCodeReader, retrieving a particular contract's code.
+// Null is returned if the contract code is not present.
 func (r *Reader) Code(addr common.Address, codeHash common.Hash) []byte {
 	code, _ := r.cache.Get(codeHash)
 	if len(code) > 0 {
@@ -96,7 +96,7 @@ func (r *Reader) Code(addr common.Address, codeHash common.Hash) []byte {
 }
 
 // CodeSize implements state.ContractCodeReader, retrieving a particular contract
-// code's size.
+// code's size. Zero is returned if the contract code is not present.
 func (r *Reader) CodeSize(addr common.Address, codeHash common.Hash) int {
 	if cached, ok := r.cache.GetSize(codeHash); ok {
 		return cached
@@ -148,7 +148,12 @@ func (w *Writer) Commit() error {
 		rawdb.WriteCode(batch, w.codeHashes[i], code)
 		w.db.cache.Put(w.codeHashes[i], code)
 	}
-	return batch.Write()
+	if err := batch.Write(); err != nil {
+		return err
+	}
+	w.codes = w.codes[:0]
+	w.codeHashes = w.codeHashes[:0]
+	return nil
 }
 
 // Database is responsible for managing the contract code and provides the access
