@@ -819,8 +819,9 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// method will internally call a blocking trie fetch from the prefetcher,
 	// so there's no need to explicitly wait for the prefetchers to finish.
 	var (
-		start   = time.Now()
-		workers errgroup.Group
+		workers  errgroup.Group
+		start    = time.Now()
+		accounts = make(chan *stateObject, len(s.mutations))
 	)
 	if s.db.TrieDB().IsVerkle() {
 		// Whilst MPT storage tries are independent, Verkle has one single trie
@@ -847,6 +848,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 					s.witness.AddState(obj.trie.Witness())
 				}
 			}
+			accounts <- obj
 			return nil
 		})
 	}
@@ -899,8 +901,7 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 			}
 		}
 	}
-	workers.Wait()
-	s.StorageUpdates += time.Since(start)
+	// s.StorageUpdates += time.Since(start)
 
 	// Now we're about to start to write changes to the trie. The trie is so far
 	// _untouched_. We can check with the prefetcher, if it can give us a trie
@@ -909,7 +910,6 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Don't check prefetcher if verkle trie has been used. In the context of verkle,
 	// only a single trie is used for state hashing. Replacing a non-nil verkle tree
 	// here could result in losing uncommitted changes from storage.
-	start = time.Now()
 	if s.prefetcher != nil {
 		if trie := s.prefetcher.trie(common.Hash{}, s.originalRoot); trie == nil {
 			log.Error("Failed to retrieve account pre-fetcher trie")
@@ -928,8 +928,9 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// into a shortnode. This requires `B` to be resolved from disk.
 	// Whereas if the created node is handled first, then the collapse is avoided, and `B` is not resolved.
 	var (
-		usedAddrs    []common.Address
-		deletedAddrs []common.Address
+		usedAddrs     []common.Address
+		deletedAddrs  []common.Address
+		accountWrites int
 	)
 	for addr, op := range s.mutations {
 		if op.applied {
@@ -940,10 +941,17 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		if op.isDelete() {
 			deletedAddrs = append(deletedAddrs, addr)
 		} else {
-			s.updateStateObject(s.stateObjects[addr])
+			accountWrites += 1
 			s.AccountUpdated += 1
 		}
 		usedAddrs = append(usedAddrs, addr) // Copy needed for closure
+	}
+	for accountWrites > 0 {
+		select {
+		case obj := <-accounts:
+			s.updateStateObject(obj)
+			accountWrites--
+		}
 	}
 	for _, deletedAddr := range deletedAddrs {
 		s.deleteStateObject(deletedAddr)
