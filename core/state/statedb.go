@@ -143,6 +143,7 @@ type StateDB struct {
 	AccountReads   time.Duration
 	AccountHashes  time.Duration
 	AccountUpdates time.Duration
+	AccountWait    time.Duration
 	AccountCommits time.Duration
 
 	StorageReads    time.Duration
@@ -910,12 +911,14 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Don't check prefetcher if verkle trie has been used. In the context of verkle,
 	// only a single trie is used for state hashing. Replacing a non-nil verkle tree
 	// here could result in losing uncommitted changes from storage.
+	wait := time.Now()
 	if s.prefetcher != nil {
 		if trie := s.prefetcher.trie(common.Hash{}, s.originalRoot); trie == nil {
 			log.Error("Failed to retrieve account pre-fetcher trie")
 		} else {
 			s.trie = trie
 		}
+		s.AccountWait = time.Since(wait)
 	}
 	// Perform updates before deletions.  This prevents resolution of unnecessary trie nodes
 	// in circumstances similar to the following:
