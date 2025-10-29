@@ -151,15 +151,11 @@ block is used.
 `,
 			},
 			{
-				Action:    snapshotExportPreimages,
-				Name:      "export-preimages",
-				Usage:     "Export the preimage in snapshot enumeration order",
-				ArgsUsage: "<dumpfile> [<root>]",
+				Action:    snapshotExportStateKeys,
+				Name:      "export-state-keys",
+				Usage:     "Export the state keys in snapshot enumeration order",
+				ArgsUsage: "<dumpfile-1> <dumpfile-2> [<root>]",
 				Flags:     utils.DatabaseFlags,
-				Description: `
-The export-preimages command exports hash preimages to a flat file, in exactly
-the expected order for the overlay tree migration.
-`,
 			},
 		},
 	}
@@ -623,9 +619,9 @@ func dumpState(ctx *cli.Context) error {
 	return nil
 }
 
-// snapshotExportPreimages dumps the preimage data to a flat file.
-func snapshotExportPreimages(ctx *cli.Context) error {
-	if ctx.NArg() < 1 {
+// snapshotExportStateKeys dumps the state keys to a flat file.
+func snapshotExportStateKeys(ctx *cli.Context) error {
+	if ctx.NArg() < 2 {
 		utils.Fatalf("This command requires an argument.")
 	}
 	stack, _ := makeConfigNode(ctx)
@@ -638,7 +634,7 @@ func snapshotExportPreimages(ctx *cli.Context) error {
 	defer triedb.Close()
 
 	var root common.Hash
-	if ctx.NArg() > 1 {
+	if ctx.NArg() > 2 {
 		hash := ctx.Args().Get(1)
 		if !common.IsHexHash(hash) {
 			return fmt.Errorf("invalid hash: %s", ctx.Args().Get(1))
@@ -656,7 +652,7 @@ func snapshotExportPreimages(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	return utils.ExportSnapshotPreimages(chaindb, stateIt, ctx.Args().First(), root)
+	return utils.ExportSnapshotKeys(stateIt, ctx.Args().Get(0), ctx.Args().Get(1), root)
 }
 
 // checkAccount iterates the snap data layers, and looks up the given account

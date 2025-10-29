@@ -17,14 +17,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,12 +41,16 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/internal/testrand"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb"
+	"github.com/ethereum/go-ethereum/triedb/database"
 	"github.com/olekukonko/tablewriter"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -83,6 +91,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbBatchReadCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -206,6 +215,40 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbBatchReadCmd = &cli.Command{
+		Action: batchReadBenchmark,
+		Name:   "batch-read-benchmark",
+		Flags: slices.Concat([]cli.Flag{
+			&cli.StringFlag{
+				Name:  "mode",
+				Usage: "the mode of state read to perform, account/storage/none",
+			},
+			&cli.BoolFlag{
+				Name:  "raw",
+				Usage: "Retrieve data from the raw disk, bypassing the intermediate caching layer",
+			},
+			&cli.PathFlag{
+				Name:  "accounts",
+				Usage: "The path of account identifier file to retrieve keys from",
+			},
+			&cli.PathFlag{
+				Name:  "storages",
+				Usage: "The path of storage identifier file to retrieve keys from",
+			},
+			&cli.IntFlag{
+				Name:    "entries",
+				Aliases: []string{"n"},
+				Value:   28000,
+				Usage:   "The number of entries to perform the batch read",
+			},
+			&cli.IntSliceFlag{
+				Name:    "threads",
+				Aliases: []string{"t"},
+				Value:   cli.NewIntSlice(1, 4, 8, 16, 32),
+				Usage:   "The maximum number of concurrent reads to process simultaneously",
+			},
+		}, utils.NetworkFlags, utils.DatabaseFlags),
 	}
 )
 
@@ -906,4 +949,306 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+type batchReadMode int
+
+const (
+	typeBatchReadAccount batchReadMode = iota
+	typeBatchReadStorage
+	typeBatchReadMix
+	typeBatchReadNone
+)
+
+func (m batchReadMode) String() string {
+	switch m {
+	case typeBatchReadAccount:
+		return "account"
+	case typeBatchReadStorage:
+		return "storage"
+	case typeBatchReadMix:
+		return "mix"
+	case typeBatchReadNone:
+		return "none"
+	default:
+		panic("unknown batch read mode")
+	}
+}
+
+func parseBatchReadMode(ctx *cli.Context) (batchReadMode, error) {
+	input := strings.ToLower(ctx.String("mode"))
+	switch input {
+	case "account":
+		return typeBatchReadAccount, nil
+	case "storage":
+		return typeBatchReadStorage, nil
+	case "none":
+		return typeBatchReadNone, nil
+	default:
+		return 0, errors.New("invalid batch read mode")
+	}
+}
+
+func parseKeyFile(path string) (*os.File, error) {
+	if path == "" {
+		return nil, nil
+	}
+	return os.Open(path)
+}
+
+func stat(mode batchReadMode, thread int, size int, elapsed time.Duration, sample metrics.Sample, hit int32, miss int32) {
+	var (
+		throughput float64 // records per second
+		snapshot   = sample.Snapshot()
+	)
+	if elapsed != 0 {
+		throughput = float64(size) / elapsed.Seconds()
+	}
+	fmt.Printf("#########################\n")
+	fmt.Printf("Mode: %s, thread: %d\n", mode, thread)
+	fmt.Printf("Records: %d (hit: %d, miss: %d)\n", size, hit, miss)
+	fmt.Printf("Elapsed: %s\n", common.PrettyDuration(elapsed))
+	fmt.Printf("Throughput: %.2f\n", throughput)
+	fmt.Printf("Latency(mean): %.2f(us)\n", snapshot.Mean())
+	fmt.Printf("Latency(p50): %.2f(us)\n", snapshot.Percentile(0.5))
+	fmt.Printf("Latency(p75): %.2f(us)\n", snapshot.Percentile(0.75))
+	fmt.Printf("Latency(p95): %.2f(us)\n", snapshot.Percentile(0.95))
+	fmt.Printf("Latency(p99): %.2f(us)\n", snapshot.Percentile(0.99))
+	fmt.Printf("#########################\n")
+}
+
+func benchReadNonexistent(reader database.StateReader, records int, threads []int) {
+	for _, thread := range threads {
+		var (
+			eg     errgroup.Group
+			sample = metrics.NewUniformSample(4096)
+			hit    atomic.Int32
+			miss   atomic.Int32
+		)
+		eg.SetLimit(thread)
+
+		// Preparation
+		var accounts []common.Hash
+		for i := 0; i < records; i++ {
+			accounts = append(accounts, testrand.Hash())
+		}
+
+		// Benchmark
+		start := time.Now()
+		for i := 0; i < records; i++ {
+			eg.Go(func() error {
+				ss := time.Now()
+				data, err := reader.Account(accounts[i])
+				if data == nil || err != nil {
+					miss.Add(1)
+				} else {
+					hit.Add(1)
+				}
+				sample.Update(time.Since(ss).Microseconds())
+				return nil
+			})
+		}
+		eg.Wait()
+
+		// Report
+		stat(typeBatchReadNone, thread, records, time.Since(start), sample, hit.Load(), miss.Load())
+	}
+}
+
+func benchReadAccounts(reader database.StateReader, records int, threads []int, file *os.File) {
+	var (
+		offsets  []int64
+		position int64 = 0
+	)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		offsets = append(offsets, position)
+		position += int64(len(scanner.Text()) + 1) // +1 for '\n'
+	}
+
+	for _, thread := range threads {
+		var (
+			eg       errgroup.Group
+			accounts []common.Hash
+			sample   = metrics.NewUniformSample(4096)
+
+			hit  atomic.Int32
+			miss atomic.Int32
+		)
+		eg.SetLimit(thread)
+
+		// Preparation
+		for len(accounts) < records {
+			// Seek to a random line
+			file.Seek(offsets[rand.Intn(len(offsets))], 0)
+			line, err := bufio.NewReader(file).ReadString('\n')
+			if err != nil {
+				continue
+			}
+			line = line[:len(line)-1] // remove \n
+			accounts = append(accounts, common.HexToHash(line))
+		}
+
+		// Benchmark
+		start := time.Now()
+		for i := 0; i < records; i++ {
+			eg.Go(func() error {
+				ss := time.Now()
+				data, err := reader.Account(accounts[i])
+				if data == nil || err != nil {
+					miss.Add(1)
+				} else {
+					hit.Add(1)
+				}
+				sample.Update(time.Since(ss).Microseconds())
+				return nil
+			})
+		}
+		eg.Wait()
+
+		// Report
+		stat(typeBatchReadAccount, thread, records, time.Since(start), sample, hit.Load(), miss.Load())
+	}
+}
+
+func benchReadStorages(reader database.StateReader, records int, threads []int, file *os.File) {
+	var (
+		offsets  []int64
+		position int64 = 0
+	)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		offsets = append(offsets, position)
+		position += int64(len(scanner.Text()) + 1) // +1 for '\n'
+	}
+
+	for _, thread := range threads {
+		var (
+			eg       errgroup.Group
+			accounts []common.Hash
+			storages []common.Hash
+			sample   = metrics.NewUniformSample(4096)
+
+			hit  atomic.Int32
+			miss atomic.Int32
+		)
+		eg.SetLimit(thread)
+
+		// Preparation
+		for i := 0; i < records; i++ {
+			// Seek to a random line
+			file.Seek(offsets[rand.Intn(len(offsets))], 0)
+			line, err := bufio.NewReader(file).ReadString('\n')
+			if err != nil {
+				continue
+			}
+			line = line[:len(line)-1] // remove \n
+			parts := strings.Split(line, "\t")
+			if len(parts) != 2 {
+				log.Info("Invalid storage key")
+				continue
+			}
+			accounts = append(accounts, common.HexToHash(parts[0]))
+			storages = append(storages, common.HexToHash(parts[1]))
+		}
+
+		// Benchmark
+		start := time.Now()
+		for i := 0; i < records; i++ {
+			eg.Go(func() error {
+				ss := time.Now()
+				slot, err := reader.Storage(accounts[i], storages[i])
+				if slot == nil || err != nil {
+					miss.Add(1)
+				} else {
+					hit.Add(1)
+				}
+				sample.Update(time.Since(ss).Microseconds())
+				return nil
+			})
+		}
+		eg.Wait()
+
+		// Report
+		stat(typeBatchReadStorage, thread, records, time.Since(start), sample, hit.Load(), miss.Load())
+	}
+}
+
+type rawReader struct {
+	db ethdb.KeyValueReader
+}
+
+func (r *rawReader) Account(hash common.Hash) (*types.SlimAccount, error) {
+	data := rawdb.ReadAccountSnapshot(r.db, hash)
+	if len(data) == 0 {
+		return nil, nil
+	}
+	account := new(types.SlimAccount)
+	if err := rlp.DecodeBytes(data, account); err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+func (r *rawReader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
+	return rawdb.ReadStorageSnapshot(r.db, accountHash, storageHash), nil
+}
+
+func batchReadBenchmark(ctx *cli.Context) error {
+	mode, err := parseBatchReadMode(ctx)
+	if err != nil {
+		return err
+	}
+	accountFile, err := parseKeyFile(ctx.String("accounts"))
+	if err != nil {
+		return err
+	}
+	storageFile, err := parseKeyFile(ctx.String("storages"))
+	if err != nil {
+		return err
+	}
+	var (
+		records = ctx.Int("records")
+		threads = ctx.IntSlice("threads")
+		raw     = ctx.Bool("raw")
+	)
+	// Load the databases.
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	triedb := utils.MakeTrieDatabase(ctx, stack, db, false, true, false)
+	defer triedb.Close()
+
+	// Enable metric system
+	metrics.Enable()
+
+	header := rawdb.ReadHeadHeader(db)
+
+	log.Info("##################################")
+	log.Info("Performing batch read benchmarking", "headnumber", header.Number, "hash", header.Hash())
+	log.Info("Benchmarking parameters", "mode", mode, "rawdisk", raw, "threads", threads, "size", records)
+	log.Info("##################################")
+
+	var reader database.StateReader
+	if raw {
+		reader = &rawReader{db: db}
+	} else {
+		var err error
+		reader, err = triedb.StateReader(header.Root)
+		if err != nil {
+			return err
+		}
+	}
+	switch mode {
+	case typeBatchReadNone:
+		benchReadNonexistent(reader, records, threads)
+	case typeBatchReadAccount:
+		benchReadAccounts(reader, records, threads, accountFile)
+	case typeBatchReadStorage:
+		benchReadStorages(reader, records, threads, storageFile)
+	}
+	return nil
 }

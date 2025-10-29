@@ -624,38 +624,38 @@ func (it *StateIterator) StorageIterator(root common.Hash, accountHash common.Ha
 	return it.snapshots.StorageIterator(root, accountHash, start)
 }
 
-// ExportSnapshotPreimages exports the preimages corresponding to the enumeration of
+// ExportSnapshotKeys exports the state keys corresponding to the enumeration of
 // the snapshot for a given root.
-func ExportSnapshotPreimages(chaindb ethdb.Database, stateIt *StateIterator, fn string, root common.Hash) error {
-	log.Info("Exporting preimages", "file", fn)
-
-	fh, err := os.OpenFile(fn, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
+func ExportSnapshotKeys(stateIt *StateIterator, accountFn, storageFn string, root common.Hash) error {
+	accountFile, err := os.OpenFile(accountFn, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
+	defer accountFile.Close()
 
-	// Enable gzip compressing if file name has gz suffix.
-	var writer io.Writer = fh
-	if strings.HasSuffix(fn, ".gz") {
-		gz := gzip.NewWriter(writer)
-		defer gz.Close()
-		writer = gz
+	storageFile, err := os.OpenFile(storageFn, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
+	if err != nil {
+		return err
 	}
-	buf := bufio.NewWriter(writer)
-	defer buf.Flush()
-	writer = buf
+	defer storageFile.Close()
+
+	accountWriter := bufio.NewWriter(accountFile)
+	defer accountWriter.Flush()
+
+	storageWriter := bufio.NewWriter(storageFile)
+	defer storageWriter.Flush()
 
 	type hashAndPreimageSize struct {
-		Hash common.Hash
-		Size int
+		Hash  common.Hash
+		Size  int
+		Owner common.Hash
 	}
 	hashCh := make(chan hashAndPreimageSize)
 
 	var (
-		start     = time.Now()
-		logged    = time.Now()
-		preimages int
+		start  = time.Now()
+		logged = time.Now()
+		keys   int
 	)
 	go func() {
 		defer close(hashCh)
@@ -672,7 +672,7 @@ func ExportSnapshotPreimages(chaindb ethdb.Database, stateIt *StateIterator, fn 
 				log.Error("Failed to get full account", "error", err)
 				return
 			}
-			preimages += 1
+			keys += 1
 			hashCh <- hashAndPreimageSize{Hash: accIt.Hash(), Size: common.AddressLength}
 
 			if acc.Root != (common.Hash{}) && acc.Root != types.EmptyRootHash {
@@ -682,40 +682,35 @@ func ExportSnapshotPreimages(chaindb ethdb.Database, stateIt *StateIterator, fn 
 					return
 				}
 				for stIt.Next() {
-					preimages += 1
-					hashCh <- hashAndPreimageSize{Hash: stIt.Hash(), Size: common.HashLength}
+					keys += 1
+					hashCh <- hashAndPreimageSize{
+						Hash:  stIt.Hash(),
+						Size:  common.HashLength,
+						Owner: accIt.Hash(),
+					}
 
 					if time.Since(logged) > time.Second*8 {
 						logged = time.Now()
-						log.Info("Exporting preimages", "count", preimages, "elapsed", common.PrettyDuration(time.Since(start)))
+						log.Info("Exporting keys", "count", keys, "elapsed", common.PrettyDuration(time.Since(start)))
 					}
 				}
 				stIt.Release()
 			}
 			if time.Since(logged) > time.Second*8 {
 				logged = time.Now()
-				log.Info("Exporting preimages", "count", preimages, "elapsed", common.PrettyDuration(time.Since(start)))
+				log.Info("Exporting keys", "count", keys, "elapsed", common.PrettyDuration(time.Since(start)))
 			}
 		}
 	}()
 
 	for item := range hashCh {
-		preimage := rawdb.ReadPreimage(chaindb, item.Hash)
-		if len(preimage) == 0 {
-			return fmt.Errorf("missing preimage for %v", item.Hash)
-		}
-		if len(preimage) != item.Size {
-			return fmt.Errorf("invalid preimage size, have %d", len(preimage))
-		}
-		rlpenc, err := rlp.EncodeToBytes(preimage)
-		if err != nil {
-			return fmt.Errorf("error encoding preimage: %w", err)
-		}
-		if _, err := writer.Write(rlpenc); err != nil {
-			return fmt.Errorf("failed to write preimage: %w", err)
+		if item.Size == common.AddressLength {
+			accountWriter.WriteString(item.Hash.Hex() + "\n")
+		} else {
+			storageWriter.WriteString(strings.Join([]string{item.Owner.Hex(), item.Hash.Hex()}, "\t") + "\n")
 		}
 	}
-	log.Info("Exported preimages", "count", preimages, "elapsed", common.PrettyDuration(time.Since(start)), "file", fn)
+	log.Info("Exported state keys", "count", keys, "elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
 }
 
