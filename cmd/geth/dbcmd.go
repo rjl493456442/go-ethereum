@@ -44,6 +44,7 @@ import (
 	"github.com/ethereum/go-ethereum/internal/testrand"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb"
@@ -1208,7 +1209,7 @@ func batchReadBenchmark(ctx *cli.Context) error {
 		return err
 	}
 	var (
-		records = ctx.Int("records")
+		records = ctx.Int("entries")
 		threads = ctx.IntSlice("threads")
 		raw     = ctx.Bool("raw")
 	)
@@ -1216,8 +1217,15 @@ func batchReadBenchmark(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, true)
-	defer db.Close()
+	options := node.DatabaseOptions{
+		ReadOnly:          true,
+		Cache:             2048, // aligned with the Ethereum mainnet default configs
+		Handles:           5120, // aligned with the Ethereum mainnet default configs
+		AncientsDirectory: ctx.String(utils.AncientFlag.Name),
+		MetricsNamespace:  "eth/db/chaindata/",
+		EraDirectory:      ctx.String(utils.EraFlag.Name),
+	}
+	db, err := stack.OpenDatabaseWithOptions("chaindata", options)
 
 	triedb := utils.MakeTrieDatabase(ctx, stack, db, false, true, false)
 	defer triedb.Close()
