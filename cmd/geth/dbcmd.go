@@ -1219,8 +1219,8 @@ func batchReadBenchmark(ctx *cli.Context) error {
 
 	options := node.DatabaseOptions{
 		ReadOnly:          true,
-		Cache:             2048, // aligned with the Ethereum mainnet default configs
-		Handles:           5120, // aligned with the Ethereum mainnet default configs
+		Cache:             2048,                         // aligned with the Ethereum mainnet default configs
+		Handles:           utils.MakeDatabaseHandles(0), // aligned with the Ethereum mainnet default configs
 		AncientsDirectory: ctx.String(utils.AncientFlag.Name),
 		MetricsNamespace:  "eth/db/chaindata/",
 		EraDirectory:      ctx.String(utils.EraFlag.Name),
