@@ -1081,7 +1081,8 @@ func benchReadAccounts(reader database.StateReader, records int, threads []int, 
 		// Preparation
 		for len(accounts) < records {
 			// Seek to a random line
-			file.Seek(offsets[rand.Intn(len(offsets))], 0)
+			pos := rand.Int63n(int64(len(offsets)))
+			file.Seek(offsets[pos], 0)
 			line, err := bufio.NewReader(file).ReadString('\n')
 			if err != nil {
 				continue
@@ -1226,6 +1227,9 @@ func batchReadBenchmark(ctx *cli.Context) error {
 		EraDirectory:      ctx.String(utils.EraFlag.Name),
 	}
 	db, err := stack.OpenDatabaseWithOptions("chaindata", options)
+	if err != nil {
+		return err
+	}
 
 	triedb := utils.MakeTrieDatabase(ctx, stack, db, false, true, false)
 	defer triedb.Close()
