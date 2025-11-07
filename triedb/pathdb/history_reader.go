@@ -24,11 +24,14 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
+	"golang.org/x/sync/errgroup"
 )
 
 // indexReaderWithLimitTag is a wrapper around indexReader that includes an
@@ -304,37 +307,8 @@ func assembleNode(blob []byte, elements [][][]byte, indices [][]int) ([]byte, er
 	return rlp.MergeListValues(children)
 }
 
-// read retrieves the trie node data associated with the stateID.
-// stateID: represents the ID of the state of the specified version;
-// lastID: represents the ID of the latest/newest trie node history;
-// latestValue: represents the trie node value at the current disk layer with ID == lastID;
-func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
-	_, err := checkStateAvail(state, typeTrienodeHistory, r.freezer, stateID, lastID, r.disk)
-	if err != nil {
-		return nil, err
-	}
-
-	// Construct the index iterator to traverse the trienode history, finding
-	// a list of mutation records since the provided stateID. The iterator will
-	// be terminated once:
-	// - the record with complete node value is found;
-	// - the iterator is exhausted;
-	ir, err := newIndexReader(r.disk, state)
-	if err != nil {
-		return nil, err
-	}
-	it := ir.newIterator()
-
-	found := it.SeekGT(stateID)
-	if err := it.Error(); err != nil {
-		return nil, err
-	}
-	// The state was not found in the trie node histories, as it has not been
-	// modified since stateID. Use the data from the associated disk layer
-	// instead (full value node as always)
-	if !found {
-		return latestValue, nil
-	}
+// nolint:unused
+func (r *trienodeReader) readSingle(state stateIdent, it *indexIterator, latestValue []byte) ([]byte, error) {
 	var (
 		elements [][][]byte
 		indices  [][]int
@@ -375,6 +349,129 @@ func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, l
 	slices.Reverse(elements)
 	slices.Reverse(indices)
 	return assembleNode(blob, elements, indices)
+}
+
+type resultQueue struct {
+	data [][]byte
+	lock sync.Mutex
+}
+
+func newResultQueue(size int) *resultQueue {
+	return &resultQueue{
+		data: make([][]byte, size, size*2),
+	}
+}
+
+func (q *resultQueue) set(data []byte, pos int) {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
+	if len(q.data) <= pos {
+		q.data = append(q.data, make([][]byte, pos+1-len(q.data))...)
+	}
+	q.data[pos] = data
+}
+
+func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, latestValue []byte) ([]byte, error) {
+	var (
+		elements [][][]byte
+		indices  [][]int
+		blob     = latestValue
+
+		eg    errgroup.Group
+		seq   int
+		term  atomic.Bool
+		queue = newResultQueue(encodeFullFrequency)
+	)
+	eg.SetLimit(encodeFullFrequency)
+
+	for {
+		id, pos := it.ID(), seq
+		seq += 1
+
+		eg.Go(func() error {
+			data, err := r.readTrienode(state.addressHash, state.path, id)
+			if err != nil {
+				term.Store(true)
+				return err
+			}
+			queue.set(data, pos)
+
+			full, _, err := isNodeComplete(data)
+			if err != nil {
+				term.Store(true)
+				return err
+			}
+			if full {
+				term.Store(true)
+			}
+			return nil
+		})
+		if term.Load() {
+			break
+		}
+		if !it.Next() {
+			break
+		}
+	}
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(queue.data); i++ {
+		isComplete, fullBlob, err := isNodeComplete(queue.data[i])
+		if err != nil {
+			return nil, err
+		}
+		// Terminate the loop is the node with full value has been found
+		if isComplete {
+			blob = fullBlob
+			break
+		}
+		// Decode the partial encoded node and keep iterating the node history
+		// until the node with full value being reached.
+		element, index, err := decodeNodeCompressed(queue.data[i])
+		if err != nil {
+			return nil, err
+		}
+		elements, indices = append(elements, element), append(indices, index)
+	}
+	slices.Reverse(elements)
+	slices.Reverse(indices)
+	return assembleNode(blob, elements, indices)
+}
+
+// read retrieves the trie node data associated with the stateID.
+// stateID: represents the ID of the state of the specified version;
+// lastID: represents the ID of the latest/newest trie node history;
+// latestValue: represents the trie node value at the current disk layer with ID == lastID;
+func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, latestValue []byte) ([]byte, error) {
+	_, err := checkStateAvail(state, typeTrienodeHistory, r.freezer, stateID, lastID, r.disk)
+	if err != nil {
+		return nil, err
+	}
+	// Construct the index iterator to traverse the trienode history
+	ir, err := newIndexReader(r.disk, state)
+	if err != nil {
+		return nil, err
+	}
+	it := ir.newIterator()
+
+	// Move the iterator to the first element whose id is greater than
+	// the given number.
+	found := it.SeekGT(stateID)
+	if err := it.Error(); err != nil {
+		return nil, err
+	}
+	// The state was not found in the trie node histories, as it has not been
+	// modified since stateID. Use the data from the associated disk layer
+	// instead (full value node as always)
+	if !found {
+		return latestValue, nil
+	}
+	return r.readOptimized(state, it, latestValue)
 }
 
 // checkStateAvail determines whether the requested historical state is available
