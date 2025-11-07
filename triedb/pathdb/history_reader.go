@@ -394,13 +394,12 @@ func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, late
 				term.Store(true)
 				return err
 			}
-			queue.set(data, pos)
-
 			full, _, err := isNodeComplete(data)
 			if err != nil {
 				term.Store(true)
 				return err
 			}
+			queue.set(data, pos)
 			if full {
 				term.Store(true)
 			}
@@ -409,10 +408,11 @@ func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, late
 		if term.Load() {
 			break
 		}
+		seq += 1
+
 		if !it.Next() {
 			break
 		}
-		seq += 1
 	}
 	if err := eg.Wait(); err != nil {
 		return nil, err
