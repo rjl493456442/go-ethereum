@@ -387,7 +387,6 @@ func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, late
 
 	for {
 		id, pos := it.ID(), seq
-		seq += 1
 
 		eg.Go(func() error {
 			data, err := r.readTrienode(state.addressHash, state.path, id)
@@ -413,6 +412,7 @@ func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, late
 		if !it.Next() {
 			break
 		}
+		seq += 1
 	}
 	if err := eg.Wait(); err != nil {
 		return nil, err
@@ -420,7 +420,7 @@ func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, late
 	if err := it.Error(); err != nil {
 		return nil, err
 	}
-	for i := 0; i < len(queue.data); i++ {
+	for i := 0; i < seq; i++ {
 		isComplete, fullBlob, err := isNodeComplete(queue.data[i])
 		if err != nil {
 			return nil, err
