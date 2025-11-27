@@ -40,11 +40,6 @@ const (
 	stateHistoryIndexVersion    = stateHistoryIndexV0    // the current state index version
 	trienodeHistoryIndexV0      = uint8(0)               // initial version of trienode index structure
 	trienodeHistoryIndexVersion = trienodeHistoryIndexV0 // the current trienode index version
-
-	// estimations for calculating the batch size for atomic database commit
-	estimatedStateHistoryIndexSize    = 3  // The average size of each state history index entry is approximately 2–3 bytes
-	estimatedTrienodeHistoryIndexSize = 3  // The average size of each trienode history index entry is approximately 2-3 bytes
-	estimatedIndexBatchSizeFactor     = 32 // The factor counts for the write amplification for each entry
 )
 
 // indexVersion returns the latest index version for the given history type.
@@ -155,22 +150,6 @@ func (b *batchIndexer) process(h history, id uint64) error {
 	return b.finish(false)
 }
 
-// makeBatch constructs a database batch based on the number of pending entries.
-// The batch size is roughly estimated to minimize repeated resizing rounds,
-// as accurately predicting the exact size is technically challenging.
-func (b *batchIndexer) makeBatch() ethdb.Batch {
-	var size int
-	switch b.typ {
-	case typeStateHistory:
-		size = estimatedStateHistoryIndexSize
-	case typeTrienodeHistory:
-		size = estimatedTrienodeHistoryIndexSize
-	default:
-		panic(fmt.Sprintf("unknown history type %d", b.typ))
-	}
-	return b.db.NewBatchWithSize(size * estimatedIndexBatchSizeFactor * b.pending)
-}
-
 // finish writes the accumulated state indexes into the disk if either the
 // memory limitation is reached or it's requested forcibly.
 func (b *batchIndexer) finish(force bool) error {
@@ -184,9 +163,10 @@ func (b *batchIndexer) finish(force bool) error {
 		start = time.Now()
 		eg    errgroup.Group
 
-		batch      = b.makeBatch()
-		batchSize  int
-		batchMu    sync.RWMutex
+		batch     = b.db.NewBatchWithSize(ethdb.IdealBatchSize)
+		batchSize int
+		batchMu   sync.RWMutex
+
 		writeBatch = func(fn func(batch ethdb.Batch)) error {
 			batchMu.Lock()
 			defer batchMu.Unlock()
