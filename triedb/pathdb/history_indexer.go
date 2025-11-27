@@ -126,11 +126,11 @@ func deleteIndexMetadata(db ethdb.KeyValueWriter, typ historyType) {
 // of historical data (e.g., state or trie node changes) atomically.
 type batchIndexer struct {
 	index   map[stateIdent][]uint64 // List of history IDs for tracked state entry
-	pending int                     // Number of entries processed in the current batch.
-	delete  bool                    // Operation mode: true for unindex, false for index.
-	lastID  uint64                  // ID of the most recently processed history.
-	typ     historyType             // Type of history being processed (e.g., state or trienode).
-	db      ethdb.KeyValueStore     // Key-value database used to store or delete index data.
+	pending int                     // Number of entries processed in the current batch
+	delete  bool                    // Operation mode: true for unindex, false for index
+	lastID  uint64                  // ID of the most recently processed history
+	typ     historyType             // Type of history being processed (e.g., state or trienode)
+	db      ethdb.KeyValueStore     // Key-value database used to store or delete index data
 }
 
 // newBatchIndexer constructs the batch indexer with the supplied mode.
@@ -181,17 +181,37 @@ func (b *batchIndexer) finish(force bool) error {
 		return nil
 	}
 	var (
-		batch   = b.makeBatch()
-		batchMu sync.RWMutex
-		start   = time.Now()
-		eg      errgroup.Group
+		start = time.Now()
+		eg    errgroup.Group
+
+		batch      = b.makeBatch()
+		batchSize  int
+		batchMu    sync.RWMutex
+		writeBatch = func(fn func(batch ethdb.Batch)) error {
+			batchMu.Lock()
+			defer batchMu.Unlock()
+
+			fn(batch)
+			if batch.ValueSize() >= ethdb.IdealBatchSize {
+				batchSize += batch.ValueSize()
+				if err := batch.Write(); err != nil {
+					return err
+				}
+				batch.Reset()
+			}
+			return nil
+		}
 	)
 	eg.SetLimit(runtime.NumCPU())
 
+	var indexed uint64
+	if metadata := loadIndexMetadata(b.db, b.typ); metadata != nil {
+		indexed = metadata.Last
+	}
 	for ident, list := range b.index {
 		eg.Go(func() error {
 			if !b.delete {
-				iw, err := newIndexWriter(b.db, ident)
+				iw, err := newIndexWriter(b.db, ident, indexed)
 				if err != nil {
 					return err
 				}
@@ -200,11 +220,11 @@ func (b *batchIndexer) finish(force bool) error {
 						return err
 					}
 				}
-				batchMu.Lock()
-				iw.finish(batch)
-				batchMu.Unlock()
+				return writeBatch(func(batch ethdb.Batch) {
+					iw.finish(batch)
+				})
 			} else {
-				id, err := newIndexDeleter(b.db, ident)
+				id, err := newIndexDeleter(b.db, ident, indexed)
 				if err != nil {
 					return err
 				}
@@ -213,11 +233,10 @@ func (b *batchIndexer) finish(force bool) error {
 						return err
 					}
 				}
-				batchMu.Lock()
-				id.finish(batch)
-				batchMu.Unlock()
+				return writeBatch(func(batch ethdb.Batch) {
+					id.finish(batch)
+				})
 			}
-			return nil
 		})
 	}
 	if err := eg.Wait(); err != nil {
@@ -233,10 +252,12 @@ func (b *batchIndexer) finish(force bool) error {
 			storeIndexMetadata(batch, b.typ, b.lastID-1)
 		}
 	}
+	batchSize += batch.ValueSize()
+
 	if err := batch.Write(); err != nil {
 		return err
 	}
-	log.Debug("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Debug("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "size", common.StorageSize(batchSize), "elapsed", common.PrettyDuration(time.Since(start)))
 	b.pending = 0
 	b.index = make(map[stateIdent][]uint64)
 	return nil
