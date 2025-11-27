@@ -82,6 +82,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbRemoveHistoryIndexCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -205,6 +206,11 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbRemoveHistoryIndexCmd = &cli.Command{
+		Action: removeHistoryIndex,
+		Name:   "remove-history-index",
+		Flags:  utils.DatabaseFlags,
 	}
 )
 
@@ -905,4 +911,24 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+func removeHistoryIndex(ctx *cli.Context) error {
+	// Load the databases.
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	batch := db.NewBatch()
+	rawdb.DeleteStateHistoryIndexMetadata(batch)
+	rawdb.DeleteStateHistoryIndexes(batch)
+	rawdb.DeleteTrienodeHistoryIndexMetadata(batch)
+	rawdb.DeleteTrienodeHistoryIndexes(batch)
+	batch.Write()
+
+	limit := bytes.Clone(rawdb.StateHistoryIndexPrefix)
+	limit[len(limit)-1] += 1
+	return db.Compact(rawdb.StateHistoryIndexPrefix, limit)
 }
