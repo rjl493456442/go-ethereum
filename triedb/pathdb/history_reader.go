@@ -46,7 +46,7 @@ type indexReaderWithLimitTag struct {
 
 // newIndexReaderWithLimitTag constructs a index reader with indexing position.
 func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, limit uint64) (*indexReaderWithLimitTag, error) {
-	r, err := newIndexReader(db, state)
+	r, err := newIndexReader(db, state, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +308,7 @@ func assembleNode(blob []byte, elements [][][]byte, indices [][]int) ([]byte, er
 }
 
 // nolint:unused
-func (r *trienodeReader) readSingle(state stateIdent, it *indexIterator, latestValue []byte) ([]byte, error) {
+func (r *trienodeReader) readSingle(state stateIdent, it HistoryIndexIterator, latestValue []byte) ([]byte, error) {
 	var (
 		elements [][][]byte
 		indices  [][]int
@@ -372,7 +372,7 @@ func (q *resultQueue) set(data []byte, pos int) {
 	q.data[pos] = data
 }
 
-func (r *trienodeReader) readOptimized(state stateIdent, it *indexIterator, latestValue []byte) ([]byte, error) {
+func (r *trienodeReader) readOptimized(state stateIdent, it HistoryIndexIterator, latestValue []byte) ([]byte, error) {
 	var (
 		elements [][][]byte
 		indices  [][]int
@@ -453,12 +453,29 @@ func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, l
 		return nil, err
 	}
 	// Construct the index iterator to traverse the trienode history
-	ir, err := newIndexReader(r.disk, state)
-	if err != nil {
-		return nil, err
+	var (
+		scheme *indexScheme
+		it     HistoryIndexIterator
+	)
+	if state.addressHash == (common.Hash{}) {
+		scheme = accountIndexScheme
+	} else {
+		scheme = storageIndexScheme
 	}
-	it := ir.newIterator()
+	if state.addressHash == (common.Hash{}) && state.path == "" {
+		it = newSeqIter(lastID)
+	} else {
+		prefix, nodeID := scheme.splitPathLast(state.path)
 
+		queryIdent := state
+		queryIdent.path = prefix
+		ir, err := newIndexReader(r.disk, queryIdent, scheme.getBitmapSize(len(prefix)))
+		if err != nil {
+			return nil, err
+		}
+		filter := extFilter(nodeID)
+		it = ir.newIterator(&filter)
+	}
 	// Move the iterator to the first element whose id is greater than
 	// the given number.
 	found := it.SeekGT(stateID)

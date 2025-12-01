@@ -564,7 +564,8 @@ func TestTrienodeHistoryReaderIterator(t *testing.T) {
 
 	// Test that iterator yields expected state identifiers
 	seen := make(map[stateIdent]bool)
-	for ident := range h.forEach() {
+	for elem := range h.forEach() {
+		ident := elem.key()
 		if ident.typ != typeTrienode {
 			t.Fatal("Iterator should only yield trienode history identifiers")
 		}

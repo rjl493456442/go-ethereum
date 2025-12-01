@@ -17,6 +17,7 @@
 package pathdb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -26,23 +27,27 @@ import (
 )
 
 const (
-	indexBlockDescSize   = 14              // The size of index block descriptor
-	indexBlockEntriesCap = 4096            // The maximum number of entries can be grouped in a block
-	indexBlockRestartLen = 256             // The restart interval length of index block
-	historyIndexBatch    = 8 * 1024 * 1024 // The number of state history indexes for constructing or deleting as batch
+	indexBlockDescSize   = 14   // The size of index block descriptor
+	indexBlockEntriesCap = 4096 // The maximum number of entries can be grouped in a block
+	indexBlockRestartLen = 256  // The restart interval length of index block
 )
 
 // indexBlockDesc represents a descriptor for an index block, which contains a
 // list of state mutation records associated with a specific state (either an
 // account or a storage slot).
 type indexBlockDesc struct {
-	max     uint64 // The maximum state ID retained within the block
-	entries uint16 // The number of state mutation records retained within the block
-	id      uint32 // The id of the index block
+	max       uint64 // The maximum state ID retained within the block
+	entries   uint16 // The number of state mutation records retained within the block
+	id        uint32 // The id of the index block
+	extBitmap []byte // Optional fixed-size bitmap for node extension
 }
 
-func newIndexBlockDesc(id uint32) *indexBlockDesc {
-	return &indexBlockDesc{id: id}
+func newIndexBlockDesc(id uint32, bitmapSize int) *indexBlockDesc {
+	var bitmap []byte
+	if bitmapSize > 0 {
+		bitmap = make([]byte, bitmapSize)
+	}
+	return &indexBlockDesc{id: id, extBitmap: bitmap}
 }
 
 // empty indicates whether the block is empty with no element retained.
@@ -50,26 +55,23 @@ func (d *indexBlockDesc) empty() bool {
 	return d.entries == 0
 }
 
-// full indicates whether the number of elements in the block exceeds the
-// preconfigured limit.
-func (d *indexBlockDesc) full() bool {
-	return d.entries >= indexBlockEntriesCap
-}
-
 // encode packs index block descriptor into byte stream.
 func (d *indexBlockDesc) encode() []byte {
-	var buf [indexBlockDescSize]byte
+	buf := make([]byte, indexBlockDescSize+len(d.extBitmap))
 	binary.BigEndian.PutUint64(buf[0:8], d.max)
 	binary.BigEndian.PutUint16(buf[8:10], d.entries)
 	binary.BigEndian.PutUint32(buf[10:14], d.id)
+	copy(buf[indexBlockDescSize:], d.extBitmap)
 	return buf[:]
 }
 
-// decode unpacks index block descriptor from byte stream.
+// decode unpacks index block descriptor from byte stream. It's safe to mutate
+// the provided byte stream after the function call.
 func (d *indexBlockDesc) decode(blob []byte) {
 	d.max = binary.BigEndian.Uint64(blob[:8])
 	d.entries = binary.BigEndian.Uint16(blob[8:10])
 	d.id = binary.BigEndian.Uint32(blob[10:14])
+	d.extBitmap = bytes.Clone(blob[indexBlockDescSize:])
 }
 
 // parseIndexBlock parses the index block with the supplied byte stream.
@@ -97,20 +99,38 @@ func (d *indexBlockDesc) decode(blob []byte) {
 // A uint16 can cover offsets in the range [0, 65536), which is more than enough
 // to store 4096 integers.
 //
-// Each chunk begins with the full value of the first integer, followed by
-// subsequent integers representing the differences between the current value
-// and the preceding one. Integers are encoded with variable-size for best
-// storage efficiency. Each chunk can be illustrated as below.
+// Each chunk begins with a full integer value for the first element, followed
+// by subsequent integers encoded as differences (deltas) from their preceding
+// values. All integers use variable-length encoding for optimal space efficiency.
 //
-//		  Restart ---> +----------------+
-//	                   |  Full integer  |
-//		               +----------------+
-//		               | Diff with prev |
-//		               +----------------+
-//		               |      ...       |
-//		               +----------------+
-//		               | Diff with prev |
-//		               +----------------+
+// In the updated format, each element in the chunk may optionally include an
+// "extension" section. If an extension is present, it starts with a var-size
+// integer indicating the length of the remaining extension payload, followed by
+// that many bytes. If no extension is present, the element format is identical
+// to the original version (i.e., only the integer or delta value is encoded).
+//
+// In the trienode history index, the extension field contains the list of
+// trienode IDs that fall within this range. For the given state transition,
+// these IDs represent the specific nodes in this range that were mutated.
+//
+// Whether an element includes an extension is determined by the block reader
+// based on the specification. Conceptually, a chunk is structured as:
+//
+//	Restart ---> +----------------+
+//	             |  Full integer  |
+//	             +----------------+
+//	             |  (Extension?)  |
+//	             +----------------+
+//	             | Diff with prev |
+//	             +----------------+
+//	             |  (Extension?)  |
+//	             +----------------+
+//	             |       ...      |
+//	             +----------------+
+//	             | Diff with prev |
+//	             +----------------+
+//	             |  (Extension?)  |
+//	             +----------------+
 //
 // Empty index block is regarded as invalid.
 func parseIndexBlock(blob []byte) ([]uint16, []byte, error) {
@@ -148,24 +168,26 @@ func parseIndexBlock(blob []byte) ([]uint16, []byte, error) {
 type blockReader struct {
 	restarts []uint16
 	data     []byte
+	hasExt   bool
 }
 
 // newBlockReader constructs the block reader with the supplied block data.
-func newBlockReader(blob []byte) (*blockReader, error) {
+func newBlockReader(blob []byte, hasExt bool) (*blockReader, error) {
 	restarts, data, err := parseIndexBlock(blob)
 	if err != nil {
 		return nil, err
 	}
 	return &blockReader{
 		restarts: restarts,
-		data:     data, // safe to own the slice
+		data:     data,   // safe to own the slice
+		hasExt:   hasExt, // flag whether extension should be resolved
 	}, nil
 }
 
 // readGreaterThan locates the first element in the block that is greater than
 // the specified value. If no such element is found, MaxUint64 is returned.
 func (br *blockReader) readGreaterThan(id uint64) (uint64, error) {
-	it := newBlockIterator(br.data, br.restarts)
+	it := br.newIterator(nil)
 	found := it.SeekGT(id)
 	if err := it.Error(); err != nil {
 		return 0, err
@@ -180,17 +202,19 @@ type blockWriter struct {
 	desc     *indexBlockDesc // Descriptor of the block
 	restarts []uint16        // Offsets into the data slice, marking the start of each section
 	data     []byte          // Aggregated encoded data slice
+	hasExt   bool
 }
 
 // newBlockWriter constructs a block writer. In addition to the existing data
 // and block description, it takes an element ID and prunes all existing elements
 // above that ID. It's essential as the recovery mechanism after unclean shutdown
 // during the history indexing.
-func newBlockWriter(blob []byte, desc *indexBlockDesc, lastID uint64) (*blockWriter, error) {
+func newBlockWriter(blob []byte, desc *indexBlockDesc, lastID uint64, hasExt bool) (*blockWriter, error) {
 	if len(blob) == 0 {
 		return &blockWriter{
-			desc: desc,
-			data: make([]byte, 0, 1024),
+			desc:   desc,
+			data:   make([]byte, 0, 1024),
+			hasExt: hasExt,
 		}, nil
 	}
 	restarts, data, err := parseIndexBlock(blob)
@@ -201,6 +225,7 @@ func newBlockWriter(blob []byte, desc *indexBlockDesc, lastID uint64) (*blockWri
 		desc:     desc,
 		restarts: restarts,
 		data:     data, // safe to own the slice
+		hasExt:   hasExt,
 	}
 	var trimmed int
 	for !writer.empty() && writer.last() > lastID {
@@ -217,7 +242,7 @@ func newBlockWriter(blob []byte, desc *indexBlockDesc, lastID uint64) (*blockWri
 
 // append adds a new element to the block. The new element must be greater than
 // the previous one. The provided ID is assumed to always be greater than 0.
-func (b *blockWriter) append(id uint64) error {
+func (b *blockWriter) append(id uint64, ext []uint16) error {
 	if id == 0 {
 		return errors.New("invalid zero id")
 	}
@@ -243,6 +268,29 @@ func (b *blockWriter) append(id uint64) error {
 		// is encoded using the value difference from the preceding
 		// element.
 		b.data = binary.AppendUvarint(b.data, id-b.desc.max)
+	}
+	// Extension presence validation
+	if (len(ext) == 0) != !b.hasExt {
+		if len(ext) == 0 {
+			return errors.New("missing extension")
+		}
+		return errors.New("unexpected extension")
+	}
+	// Append the extension if it is not nil. The extension is prefixed with a
+	// length indicator, and the block reader MUST understand this scheme and
+	// decode the extension accordingly.
+	if len(ext) > 0 {
+		for _, n := range ext {
+			// Node ID zero is intentionally filtered out. Any element in this range
+			// can indicate that the chunk's root node was mutated, so storing zero is
+			// redundant and saves one byte for bitmap.
+			if n != 0 {
+				setBit(b.desc.extBitmap, int(n-1))
+			}
+		}
+		enc := encodeIDs(ext)
+		b.data = binary.AppendUvarint(b.data, uint64(len(enc)))
+		b.data = append(b.data, enc...)
 	}
 	b.desc.entries++
 	b.desc.max = id
@@ -272,7 +320,13 @@ func (b *blockWriter) scanSection(section int, fn func(uint64, int) bool) {
 		if fn(value, pos) {
 			return
 		}
-		pos += n
+		pos += n // shift to next position
+
+		// Resolve the extension if exists
+		if b.hasExt {
+			l, ln := binary.Uvarint(b.data[pos:])
+			pos += ln + int(l)
+		}
 	}
 }
 
@@ -337,6 +391,8 @@ func (b *blockWriter) pop(id uint64) error {
 	b.desc.max = prev
 	b.data = b.data[:pos]
 	b.desc.entries -= 1
+
+	// TODO(rjl493456442) invalidate the bitmap
 	return nil
 }
 
@@ -344,8 +400,9 @@ func (b *blockWriter) empty() bool {
 	return b.desc.empty()
 }
 
-func (b *blockWriter) full() bool {
-	return b.desc.full()
+func (b *blockWriter) estimateFull(ext []uint16) bool {
+	size := 8 + 2*len(ext)
+	return len(b.data)+size > indexBlockEntriesCap
 }
 
 // last returns the last element in the block. It should only be called when

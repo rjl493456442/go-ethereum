@@ -17,6 +17,7 @@
 package pathdb
 
 import (
+	"bytes"
 	"math"
 	"math/rand"
 	"slices"
@@ -24,16 +25,36 @@ import (
 	"testing"
 )
 
+func randomExt(bitmapSize int, n int) []uint16 {
+	if bitmapSize == 0 {
+		return nil
+	}
+	var (
+		limit   = bitmapSize * 8
+		extList []uint16
+	)
+	for i := 0; i < n; i++ {
+		extList = append(extList, uint16(rand.Intn(limit+1)))
+	}
+	return extList
+}
+
 func TestBlockReaderBasic(t *testing.T) {
+	testBlockReaderBasic(t, false, 0)
+	testBlockReaderBasic(t, true, 2)
+	testBlockReaderBasic(t, true, 34)
+}
+
+func testBlockReaderBasic(t *testing.T, addExtension bool, bitmapSize int) {
 	elements := []uint64{
 		1, 5, 10, 11, 20,
 	}
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, bitmapSize), 0, addExtension)
 	for i := 0; i < len(elements); i++ {
-		bw.append(elements[i])
+		bw.append(elements[i], randomExt(bitmapSize, 5))
 	}
 
-	br, err := newBlockReader(bw.finish())
+	br, err := newBlockReader(bw.finish(), addExtension)
 	if err != nil {
 		t.Fatalf("Failed to construct the block reader, %v", err)
 	}
@@ -60,18 +81,24 @@ func TestBlockReaderBasic(t *testing.T) {
 }
 
 func TestBlockReaderLarge(t *testing.T) {
+	testBlockReaderLarge(t, false, 0)
+	testBlockReaderLarge(t, true, 2)
+	testBlockReaderLarge(t, true, 34)
+}
+
+func testBlockReaderLarge(t *testing.T, addExtension bool, bitmapSize int) {
 	var elements []uint64
 	for i := 0; i < 1000; i++ {
 		elements = append(elements, rand.Uint64())
 	}
 	slices.Sort(elements)
 
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, bitmapSize), 0, addExtension)
 	for i := 0; i < len(elements); i++ {
-		bw.append(elements[i])
+		bw.append(elements[i], randomExt(bitmapSize, 5))
 	}
 
-	br, err := newBlockReader(bw.finish())
+	br, err := newBlockReader(bw.finish(), addExtension)
 	if err != nil {
 		t.Fatalf("Failed to construct the block reader, %v", err)
 	}
@@ -95,26 +122,32 @@ func TestBlockReaderLarge(t *testing.T) {
 }
 
 func TestBlockWriterBasic(t *testing.T) {
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	testBlockWriteBasic(t, false, 0)
+	testBlockWriteBasic(t, true, 2)
+	testBlockWriteBasic(t, true, 34)
+}
+
+func testBlockWriteBasic(t *testing.T, addExtension bool, bitmapSize int) {
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, bitmapSize), 0, addExtension)
 	if !bw.empty() {
 		t.Fatal("expected empty block")
 	}
-	bw.append(2)
-	if err := bw.append(1); err == nil {
+	bw.append(2, randomExt(bitmapSize, 5))
+	if err := bw.append(1, randomExt(bitmapSize, 5)); err == nil {
 		t.Fatal("out-of-order insertion is not expected")
 	}
 	var maxElem uint64
 	for i := 0; i < 10; i++ {
-		bw.append(uint64(i + 3))
+		bw.append(uint64(i+3), randomExt(bitmapSize, 5))
 		maxElem = uint64(i + 3)
 	}
 
-	bw, err := newBlockWriter(bw.finish(), newIndexBlockDesc(0), maxElem)
+	bw, err := newBlockWriter(bw.finish(), newIndexBlockDesc(0, bitmapSize), maxElem, addExtension)
 	if err != nil {
 		t.Fatalf("Failed to construct the block writer, %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		if err := bw.append(uint64(i + 100)); err != nil {
+		if err := bw.append(uint64(i+100), randomExt(bitmapSize, 5)); err != nil {
 			t.Fatalf("Failed to append value %d: %v", i, err)
 		}
 	}
@@ -122,14 +155,19 @@ func TestBlockWriterBasic(t *testing.T) {
 }
 
 func TestBlockWriterWithLimit(t *testing.T) {
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	testBlockWriterWithLimit(t, 0)
+	testBlockWriterWithLimit(t, 2)
+	testBlockWriterWithLimit(t, 34)
+}
+
+func testBlockWriterWithLimit(t *testing.T, bitmapSize int) {
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, bitmapSize), 0, bitmapSize != 0)
 
 	var maxElem uint64
 	for i := 0; i < indexBlockRestartLen*2; i++ {
-		bw.append(uint64(i + 1))
+		bw.append(uint64(i+1), randomExt(bitmapSize, 5))
 		maxElem = uint64(i + 1)
 	}
-
 	suites := []struct {
 		limit  uint64
 		expMax uint64
@@ -162,7 +200,7 @@ func TestBlockWriterWithLimit(t *testing.T) {
 	}
 	for i, suite := range suites {
 		desc := *bw.desc
-		block, err := newBlockWriter(bw.finish(), &desc, suite.limit)
+		block, err := newBlockWriter(bytes.Clone(bw.finish()), &desc, suite.limit, bitmapSize != 0)
 		if err != nil {
 			t.Fatalf("Failed to construct the block writer, %v", err)
 		}
@@ -172,8 +210,8 @@ func TestBlockWriterWithLimit(t *testing.T) {
 
 		// Re-fill the elements
 		var maxElem uint64
-		for elem := suite.limit + 1; elem < indexBlockRestartLen*4; elem++ {
-			if err := block.append(elem); err != nil {
+		for elem := suite.limit + 1; elem < indexBlockRestartLen*3; elem++ {
+			if err := block.append(elem, randomExt(bitmapSize, 5)); err != nil {
 				t.Fatalf("Failed to append value %d: %v", elem, err)
 			}
 			maxElem = elem
@@ -185,9 +223,15 @@ func TestBlockWriterWithLimit(t *testing.T) {
 }
 
 func TestBlockWriterDelete(t *testing.T) {
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	testBlockWriterDelete(t, 0)
+	testBlockWriterDelete(t, 2)
+	testBlockWriterDelete(t, 34)
+}
+
+func testBlockWriterDelete(t *testing.T, bitmapSize int) {
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, bitmapSize), 0, bitmapSize != 0)
 	for i := 0; i < 10; i++ {
-		bw.append(uint64(i + 1))
+		bw.append(uint64(i+1), randomExt(bitmapSize, 5))
 	}
 	// Pop unknown id, the request should be rejected
 	if err := bw.pop(100); err == nil {
@@ -209,12 +253,18 @@ func TestBlockWriterDelete(t *testing.T) {
 }
 
 func TestBlcokWriterDeleteWithData(t *testing.T) {
+	testBlcokWriterDeleteWithData(t, 0)
+	testBlcokWriterDeleteWithData(t, 2)
+	testBlcokWriterDeleteWithData(t, 34)
+}
+
+func testBlcokWriterDeleteWithData(t *testing.T, bitmapSize int) {
 	elements := []uint64{
 		1, 5, 10, 11, 20,
 	}
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, bitmapSize), 0, bitmapSize != 0)
 	for i := 0; i < len(elements); i++ {
-		bw.append(elements[i])
+		bw.append(elements[i], randomExt(bitmapSize, 5))
 	}
 
 	// Re-construct the block writer with data
@@ -223,7 +273,7 @@ func TestBlcokWriterDeleteWithData(t *testing.T) {
 		max:     20,
 		entries: 5,
 	}
-	bw, err := newBlockWriter(bw.finish(), desc, elements[len(elements)-1])
+	bw, err := newBlockWriter(bw.finish(), desc, elements[len(elements)-1], bitmapSize != 0)
 	if err != nil {
 		t.Fatalf("Failed to construct block writer %v", err)
 	}
@@ -234,7 +284,7 @@ func TestBlcokWriterDeleteWithData(t *testing.T) {
 		newTail := elements[i-1]
 
 		// Ensure the element can still be queried with no issue
-		br, err := newBlockReader(bw.finish())
+		br, err := newBlockReader(bw.finish(), bitmapSize != 0)
 		if err != nil {
 			t.Fatalf("Failed to construct the block reader, %v", err)
 		}
@@ -266,29 +316,60 @@ func TestBlcokWriterDeleteWithData(t *testing.T) {
 }
 
 func TestCorruptedIndexBlock(t *testing.T) {
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, 0), 0, false)
 
 	var maxElem uint64
 	for i := 0; i < 10; i++ {
-		bw.append(uint64(i + 1))
+		bw.append(uint64(i+1), nil)
 		maxElem = uint64(i + 1)
 	}
 	buf := bw.finish()
 
 	// Mutate the buffer manually
 	buf[len(buf)-1]++
-	_, err := newBlockWriter(buf, newIndexBlockDesc(0), maxElem)
+	_, err := newBlockWriter(buf, newIndexBlockDesc(0, 0), maxElem, false)
 	if err == nil {
 		t.Fatal("Corrupted index block data is not detected")
 	}
 }
 
 // BenchmarkParseIndexBlock benchmarks the performance of parseIndexBlock.
+//
+// goos: darwin
+// goarch: arm64
+// pkg: github.com/ethereum/go-ethereum/triedb/pathdb
+// cpu: Apple M1 Pro
+// BenchmarkParseIndexBlock
+// BenchmarkParseIndexBlock-8   	35829495	        34.16 ns/op
 func BenchmarkParseIndexBlock(b *testing.B) {
 	// Generate a realistic index block blob
-	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0), 0)
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, 0), 0, false)
 	for i := 0; i < 4096; i++ {
-		bw.append(uint64(i * 2))
+		bw.append(uint64(i*2), nil)
+	}
+	blob := bw.finish()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, err := parseIndexBlock(blob)
+		if err != nil {
+			b.Fatalf("parseIndexBlock failed: %v", err)
+		}
+	}
+}
+
+// goos: darwin
+// goarch: arm64
+// pkg: github.com/ethereum/go-ethereum/triedb/pathdb
+// cpu: Apple M1 Pro
+// BenchmarkParseIndexBlockWithExt
+// BenchmarkParseIndexBlockWithExt-8   	35773242	        33.72 ns/op
+func BenchmarkParseIndexBlockWithExt(b *testing.B) {
+	// Generate a realistic index block blob
+	bw, _ := newBlockWriter(nil, newIndexBlockDesc(0, 34), 0, true)
+	for i := 0; i < 4096; i++ {
+		id, ext := uint64(i*2), randomExt(34, 3)
+		bw.append(id, ext)
 	}
 	blob := bw.finish()
 
@@ -302,21 +383,28 @@ func BenchmarkParseIndexBlock(b *testing.B) {
 }
 
 // BenchmarkBlockWriterAppend benchmarks the performance of indexblock.writer
+//
+// goos: darwin
+// goarch: arm64
+// pkg: github.com/ethereum/go-ethereum/triedb/pathdb
+// cpu: Apple M1 Pro
+// BenchmarkBlockWriterAppend
+// BenchmarkBlockWriterAppend-8   	293611083	         4.113 ns/op	       3 B/op	       0 allocs/op
 func BenchmarkBlockWriterAppend(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	var blockID uint32
-	desc := newIndexBlockDesc(blockID)
-	writer, _ := newBlockWriter(nil, desc, 0)
+	desc := newIndexBlockDesc(blockID, 0)
+	writer, _ := newBlockWriter(nil, desc, 0, false)
 
 	for i := 0; i < b.N; i++ {
-		if writer.full() {
+		if writer.estimateFull(nil) {
 			blockID += 1
-			desc = newIndexBlockDesc(blockID)
-			writer, _ = newBlockWriter(nil, desc, 0)
+			desc = newIndexBlockDesc(blockID, 0)
+			writer, _ = newBlockWriter(nil, desc, 0, false)
 		}
-		if err := writer.append(writer.desc.max + 1); err != nil {
+		if err := writer.append(writer.desc.max+1, nil); err != nil {
 			b.Error(err)
 		}
 	}
