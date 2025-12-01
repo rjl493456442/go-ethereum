@@ -914,6 +914,26 @@ func inspectHistory(ctx *cli.Context) error {
 }
 
 func removeHistoryIndex(ctx *cli.Context) error {
+	if ctx.NArg() != 1 {
+		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
+	}
+	mode := ctx.Args().Get(0)
+	if mode != "all" && mode != "state" && mode != "trienode" {
+		return fmt.Errorf("invalid arguments: %v", ctx.Command.ArgsUsage)
+	}
+	var (
+		deleteState    bool
+		deleteTrienode bool
+	)
+	if mode == "all" {
+		deleteState, deleteTrienode = true, true
+	}
+	if mode == "state" {
+		deleteState = true
+	}
+	if mode == "trienode" {
+		deleteTrienode = true
+	}
 	// Load the databases.
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
@@ -922,10 +942,14 @@ func removeHistoryIndex(ctx *cli.Context) error {
 	defer db.Close()
 
 	batch := db.NewBatch()
-	rawdb.DeleteStateHistoryIndexMetadata(batch)
-	rawdb.DeleteStateHistoryIndexes(batch)
-	rawdb.DeleteTrienodeHistoryIndexMetadata(batch)
-	rawdb.DeleteTrienodeHistoryIndexes(batch)
+	if deleteState {
+		rawdb.DeleteStateHistoryIndexMetadata(batch)
+		rawdb.DeleteStateHistoryIndexes(batch)
+	}
+	if deleteTrienode {
+		rawdb.DeleteTrienodeHistoryIndexMetadata(batch)
+		rawdb.DeleteTrienodeHistoryIndexes(batch)
+	}
 	batch.Write()
 
 	limit := bytes.Clone(rawdb.StateHistoryIndexPrefix)
