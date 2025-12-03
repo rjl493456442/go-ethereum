@@ -180,6 +180,9 @@ func (h *trienodeHistory) typ() historyType {
 func (h *trienodeHistory) forEach() iter.Seq[stateIdent] {
 	return func(yield func(stateIdent) bool) {
 		for _, owner := range h.owners {
+			if owner != (common.Hash{}) {
+				continue
+			}
 			for _, path := range h.nodeList[owner] {
 				if !yield(newTrienodeIdent(owner, path)) {
 					return
