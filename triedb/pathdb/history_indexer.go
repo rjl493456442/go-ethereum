@@ -184,7 +184,7 @@ func (b *batchIndexer) process(h history, id uint64) error {
 
 func (b *batchIndexer) cap() error {
 	return b.forEach(func(elem *indexElem) bool {
-		return len(elem.pending) > 0
+		return len(elem.pending) > 4
 	})
 }
 
