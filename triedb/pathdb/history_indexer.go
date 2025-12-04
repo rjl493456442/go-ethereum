@@ -184,7 +184,7 @@ func (b *batchIndexer) process(h history, id uint64) error {
 
 func (b *batchIndexer) cap() error {
 	return b.forEach(func(elem *indexElem) bool {
-		return len(elem.pending) > 4
+		return len(elem.pending) > 2
 	})
 }
 
@@ -252,6 +252,8 @@ func (b *batchIndexer) forEach(onElem func(elem *indexElem) bool) error {
 		lastWritten := elem.last
 		elem.last = elem.pending[len(elem.pending)-1]
 		entries, states = entries+len(elem.pending), states+1
+
+		pending := elem.pending
 		elem.pending = elem.pending[:0]
 
 		eg.Go(func() error {
@@ -260,7 +262,7 @@ func (b *batchIndexer) forEach(onElem func(elem *indexElem) bool) error {
 				if err != nil {
 					return err
 				}
-				for _, n := range elem.pending {
+				for _, n := range pending {
 					if err := iw.append(n); err != nil {
 						return err
 					}
@@ -273,7 +275,7 @@ func (b *batchIndexer) forEach(onElem func(elem *indexElem) bool) error {
 				if err != nil {
 					return err
 				}
-				for _, n := range elem.pending {
+				for _, n := range pending {
 					if err := id.pop(n); err != nil {
 						return err
 					}
