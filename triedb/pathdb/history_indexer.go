@@ -246,8 +246,10 @@ func (b *batchIndexer) forEach(onElem func(elem *indexElem) bool) error {
 		if onElem != nil && !onElem(elem) {
 			continue
 		}
+		if len(elem.pending) == 0 {
+			continue
+		}
 		lastWritten := elem.last
-
 		elem.last = elem.pending[len(elem.pending)-1]
 		entries, states = entries+len(elem.pending), states+1
 		elem.pending = elem.pending[:0]
