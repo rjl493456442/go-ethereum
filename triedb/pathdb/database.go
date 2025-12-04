@@ -211,13 +211,13 @@ func (db *Database) setHistoryIndexer() {
 	if !db.config.EnableStateIndexing {
 		return
 	}
-	if db.stateFreezer != nil {
-		if db.stateIndexer != nil {
-			db.stateIndexer.close()
-		}
-		db.stateIndexer = newHistoryIndexer(db.diskdb, db.stateFreezer, db.tree.bottom().stateID(), typeStateHistory)
-		log.Info("Enabled state history indexing")
-	}
+	//if db.stateFreezer != nil {
+	//	if db.stateIndexer != nil {
+	//		db.stateIndexer.close()
+	//	}
+	//	db.stateIndexer = newHistoryIndexer(db.diskdb, db.stateFreezer, db.tree.bottom().stateID(), typeStateHistory)
+	//	log.Info("Enabled state history indexing")
+	//}
 	if db.trienodeFreezer != nil {
 		if db.trienodeIndexer != nil {
 			db.trienodeIndexer.close()
