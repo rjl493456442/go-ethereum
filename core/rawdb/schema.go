@@ -129,10 +129,13 @@ var (
 	StateHistoryIndexPrefix           = []byte("m")   // The global prefix of state history index data
 	StateHistoryAccountMetadataPrefix = []byte("ma")  // StateHistoryAccountMetadataPrefix + account address hash => account metadata
 	StateHistoryStorageMetadataPrefix = []byte("ms")  // StateHistoryStorageMetadataPrefix + account address hash + storage slot hash => slot metadata
-	TrienodeHistoryMetadataPrefix     = []byte("mt")  // TrienodeHistoryMetadataPrefix + account address hash + trienode path => trienode metadata
 	StateHistoryAccountBlockPrefix    = []byte("mba") // StateHistoryAccountBlockPrefix + account address hash + blockID => account block
 	StateHistoryStorageBlockPrefix    = []byte("mbs") // StateHistoryStorageBlockPrefix + account address hash + storage slot hash + blockID => slot block
-	TrienodeHistoryBlockPrefix        = []byte("mbt") // TrienodeHistoryBlockPrefix + account address hash + trienode path + blockID => trienode block
+
+	TrienodeHistoryMetadataPrefix    = []byte("mt")  // TrienodeHistoryMetadataPrefix + account address hash + trienode path => trienode metadata
+	TrienodeHistoryBlockPrefix       = []byte("mbt") // TrienodeHistoryBlockPrefix + account address hash + trienode path + blockID => trienode block
+	NewTrienodeHistoryMetadataPrefix = []byte("pt")  // TrienodeHistoryMetadataPrefix + account address hash + trienode path => trienode metadata
+	NewTrienodeHistoryBlockPrefix    = []byte("pbt") // TrienodeHistoryBlockPrefix + account address hash + trienode path + blockID => trienode block
 
 	// VerklePrefix is the database prefix for Verkle trie data, which includes:
 	// (a) Trie nodes

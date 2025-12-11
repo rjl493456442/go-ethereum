@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -76,6 +77,7 @@ Remove blockchain and state databases`,
 			dbDeleteCmd,
 			dbPutCmd,
 			dbGetSlotsCmd,
+			dbConvertCmd,
 			dbDumpFreezerIndex,
 			dbImportCmd,
 			dbExportCmd,
@@ -153,6 +155,11 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		ArgsUsage:   "<hex-encoded state root> <hex-encoded account hash> <hex-encoded storage trie root> <hex-encoded start (optional)> <int max elements (optional)>",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command looks up the specified database key from the database.",
+	}
+	dbConvertCmd = &cli.Command{
+		Action: dbConvert,
+		Name:   "dbconvert",
+		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 	}
 	dbDumpFreezerIndex = &cli.Command{
 		Action:      freezerInspect,
@@ -578,6 +585,78 @@ func dbDumpTrie(ctx *cli.Context) error {
 		count++
 	}
 	return it.Err
+}
+
+func dbConvert(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	var wg sync.WaitGroup
+
+	fn := func(prefix []byte, newPrefix []byte, typ string) {
+		defer wg.Done()
+
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+
+		var (
+			count  int
+			start  = time.Now()
+			logged = time.Now()
+			batch  = db.NewBatch()
+		)
+		for it.Next() {
+			newKey := append(newPrefix, it.Key()[len(prefix):]...)
+
+			batch.Delete(it.Key())
+			batch.Put(newKey, it.Value())
+
+			if batch.ValueSize() > ethdb.IdealBatchSize {
+				batch.Write()
+				batch.Reset()
+			}
+			count++
+
+			if time.Since(logged) > time.Second*8 {
+				log.Info("Converting", "typ", typ, "count", count, "elapsed", common.PrettyDuration(time.Since(start)))
+				logged = time.Now()
+			}
+		}
+		if batch.ValueSize() > ethdb.IdealBatchSize {
+			batch.Write()
+		}
+		log.Info("Conversion completed", "typ", typ, "elapsed", common.PrettyDuration(time.Since(start)))
+	}
+	wg.Add(2)
+	go fn(rawdb.TrienodeHistoryMetadataPrefix, rawdb.NewTrienodeHistoryMetadataPrefix, "metadata")
+	go fn(rawdb.TrienodeHistoryBlockPrefix, rawdb.NewTrienodeHistoryBlockPrefix, "block")
+	wg.Wait()
+
+	log.Info("Converted, compacting...")
+
+	log.Info("Compacting old meta data")
+	limit := bytes.Clone(rawdb.TrienodeHistoryMetadataPrefix)
+	limit[len(limit)-1] += 1
+	db.Compact(rawdb.TrienodeHistoryMetadataPrefix, limit)
+
+	log.Info("Compacting old block data")
+	limit = bytes.Clone(rawdb.TrienodeHistoryBlockPrefix)
+	limit[len(limit)-1] += 1
+	db.Compact(rawdb.TrienodeHistoryBlockPrefix, limit)
+
+	log.Info("Compacting new meta data")
+	limit = bytes.Clone(rawdb.NewTrienodeHistoryMetadataPrefix)
+	limit[len(limit)-1] += 1
+	db.Compact(rawdb.NewTrienodeHistoryMetadataPrefix, limit)
+
+	log.Info("Compacting new block data")
+	limit = bytes.Clone(rawdb.NewTrienodeHistoryBlockPrefix)
+	limit[len(limit)-1] += 1
+	db.Compact(rawdb.NewTrienodeHistoryBlockPrefix, limit)
+	return nil
 }
 
 func freezerInspect(ctx *cli.Context) error {
