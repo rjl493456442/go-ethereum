@@ -529,14 +529,14 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 				stateIndex.add(size)
 			case bytes.HasPrefix(key, StateHistoryStorageMetadataPrefix) && len(key) == len(StateHistoryStorageMetadataPrefix)+2*common.HashLength:
 				stateIndex.add(size)
-			case bytes.HasPrefix(key, StateHistoryAccountBlockPrefix) && len(key) == len(StateHistoryAccountBlockPrefix)+common.HashLength+8:
+			case bytes.HasPrefix(key, StateHistoryAccountBlockPrefix) && len(key) == len(StateHistoryAccountBlockPrefix)+common.HashLength+4:
 				stateIndex.add(size)
-			case bytes.HasPrefix(key, StateHistoryStorageBlockPrefix) && len(key) == len(StateHistoryStorageBlockPrefix)+2*common.HashLength+8:
+			case bytes.HasPrefix(key, StateHistoryStorageBlockPrefix) && len(key) == len(StateHistoryStorageBlockPrefix)+2*common.HashLength+4:
 				stateIndex.add(size)
 
 			case bytes.HasPrefix(key, TrienodeHistoryMetadataPrefix) && len(key) >= len(TrienodeHistoryMetadataPrefix)+common.HashLength:
 				trienodeIndex.add(size)
-			case bytes.HasPrefix(key, TrienodeHistoryBlockPrefix) && len(key) >= len(TrienodeHistoryBlockPrefix)+common.HashLength+8:
+			case bytes.HasPrefix(key, TrienodeHistoryBlockPrefix) && len(key) >= len(TrienodeHistoryBlockPrefix)+common.HashLength+4:
 				trienodeIndex.add(size)
 
 			// Verkle trie data is detected, determine the sub-category
@@ -685,7 +685,7 @@ var knownMetadataKeys = [][]byte{
 	snapshotGeneratorKey, snapshotRecoveryKey, txIndexTailKey, fastTxLookupLimitKey,
 	uncleanShutdownKey, badBlockKey, transitionStatusKey, skeletonSyncStatusKey,
 	persistentStateIDKey, trieJournalKey, snapshotSyncStatusKey, snapSyncStatusFlagKey,
-	filterMapsRangeKey, headStateHistoryIndexKey, VerkleTransitionStatePrefix,
+	filterMapsRangeKey, headStateHistoryIndexKey, headTrienodeHistoryIndexKey, VerkleTransitionStatePrefix,
 }
 
 // printChainMetadata prints out chain metadata to stderr.
