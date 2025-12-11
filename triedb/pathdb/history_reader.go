@@ -26,6 +26,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -92,7 +93,7 @@ func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uin
 	// Given that it's very unlikely to occur and users try to perform historical
 	// state queries while reverting the states at the same time. Simply returning
 	// an error should be sufficient for now.
-	metadata := loadIndexMetadata(r.db, toHistoryType(r.reader.state.typ))
+	metadata := LoadIndexMetadata(r.db, toHistoryType(r.reader.state.typ))
 	if metadata == nil || metadata.Last < lastID {
 		return 0, errors.New("state history hasn't been indexed yet")
 	}
@@ -185,6 +186,10 @@ func (r *stateHistoryReader) readStorageMetadata(storageKey common.Hash, storage
 
 // readAccount retrieves the account data from the specified state history.
 func (r *stateHistoryReader) readAccount(address common.Address, historyID uint64) ([]byte, error) {
+	defer func(start time.Time) {
+		historicalAccountDataReadTimer.UpdateSince(start)
+	}(time.Now())
+
 	metadata, err := r.readAccountMetadata(address, historyID)
 	if err != nil {
 		return nil, err
@@ -201,6 +206,10 @@ func (r *stateHistoryReader) readAccount(address common.Address, historyID uint6
 
 // readStorage retrieves the storage slot data from the specified state history.
 func (r *stateHistoryReader) readStorage(address common.Address, storageKey common.Hash, storageHash common.Hash, historyID uint64) ([]byte, error) {
+	defer func(start time.Time) {
+		historicalStorageDataReadTimer.UpdateSince(start)
+	}(time.Now())
+
 	metadata, err := r.readAccountMetadata(address, historyID)
 	if err != nil {
 		return nil, err
@@ -511,7 +520,7 @@ func checkStateAvail(state stateIdent, exptyp historyType, freezer ethdb.Ancient
 	// To serve the request, all history entries from stateID+1 to lastID
 	// must be indexed. It's not supposed to happen unless system is very
 	// wrong.
-	metadata := loadIndexMetadata(db, exptyp)
+	metadata := LoadIndexMetadata(db, exptyp)
 	if metadata == nil || metadata.Last < lastID {
 		indexed := "null"
 		if metadata != nil {

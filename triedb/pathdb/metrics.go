@@ -85,9 +85,11 @@ var (
 	lookupAddLayerTimer    = metrics.NewRegisteredResettingTimer("pathdb/lookup/add/time", nil)
 	lookupRemoveLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/lookup/remove/time", nil)
 
-	historicalAccountReadTimer  = metrics.NewRegisteredResettingTimer("pathdb/history/account/reads", nil)
-	historicalStorageReadTimer  = metrics.NewRegisteredResettingTimer("pathdb/history/storage/reads", nil)
-	historicalTrienodeReadTimer = metrics.NewRegisteredResettingTimer("pathdb/history/trienode/reads", nil)
+	historicalAccountReadTimer     = metrics.NewRegisteredResettingTimer("pathdb/history/account/reads", nil)
+	historicalStorageReadTimer     = metrics.NewRegisteredResettingTimer("pathdb/history/storage/reads", nil)
+	historicalAccountDataReadTimer = metrics.NewRegisteredResettingTimer("pathdb/history/account/data/reads", nil)
+	historicalStorageDataReadTimer = metrics.NewRegisteredResettingTimer("pathdb/history/storage/data/reads", nil)
+	historicalTrienodeReadTimer    = metrics.NewRegisteredResettingTimer("pathdb/history/trienode/reads", nil)
 )
 
 // Metrics in generation

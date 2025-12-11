@@ -218,13 +218,13 @@ func (db *Database) setHistoryIndexer() {
 		db.stateIndexer = newHistoryIndexer(db.diskdb, db.stateFreezer, db.tree.bottom().stateID(), typeStateHistory)
 		log.Info("Enabled state history indexing")
 	}
-	if db.trienodeFreezer != nil {
-		if db.trienodeIndexer != nil {
-			db.trienodeIndexer.close()
-		}
-		db.trienodeIndexer = newHistoryIndexer(db.diskdb, db.trienodeFreezer, db.tree.bottom().stateID(), typeTrienodeHistory)
-		log.Info("Enabled trienode history indexing")
-	}
+	//if db.trienodeFreezer != nil {
+	//	if db.trienodeIndexer != nil {
+	//		db.trienodeIndexer.close()
+	//	}
+	//	db.trienodeIndexer = newHistoryIndexer(db.diskdb, db.trienodeFreezer, db.tree.bottom().stateID(), typeTrienodeHistory)
+	//	log.Info("Enabled trienode history indexing")
+	//}
 }
 
 // setStateGenerator loads the state generation progress marker and potentially

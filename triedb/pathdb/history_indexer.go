@@ -63,8 +63,8 @@ type indexMetadata struct {
 	Last    uint64
 }
 
-// loadIndexMetadata reads the metadata of the specific history index.
-func loadIndexMetadata(db ethdb.KeyValueReader, typ historyType) *indexMetadata {
+// LoadIndexMetadata reads the metadata of the specific history index.
+func LoadIndexMetadata(db ethdb.KeyValueReader, typ historyType) *indexMetadata {
 	var blob []byte
 	switch typ {
 	case typeStateHistory:
@@ -191,7 +191,7 @@ func (b *batchIndexer) finish(force bool) error {
 	eg.SetLimit(runtime.NumCPU())
 
 	var indexed uint64
-	if metadata := loadIndexMetadata(b.db, b.typ); metadata != nil {
+	if metadata := LoadIndexMetadata(b.db, b.typ); metadata != nil {
 		indexed = metadata.Last
 	}
 	for ident, list := range b.index {
@@ -263,7 +263,7 @@ func indexSingle(historyID uint64, db ethdb.KeyValueStore, freezer ethdb.Ancient
 		}
 	}()
 
-	metadata := loadIndexMetadata(db, typ)
+	metadata := LoadIndexMetadata(db, typ)
 	if metadata == nil || metadata.Last+1 != historyID {
 		last := "null"
 		if metadata != nil {
@@ -305,7 +305,7 @@ func unindexSingle(historyID uint64, db ethdb.KeyValueStore, freezer ethdb.Ancie
 		}
 	}()
 
-	metadata := loadIndexMetadata(db, typ)
+	metadata := LoadIndexMetadata(db, typ)
 	if metadata == nil || metadata.Last != historyID {
 		last := "null"
 		if metadata != nil {
@@ -378,7 +378,7 @@ func newIndexIniter(disk ethdb.KeyValueStore, freezer ethdb.AncientStore, typ hi
 	// Load indexing progress
 	var recover bool
 	initer.last.Store(lastID)
-	metadata := loadIndexMetadata(disk, typ)
+	metadata := LoadIndexMetadata(disk, typ)
 	if metadata != nil {
 		initer.indexed.Store(metadata.Last)
 		recover = metadata.Last > lastID
@@ -443,7 +443,7 @@ func (i *indexIniter) run(lastID uint64) {
 		// checkDone indicates whether all requested state histories
 		// have been fully indexed.
 		checkDone = func() bool {
-			metadata := loadIndexMetadata(i.disk, i.typ)
+			metadata := LoadIndexMetadata(i.disk, i.typ)
 			return metadata != nil && metadata.Last == lastID
 		}
 	)
@@ -526,7 +526,7 @@ func (i *indexIniter) next() (uint64, error) {
 	tailID := tail + 1 // compute the id of the oldest history
 
 	// Start indexing from scratch if nothing has been indexed
-	metadata := loadIndexMetadata(i.disk, i.typ)
+	metadata := LoadIndexMetadata(i.disk, i.typ)
 	if metadata == nil {
 		i.log.Debug("Initialize history indexing from scratch", "id", tailID)
 		return tailID, nil
@@ -671,7 +671,7 @@ func (i *indexIniter) recover(lastID uint64) {
 
 			// Terminate the recovery routine once the histories are fully aligned
 			// with the index data, indicating that index initialization is complete.
-			metadata := loadIndexMetadata(i.disk, i.typ)
+			metadata := LoadIndexMetadata(i.disk, i.typ)
 			if metadata != nil && metadata.Last == lastID {
 				close(i.done)
 				i.log.Info("History indexer is recovered", "last", lastID)

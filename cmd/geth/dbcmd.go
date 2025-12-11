@@ -19,6 +19,8 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
+	"github.com/ethereum/go-ethereum/triedb/pathdb"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -78,12 +80,14 @@ Remove blockchain and state databases`,
 			dbPutCmd,
 			dbGetSlotsCmd,
 			dbConvertCmd,
+			dbExpertCmd,
 			dbDumpFreezerIndex,
 			dbImportCmd,
 			dbExportCmd,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbRemoveHistoryIndexCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -161,6 +165,11 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Name:   "dbconvert",
 		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 	}
+	dbExpertCmd = &cli.Command{
+		Action: dbExportIndex,
+		Name:   "dbexpert",
+		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+	}
 	dbDumpFreezerIndex = &cli.Command{
 		Action:      freezerInspect,
 		Name:        "freezer-index",
@@ -212,6 +221,11 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbRemoveHistoryIndexCmd = &cli.Command{
+		Action: removeHistoryIndex,
+		Name:   "remove-history-index",
+		Flags:  utils.DatabaseFlags,
 	}
 )
 
@@ -659,6 +673,75 @@ func dbConvert(ctx *cli.Context) error {
 	return nil
 }
 
+func dbExportIndex(ctx *cli.Context) error {
+	if ctx.NArg() < 1 {
+		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
+	}
+	path := ctx.Args().Get(0)
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	edb, err := pebble.New(path, 1024, 1024, "", false)
+	if err != nil {
+		return err
+	}
+	defer edb.Close()
+
+	var wg sync.WaitGroup
+	fn := func(prefix []byte, typ string) {
+		defer wg.Done()
+
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+
+		var (
+			count  int
+			start  = time.Now()
+			logged = time.Now()
+			batch  = edb.NewBatch()
+		)
+		for it.Next() {
+			batch.Put(it.Key(), it.Value())
+			if batch.ValueSize() > ethdb.IdealBatchSize {
+				batch.Write()
+				batch.Reset()
+			}
+			count++
+
+			if time.Since(logged) > time.Second*8 {
+				log.Info("Exporting", "typ", typ, "count", count, "elapsed", common.PrettyDuration(time.Since(start)))
+				logged = time.Now()
+			}
+		}
+		if batch.ValueSize() > ethdb.IdealBatchSize {
+			batch.Write()
+		}
+		log.Info("Exporting completed", "typ", typ, "elapsed", common.PrettyDuration(time.Since(start)))
+	}
+	wg.Add(4)
+	go fn(rawdb.StateHistoryAccountMetadataPrefix, "account-metadata")
+	go fn(rawdb.StateHistoryStorageMetadataPrefix, "storage-metadata")
+	go fn(rawdb.StateHistoryAccountBlockPrefix, "account-data")
+	go fn(rawdb.StateHistoryStorageBlockPrefix, "storage-data")
+	wg.Wait()
+
+	metadata := pathdb.LoadIndexMetadata(db, 0)
+	if metadata != nil {
+		log.Info("Last indexed", "number", metadata.Last, "version", metadata.Version)
+	}
+	rawdb.WriteStateHistoryIndexMetadata(edb, rawdb.ReadStateHistoryIndexMetadata(db))
+
+	metadata = pathdb.LoadIndexMetadata(edb, 0)
+	if metadata != nil {
+		log.Info("Last indexed in exported db", "number", metadata.Last, "version", metadata.Version)
+	}
+	return nil
+}
+
 func freezerInspect(ctx *cli.Context) error {
 	if ctx.NArg() < 4 {
 		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
@@ -984,4 +1067,46 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+func removeHistoryIndex(ctx *cli.Context) error {
+	if ctx.NArg() != 1 {
+		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
+	}
+	mode := ctx.Args().Get(0)
+	if mode != "all" && mode != "state" && mode != "trienode" {
+		return fmt.Errorf("invalid arguments: %v", ctx.Command.ArgsUsage)
+	}
+	var (
+		deleteState    bool
+		deleteTrienode bool
+	)
+	if mode == "all" {
+		deleteState, deleteTrienode = true, true
+	}
+	if mode == "state" {
+		deleteState = true
+	}
+	if mode == "trienode" {
+		deleteTrienode = true
+	}
+	// Load the databases.
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	batch := db.NewBatch()
+	if deleteState {
+		rawdb.DeleteStateHistoryIndexMetadata(batch)
+		rawdb.DeleteStateHistoryIndexes(batch)
+	}
+	if deleteTrienode {
+		rawdb.DeleteTrienodeHistoryIndexMetadata(batch)
+		rawdb.DeleteTrienodeHistoryIndexes(batch)
+	}
+	batch.Write()
+
+	return db.Compact(rawdb.StateHistoryIndexPrefix, []byte("n"))
 }
