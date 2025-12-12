@@ -532,9 +532,9 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 	}
 
 	// Start tx indexer if it's enabled.
-	if bc.cfg.TxLookupLimit >= 0 {
-		bc.txIndexer = newTxIndexer(uint64(bc.cfg.TxLookupLimit), bc)
-	}
+	//if bc.cfg.TxLookupLimit >= 0 {
+	//	bc.txIndexer = newTxIndexer(uint64(bc.cfg.TxLookupLimit), bc)
+	//}
 
 	// Start state size tracker
 	if bc.cfg.StateSizeTracking {
