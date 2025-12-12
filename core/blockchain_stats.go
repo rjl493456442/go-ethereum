@@ -114,8 +114,14 @@ EVM execution: %v
 Validation: %v
 Account read: %v(%d)
 Storage read: %v(%d)
+Account update: %v
 Account hash: %v
-Storage hash: %v
+Storage update and hash: %v
+
+Account commit: %v
+Storage commit: %v
+Max commit: %v
+
 DB commit: %v
 Block write: %v
 
@@ -125,8 +131,12 @@ Block write: %v
 		common.PrettyDuration(s.Execution), common.PrettyDuration(s.Validation+s.CrossValidation),
 		common.PrettyDuration(s.AccountReads), s.AccountLoaded,
 		common.PrettyDuration(s.StorageReads), s.StorageLoaded,
-		common.PrettyDuration(s.AccountHashes+s.AccountCommits+s.AccountUpdates),
-		common.PrettyDuration(s.StorageCommits+s.StorageUpdates),
+		common.PrettyDuration(s.AccountUpdates),
+		common.PrettyDuration(s.AccountHashes),
+		common.PrettyDuration(s.StorageUpdates),
+		common.PrettyDuration(s.AccountCommits),
+		common.PrettyDuration(s.StorageCommits),
+		common.PrettyDuration(max(s.AccountCommits, s.StorageCommits)),
 		common.PrettyDuration(s.TrieDBCommit+s.SnapshotCommit), common.PrettyDuration(s.BlockWrite),
 		s.StateReadCacheStats)
 	for _, line := range strings.Split(msg, "\n") {
