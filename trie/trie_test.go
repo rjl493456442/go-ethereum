@@ -1579,3 +1579,137 @@ func BenchmarkTrieSeqPrefetch(b *testing.B) {
 		}
 	}
 }
+
+func TestBar(t *testing.T) {
+	addr := common.FromHex("0xf0b2293f5d834eae920c6974d50957a1732de763")
+	fmt.Println(crypto.Keccak256Hash(addr).Hex())
+}
+
+func TestFoo(t *testing.T) {
+	mdb := rawdb.NewMemoryDatabase()
+	owner := common.HexToHash("8e34254efbc2a92562e8abb7636d8f5fb5e819e739764d6534fe5eef74f46f61")
+	db := newTestDatabase(mdb, rawdb.PathScheme)
+
+	// 4041243
+
+	// 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc 0x00000000000000000000000016f811084a2944664f15945327add329e0dcc30f
+	// 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103 0x00000000000000000000000039909b53ee15c673178a31921359f044811f714b
+	tr, err := NewStateTrie(StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := 4041243
+	key1 := common.FromHex("0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+	val1 := common.FromHex("0x00000000000000000000000016f811084a2944664f15945327add329e0dcc30f")
+
+	key2 := common.FromHex("0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103")
+	val2 := common.FromHex("0x00000000000000000000000039909b53ee15c673178a31921359f044811f714b")
+	tr.UpdateStorage(common.Address{}, key1, common.TrimLeftZeroes(val1[:]))
+	tr.UpdateStorage(common.Address{}, key2, common.TrimLeftZeroes(val2[:]))
+	root, nodes := tr.Commit(false)
+	fmt.Printf(">>>>> at block %d, root: %x\n", block, root)
+	for p, n := range nodes.Nodes {
+		fmt.Printf("\tpath: %v hash: %x, value: %v, origin: %v\n", []byte(p), n.Hash, n.Blob, nodes.Origins[p])
+	}
+	fmt.Println()
+	db.Update(common.Hash{0x2}, types.EmptyRootHash, trienode.NewWithNodeSet(nodes))
+
+	// 4041270
+	//
+	// 0x0000000000000000000000000000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000000000000000000000000001
+	// 0x0000000000000000000000000000000000000000000000000000000000000033 0x0000000000000000000000001d4af78021f7498d0fa82b45706422b4b9f3428c
+	// 0x0000000000000000000000000000000000000000000000000000000000000065 0x00000000000000000000000050c7d3e7f7c656493d1d76aaa1a836cedfcbb16a
+	// 0x0000000000000000000000000000000000000000000000000000000000000066 0x0000000000000000000000002d567ece699eabe5afcd141edb7a4f2d0d6ce8a0
+	// 0x0000000000000000000000000000000000000000000000000000000000000067 0x00000000000000000000000097f421ca37889269a11ae0fef558114b984c7487
+	// 0x0000000000000000000000000000000000000000000000000000000000000068 0x000000000000000000000000247969f4fad93a33d4826046bc3eae0d36bde548
+	// 0x000000000000000000000000000000000000000000000000000000000000006b 0x0000000000000000000000000000000000000000000000000000000000989680
+	tr, err = NewStateTrie(StorageTrieID(common.Hash{0x2}, owner, root), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block = 4041270
+	key1 = common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000000")
+	val1 = common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000001")
+
+	key2 = common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000033")
+	val2 = common.FromHex("0x0000000000000000000000001d4af78021f7498d0fa82b45706422b4b9f3428c")
+
+	key3 := common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000065")
+	val3 := common.FromHex("0x00000000000000000000000050c7d3e7f7c656493d1d76aaa1a836cedfcbb16a")
+
+	key4 := common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000066")
+	val4 := common.FromHex("0x0000000000000000000000002d567ece699eabe5afcd141edb7a4f2d0d6ce8a0")
+
+	key5 := common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000067")
+	val5 := common.FromHex("0x00000000000000000000000097f421ca37889269a11ae0fef558114b984c7487")
+
+	key6 := common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000068")
+	val6 := common.FromHex("0x000000000000000000000000247969f4fad93a33d4826046bc3eae0d36bde548")
+
+	key7 := common.FromHex("0x000000000000000000000000000000000000000000000000000000000000006b")
+	val7 := common.FromHex("0x0000000000000000000000000000000000000000000000000000000000989680")
+	tr.UpdateStorage(common.Address{}, key1, common.TrimLeftZeroes(val1[:]))
+	tr.UpdateStorage(common.Address{}, key2, common.TrimLeftZeroes(val2[:]))
+	tr.UpdateStorage(common.Address{}, key3, common.TrimLeftZeroes(val3[:]))
+	tr.UpdateStorage(common.Address{}, key4, common.TrimLeftZeroes(val4[:]))
+	tr.UpdateStorage(common.Address{}, key5, common.TrimLeftZeroes(val5[:]))
+	tr.UpdateStorage(common.Address{}, key6, common.TrimLeftZeroes(val6[:]))
+	tr.UpdateStorage(common.Address{}, key7, common.TrimLeftZeroes(val7[:]))
+	root, nodes = tr.Commit(false)
+	fmt.Printf(">>>>> at block %d, root: %x\n", block, root)
+	for p, n := range nodes.Nodes {
+		fmt.Printf("\tpath: %v hash: %x, value: %v, origin: %v\n", []byte(p), n.Hash, n.Blob, nodes.Origins[p])
+	}
+	db.Update(common.Hash{0x3}, common.Hash{0x2}, trienode.NewWithNodeSet(nodes))
+
+	// 4041322
+	//
+	// 0x0000000000000000000000000000000000000000000000000000000000000067 null
+	tr, err = NewStateTrie(StorageTrieID(common.Hash{0x3}, owner, root), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block = 4041322
+	key1 = common.FromHex("0x0000000000000000000000000000000000000000000000000000000000000067")
+	tr.DeleteStorage(common.Address{}, key1)
+	root, nodes = tr.Commit(false)
+	fmt.Printf(">>>>> at block %d, root: %x\n", block, root)
+	for p, n := range nodes.Nodes {
+		fmt.Printf("\tpath: %v hash: %x, value: %v, origin: %v\n", []byte(p), n.Hash, n.Blob, nodes.Origins[p])
+	}
+	db.Update(common.Hash{0x4}, common.Hash{0x3}, trienode.NewWithNodeSet(nodes))
+
+	// 4046118
+	//
+	// 0x000000000000000000000000000000000000000000000000000000000000006b 0x00000000000000000000000000000000000000000000000000000000007a1200
+	tr, err = NewStateTrie(StorageTrieID(common.Hash{0x4}, owner, root), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block = 4046118
+	key1 = common.FromHex("0x000000000000000000000000000000000000000000000000000000000000006b")
+	val1 = common.FromHex("0x00000000000000000000000000000000000000000000000000000000007a1200")
+	tr.UpdateStorage(common.Address{}, key1, common.TrimLeftZeroes(val1[:]))
+	root, nodes = tr.Commit(false)
+	fmt.Printf(">>>>> at block %d, root: %x\n", block, root)
+	for p, n := range nodes.Nodes {
+		fmt.Printf("\tpath: %v hash: %x, value: %v, origin: %v\n", []byte(p), n.Hash, n.Blob, nodes.Origins[p])
+	}
+	db.Update(common.Hash{0x5}, common.Hash{0x4}, trienode.NewWithNodeSet(nodes))
+
+	tr, err = NewStateTrie(StorageTrieID(common.Hash{0x5}, owner, root), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("====================")
+	fmt.Println("====================")
+	fmt.Println("====================")
+	fmt.Println("====================")
+	it, _ := tr.NodeIterator(nil)
+	for it.Next(true) {
+		if it.Hash() == (common.Hash{}) {
+			continue
+		}
+		fmt.Printf("path %v => %v(%s)\n", it.Path(), it.NodeBlob(), it.Hash().Hex())
+	}
+}

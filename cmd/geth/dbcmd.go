@@ -88,6 +88,7 @@ Remove blockchain and state databases`,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
 			dbRemoveHistoryIndexCmd,
+			dbInspectTrienodeHistoryCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -225,6 +226,11 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 	dbRemoveHistoryIndexCmd = &cli.Command{
 		Action: removeHistoryIndex,
 		Name:   "remove-history-index",
+		Flags:  utils.DatabaseFlags,
+	}
+	dbInspectTrienodeHistoryCmd = &cli.Command{
+		Action: inspectTrienodeHistory,
+		Name:   "inspect-trienode-history",
 		Flags:  utils.DatabaseFlags,
 	}
 )
@@ -1109,4 +1115,53 @@ func removeHistoryIndex(ctx *cli.Context) error {
 	batch.Write()
 
 	return db.Compact(rawdb.StateHistoryIndexPrefix, []byte("n"))
+}
+
+func inspectTrienodeHistory(ctx *cli.Context) error {
+	if ctx.NArg() != 2 {
+		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
+	}
+	arg0 := ctx.Args().Get(0)
+	arg1 := ctx.Args().Get(1)
+	owner := common.HexToHash(arg0)
+	path := common.Hex2Bytes(arg1)
+
+	// Load the databases.
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	fmt.Println("owner", owner, "path", path)
+
+	ancient, err := db.AncientDatadir()
+	if err != nil {
+		return err
+	}
+	// Trienode history is optional and only required for building archive
+	// node with state proofs.
+	ancientStore, err := rawdb.NewTrienodeFreezer(ancient, false, true)
+	if err != nil {
+		return err
+	}
+	tail, err := ancientStore.Tail()
+	if err != nil {
+		return err
+	}
+	tailID := tail + 1
+	_ = tailID
+	head, err := ancientStore.Ancients()
+	if err != nil {
+		return err
+	}
+	headID := head
+	_ = headID
+	fmt.Println("trienode history range", "tail", tail, "head", head)
+
+	//var current = tailID
+	//for current < headID {
+	//	rawdb.ReadTrienodeHistoryList(ancientStore, current)
+	//}
+	return nil
 }

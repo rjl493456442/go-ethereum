@@ -744,3 +744,45 @@ func readTrienodeHistories(reader ethdb.AncientReader, start uint64, count uint6
 	}
 	return res, nil
 }
+
+/*
+func inspectTrienodeHistory(reader ethdb.AncientReader, owner common.Hash, path string) error {
+	tail, err := reader.Tail()
+	if err != nil {
+		return err
+	}
+	tailID := tail + 1
+
+	head, err := reader.Ancients()
+	if err != nil {
+		return err
+	}
+	headID := head
+	fmt.Println("trienode history range", "tail", tail, "head", head)
+
+	var current = tailID
+	for current <= headID {
+		count := headID - current + 1
+		if count > historyReadBatch {
+			count = historyReadBatch
+		}
+		histories, err := readTrienodeHistories(reader, current, count)
+		if err != nil {
+			return err
+		}
+		for _, h := range histories {
+			th := h.(*trienodeHistory)
+			subset, ok := th.nodes[owner]
+			if !ok {
+				continue
+			}
+			n, ok := subset[path]
+			if !ok {
+				continue
+			}
+			isNodeComplete(n)
+		}
+	}
+}
+
+*/

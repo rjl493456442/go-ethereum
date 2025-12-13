@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
 	"math"
 	"slices"
 	"sort"
@@ -326,7 +327,9 @@ func (r *trienodeReader) readSingle(state stateIdent, it HistoryIndexIterator, l
 	for {
 		data, err := r.readTrienode(state.addressHash, state.path, it.ID())
 		if err != nil {
-			return nil, err
+			log.Info("missing trienode", "path", []byte(state.path), "id", it.ID())
+			continue
+			//return nil, err
 		}
 		isComplete, fullBlob, err := isNodeComplete(data)
 		if err != nil {
@@ -497,7 +500,7 @@ func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, l
 	if !found {
 		return latestValue, nil
 	}
-	return r.readOptimized(state, it, latestValue)
+	return r.readSingle(state, it, latestValue)
 }
 
 // checkStateAvail determines whether the requested historical state is available
