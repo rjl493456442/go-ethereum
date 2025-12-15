@@ -404,7 +404,7 @@ func (r *trienodeReader) readOptimized(state stateIdent, it HistoryIndexIterator
 			data, err := r.readTrienode(state.addressHash, state.path, id)
 			if err != nil {
 				term.Store(true)
-				return err
+				return nil
 			}
 			full, _, err := isNodeComplete(data)
 			if err != nil {
@@ -500,7 +500,7 @@ func (r *trienodeReader) read(state stateIdent, stateID uint64, lastID uint64, l
 	if !found {
 		return latestValue, nil
 	}
-	return r.readSingle(state, it, latestValue)
+	return r.readOptimized(state, it, latestValue)
 }
 
 // checkStateAvail determines whether the requested historical state is available
