@@ -114,10 +114,11 @@ type txRequest struct {
 // txDelivery is the notification that a batch of transactions have been added
 // to the pool and should be untracked.
 type txDelivery struct {
-	origin string        // Identifier of the peer originating the notification
-	hashes []common.Hash // Batch of transaction hashes having been delivered
-	metas  []txMetadata  // Batch of metadata associated with the delivered hashes
-	direct bool          // Whether this is a direct reply or a broadcast
+	origin    string        // Identifier of the peer originating the notification
+	hashes    []common.Hash // Batch of transaction hashes having been delivered
+	metas     []txMetadata  // Batch of metadata associated with the delivered hashes
+	direct    bool          // Whether this is a direct reply or a broadcast
+	violation bool          // Whether we encountered a protocol violation
 }
 
 // txDrop is the notification that a peer has disconnected.
@@ -292,6 +293,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 		knownMeter       = txReplyKnownMeter
 		underpricedMeter = txReplyUnderpricedMeter
 		otherRejectMeter = txReplyOtherRejectMeter
+		violation        = false
 	)
 	if !direct {
 		inMeter = txBroadcastInMeter
@@ -339,7 +341,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 				underpriced++
 
 			case errors.Is(err, txpool.ErrKZGVerificationError):
-				f.dropPeer(peer)
+				violation = true
 
 			default:
 				otherreject++
@@ -361,7 +363,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 		}
 	}
 	select {
-	case f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct}:
+	case f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct, violation: violation}:
 		return nil
 	case <-f.quit:
 		return errTerminated
@@ -626,6 +628,12 @@ func (f *TxFetcher) loop() {
 			f.rescheduleTimeout(timeoutTimer, timeoutTrigger)
 
 		case delivery := <-f.cleanup:
+			// if we encountered a protocol violation, disconnect the peer
+			if delivery.violation {
+				log.Warn("Encountered protocol violation, disconnecting peer", "peer", delivery.origin)
+				f.dropPeer(delivery.origin)
+			}
+
 			// Independent if the delivery was direct or broadcast, remove all
 			// traces of the hash from internal trackers. That said, compare any
 			// advertised metadata with the real ones and drop bad peers.
