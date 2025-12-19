@@ -338,6 +338,9 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			case errors.Is(err, txpool.ErrUnderpriced) || errors.Is(err, txpool.ErrReplaceUnderpriced) || errors.Is(err, txpool.ErrTxGasPriceTooLow):
 				underpriced++
 
+			case errors.Is(err, txpool.ErrKZGVerificationError):
+				f.dropPeer(peer)
+
 			default:
 				otherreject++
 			}
