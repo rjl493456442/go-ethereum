@@ -361,6 +361,10 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			log.Debug("Peer delivering stale or invalid transactions", "peer", peer, "rejected", otherreject)
 			time.Sleep(200 * time.Millisecond)
 		}
+		// If we encountered a protocol violation, disconnect this peer.
+		if violation {
+			break
+		}
 	}
 	select {
 	case f.cleanup <- &txDelivery{origin: peer, hashes: added, metas: metas, direct: direct, violation: violation}:
