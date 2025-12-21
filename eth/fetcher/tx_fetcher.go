@@ -118,7 +118,7 @@ type txDelivery struct {
 	hashes    []common.Hash // Batch of transaction hashes having been delivered
 	metas     []txMetadata  // Batch of metadata associated with the delivered hashes
 	direct    bool          // Whether this is a direct reply or a broadcast
-	violation bool          // Whether we encountered a protocol violation
+	violation error         // Whether we encountered a protocol violation
 }
 
 // txDrop is the notification that a peer has disconnected.
@@ -293,7 +293,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 		knownMeter       = txReplyKnownMeter
 		underpricedMeter = txReplyUnderpricedMeter
 		otherRejectMeter = txReplyOtherRejectMeter
-		violation        = false
+		violation        error
 	)
 	if !direct {
 		inMeter = txBroadcastInMeter
@@ -341,7 +341,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 				underpriced++
 
 			case errors.Is(err, txpool.ErrKZGVerificationError):
-				violation = true
+				violation = err
 
 			default:
 				otherreject++
@@ -362,7 +362,7 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 			time.Sleep(200 * time.Millisecond)
 		}
 		// If we encountered a protocol violation, disconnect this peer.
-		if violation {
+		if violation != nil {
 			break
 		}
 	}
@@ -633,8 +633,8 @@ func (f *TxFetcher) loop() {
 
 		case delivery := <-f.cleanup:
 			// if we encountered a protocol violation, disconnect the peer
-			if delivery.violation {
-				log.Warn("Encountered protocol violation, disconnecting peer", "peer", delivery.origin)
+			if delivery.violation != nil {
+				log.Warn("Encountered protocol violation, disconnecting peer", "peer", delivery.origin, "error", delivery.violation)
 				f.dropPeer(delivery.origin)
 			}
 
