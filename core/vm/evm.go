@@ -133,7 +133,6 @@ func (s *Stats) String() string {
 	msg += fmt.Sprintf("memory-size-calc: %v(%d)\n", common.PrettyDuration(s.MemorySizeCalc), s.nMemorySizeCalc)
 	msg += fmt.Sprintf("memory-resize: %v(%d)\n", common.PrettyDuration(s.MemoryResize), s.nMemoryResize)
 	msg += fmt.Sprintf("dynamic-gas-calc: %v(%d)\n", common.PrettyDuration(s.DynamicGasCalc), s.nDynamicGasCalc)
-	msg += fmt.Sprintf("operation: %v(%d)\n", common.PrettyDuration(s.Operation), s.nOperation)
 	msg += fmt.Sprintf("precompile: %v(%d)\n", common.PrettyDuration(s.PrecompileCalc), s.nPrecompileCalc)
 	return msg
 }

@@ -263,10 +263,7 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 		}
 
 		// execute the operation
-		opTime := time.Now()
 		res, err = operation.execute(&pc, evm, callContext)
-		evm.Stats.recordOperation(opTime)
-
 		if err != nil {
 			break
 		}
