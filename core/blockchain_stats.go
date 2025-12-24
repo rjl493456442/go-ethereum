@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -48,6 +49,7 @@ type ExecuteStats struct {
 	CodeLoaded     int // Number of contract code loaded
 
 	Execution       time.Duration // Time spent on the EVM execution
+	EVMStats        vm.Stats
 	Validation      time.Duration // Time spent on the block validation
 	CrossValidation time.Duration // Optional, time spent on the block cross validation
 	SnapshotCommit  time.Duration // Time spent on snapshot commit
@@ -115,7 +117,7 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 Block: %v (%#x) txs: %d, mgasps: %.2f, elapsed: %v
 
 EVM execution: %v
-Validation: %v
+Validation: %v (%s)
 State read: %v
     Account read: %v(%d)
     Storage read: %v(%d)
@@ -133,7 +135,7 @@ DB write: %v
 %s
 ##############################
 `, block.Number(), block.Hash(), len(block.Transactions()), s.MgasPerSecond, common.PrettyDuration(s.TotalTime),
-		common.PrettyDuration(s.Execution),
+		common.PrettyDuration(s.Execution), s.EVMStats,
 		common.PrettyDuration(s.Validation+s.CrossValidation),
 
 		// State read

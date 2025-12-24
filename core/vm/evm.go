@@ -18,8 +18,10 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -79,6 +81,63 @@ type TxContext struct {
 	AccessEvents *state.AccessEvents // Capture all state accesses for this tx
 }
 
+type Stats struct {
+	nStackValidation int
+	nMemorySizeCalc  int
+	nMemoryResize    int
+	nDynamicGasCalc  int
+	nOperation       int
+	nPrecompileCalc  int
+
+	StackValidation time.Duration
+	MemorySizeCalc  time.Duration
+	MemoryResize    time.Duration
+	DynamicGasCalc  time.Duration
+	Operation       time.Duration
+	PrecompileCalc  time.Duration
+}
+
+func (s *Stats) recordStackValidation(start time.Time) {
+	s.StackValidation += time.Since(start)
+	s.nStackValidation++
+}
+
+func (s *Stats) recordMemorySizeCalc(start time.Time) {
+	s.MemorySizeCalc += time.Since(start)
+	s.nMemorySizeCalc++
+}
+
+func (s *Stats) recordMemoryResize(start time.Time) {
+	s.MemoryResize += time.Since(start)
+	s.nMemoryResize++
+}
+
+func (s *Stats) recordDynamicGasCalc(start time.Time) {
+	s.DynamicGasCalc += time.Since(start)
+	s.nDynamicGasCalc++
+}
+
+func (s *Stats) recordOperation(start time.Time) {
+	s.Operation += time.Since(start)
+	s.nOperation++
+}
+
+func (s *Stats) recordPrecompile(start time.Time) {
+	s.PrecompileCalc += time.Since(start)
+	s.nPrecompileCalc++
+}
+
+func (s *Stats) String() string {
+	var msg string
+	msg += fmt.Sprintf("stack-validation: %v(%d)\n", common.PrettyDuration(s.StackValidation), s.nStackValidation)
+	msg += fmt.Sprintf("memory-size-calc: %v(%d)\n", common.PrettyDuration(s.MemorySizeCalc), s.nMemorySizeCalc)
+	msg += fmt.Sprintf("memory-resize: %v(%d)\n", common.PrettyDuration(s.MemoryResize), s.nMemoryResize)
+	msg += fmt.Sprintf("dynamic-gas-calc: %v(%d)\n", common.PrettyDuration(s.DynamicGasCalc), s.nDynamicGasCalc)
+	msg += fmt.Sprintf("operation: %v(%d)\n", common.PrettyDuration(s.Operation), s.nOperation)
+	msg += fmt.Sprintf("precompile: %v(%d)\n", common.PrettyDuration(s.PrecompileCalc), s.nPrecompileCalc)
+	return msg
+}
+
 // EVM is the Ethereum Virtual Machine base object and provides
 // the necessary tools to run a contract on the given state with
 // the provided context. It should be noted that any error
@@ -130,6 +189,8 @@ type EVM struct {
 
 	readOnly   bool   // Whether to throw on stateful modifications
 	returnData []byte // Last CALL's return data for subsequent reuse
+
+	Stats *Stats
 }
 
 // NewEVM constructs an EVM instance with the supplied block context, state
@@ -145,6 +206,7 @@ func NewEVM(blockCtx BlockContext, statedb StateDB, chainConfig *params.ChainCon
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 		jumpDests:   newMapJumpDests(),
 		hasher:      crypto.NewKeccakState(),
+		Stats:       &Stats{},
 	}
 	evm.precompiles = activePrecompiledContracts(evm.chainRules)
 
@@ -283,7 +345,9 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 	evm.Context.Transfer(evm.StateDB, caller, addr, value)
 
 	if isPrecompile {
+		ptime := time.Now()
 		ret, gas, err = RunPrecompiledContract(p, input, gas, evm.Config.Tracer)
+		evm.Stats.recordPrecompile(ptime)
 	} else {
 		// Initialise a new contract and set the code that is to be used by the EVM.
 		code := evm.resolveCode(addr)

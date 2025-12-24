@@ -135,6 +135,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		Requests: requests,
 		Logs:     allLogs,
 		GasUsed:  *usedGas,
+		EVMStats: *evm.Stats,
 	}, nil
 }
 

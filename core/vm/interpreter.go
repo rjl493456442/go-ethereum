@@ -18,6 +18,7 @@ package vm
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -116,11 +117,11 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 	}
 
 	var (
-		op          OpCode     // current opcode
-		jumpTable   *JumpTable = evm.table
-		mem                    = NewMemory() // bound memory
-		stack                  = newstack()  // local stack
-		callContext            = &ScopeContext{
+		op          OpCode
+		jumpTable   = evm.table
+		mem         = NewMemory() // bound memory
+		stack       = newstack()  // local stack
+		callContext = &ScopeContext{
 			Memory:   mem,
 			Stack:    stack,
 			Contract: contract,
@@ -165,6 +166,7 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 	// the execution of one of the operations or until the done flag is set by the
 	// parent context.
 	_ = jumpTable[0] // nil-check the jumpTable out of the loop
+
 	for {
 		if debug {
 			// Capture pre-execution values for tracing.
@@ -187,7 +189,9 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 		op = contract.GetOp(pc)
 		operation := jumpTable[op]
 		cost = operation.constantGas // For tracing
+
 		// Validate stack
+		validateTime := time.Now()
 		if sLen := stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
 		} else if sLen > operation.maxStack {
@@ -199,6 +203,7 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 		} else {
 			contract.Gas -= cost
 		}
+		evm.Stats.recordStackValidation(validateTime)
 
 		// All ops with a dynamic memory usage also has a dynamic gas cost.
 		var memorySize uint64
@@ -208,6 +213,7 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 			// Memory check needs to be done prior to evaluating the dynamic gas portion,
 			// to detect calculation overflows
 			if operation.memorySize != nil {
+				msize := time.Now()
 				memSize, overflow := operation.memorySize(stack)
 				if overflow {
 					return nil, ErrGasUintOverflow
@@ -217,12 +223,18 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 				if memorySize, overflow = math.SafeMul(toWordSize(memSize), 32); overflow {
 					return nil, ErrGasUintOverflow
 				}
+				evm.Stats.recordMemorySizeCalc(msize)
 			}
 			// Consume the gas and return an error if not enough gas is available.
 			// cost is explicitly set so that the capture state defer method can get the proper cost
-			var dynamicCost uint64
+			var (
+				dynamicCost uint64
+				dcTime      = time.Now()
+			)
 			dynamicCost, err = operation.dynamicGas(evm, contract, stack, mem, memorySize)
 			cost += dynamicCost // for tracing
+			evm.Stats.recordDynamicGasCalc(dcTime)
+
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrOutOfGas, err)
 			}
@@ -245,20 +257,23 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 			}
 		}
 		if memorySize > 0 {
+			resizeTime := time.Now()
 			mem.Resize(memorySize)
+			evm.Stats.recordMemoryResize(resizeTime)
 		}
 
 		// execute the operation
+		opTime := time.Now()
 		res, err = operation.execute(&pc, evm, callContext)
+		evm.Stats.recordOperation(opTime)
+
 		if err != nil {
 			break
 		}
 		pc++
 	}
-
 	if err == errStopToken {
 		err = nil // clear stop token error
 	}
-
 	return res, err
 }

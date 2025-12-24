@@ -2215,7 +2215,8 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 	stats.StorageDeleted = int(statedb.StorageDeleted.Load())
 	stats.CodeLoaded = statedb.CodeLoaded
 
-	stats.Execution = ptime - (statedb.AccountReads + statedb.StorageReads + statedb.CodeReads)          // The time spent on EVM processing
+	stats.Execution = ptime - (statedb.AccountReads + statedb.StorageReads + statedb.CodeReads) // The time spent on EVM processing
+	stats.EVMStats = res.EVMStats
 	stats.Validation = vtime - (statedb.AccountHashes + statedb.AccountUpdates + statedb.StorageUpdates) // The time spent on block validation
 	stats.CrossValidation = xvtime                                                                       // The time spent on stateless cross validation
 
