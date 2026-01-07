@@ -341,6 +341,9 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 				underpriced++
 
 			case errors.Is(err, txpool.ErrKZGVerificationError):
+				// KZG verification failed, terminate transaction processing immediately.
+				// Since KZG verification is computationally expensive, this acts as a
+				// defensive measure against potential DoS attacks.
 				violation = err
 
 			default:
@@ -351,6 +354,11 @@ func (f *TxFetcher) Enqueue(peer string, txs []*types.Transaction, direct bool) 
 				kind: batch[j].Type(),
 				size: uint32(batch[j].Size()),
 			})
+			// Terminate the transaction processing if violation is encountered. All
+			// the remaining transactions in response will be silently discarded.
+			if violation != nil {
+				break
+			}
 		}
 		knownMeter.Mark(duplicate)
 		underpricedMeter.Mark(underpriced)
@@ -632,12 +640,6 @@ func (f *TxFetcher) loop() {
 			f.rescheduleTimeout(timeoutTimer, timeoutTrigger)
 
 		case delivery := <-f.cleanup:
-			// if we encountered a protocol violation, disconnect the peer
-			if delivery.violation != nil {
-				log.Warn("Encountered protocol violation, disconnecting peer", "peer", delivery.origin, "error", delivery.violation)
-				f.dropPeer(delivery.origin)
-			}
-
 			// Independent if the delivery was direct or broadcast, remove all
 			// traces of the hash from internal trackers. That said, compare any
 			// advertised metadata with the real ones and drop bad peers.
@@ -767,6 +769,11 @@ func (f *TxFetcher) loop() {
 				}
 				// Something was delivered, try to reschedule requests
 				f.scheduleFetches(timeoutTimer, timeoutTrigger, nil) // Partial delivery may enable others to deliver too
+			}
+			// If we encountered a protocol violation, disconnect the peer
+			if delivery.violation != nil {
+				log.Warn("Disconnect peer for protocol violation", "peer", delivery.origin, "error", delivery.violation)
+				f.dropPeer(delivery.origin)
 			}
 
 		case drop := <-f.drop:
