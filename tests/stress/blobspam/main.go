@@ -23,8 +23,8 @@ var (
 	rpcURL      = "http://127.0.0.1:8545"
 	toAddress   = "0x0000000000000000000000000000000000000000"
 	chainID     = 1337 // dev mode
-	batchSize   = 100
-	batchPeriod = time.Second
+	batchSize   = 20
+	batchPeriod = 2 * time.Second
 	txFeeTip    = 1000_000_000 // 1 gwei
 	txFeeCap    = 2000_000_000 // 2 gwei
 
@@ -174,19 +174,28 @@ func randBlob() kzg4844.Blob {
 }
 
 func buildBlobTx(ctx context.Context, client *ethclient.Client, a *account) (*types.Transaction, error) {
+	start := time.Now()
 	nonce, err := client.PendingNonceAt(ctx, a.addr)
 	if err != nil {
 		log.Fatal(err)
 	}
+	fetchNonce := time.Since(start)
+
 	blob := randBlob()
+	start = time.Now()
 	commitment, err := kzg4844.BlobToCommitment(&blob)
 	if err != nil {
 		return nil, err
 	}
+	buildCommitment := time.Since(start)
+
+	start = time.Now()
 	proofs, err := kzg4844.ComputeCellProofs(&blob)
 	if err != nil {
 		return nil, err
 	}
+	buildProof := time.Since(start)
+
 	sidecar := types.NewBlobTxSidecar(types.BlobSidecarVersion1, []kzg4844.Blob{blob}, []kzg4844.Commitment{commitment}, proofs)
 	tx := types.NewTx(&types.BlobTx{
 		ChainID:    uint256.NewInt(uint64(chainID)),
@@ -202,5 +211,10 @@ func buildBlobTx(ctx context.Context, client *ethclient.Client, a *account) (*ty
 	})
 	signer := types.LatestSignerForChainID(big.NewInt(int64(chainID)))
 
-	return types.SignTx(tx, signer, a.key)
+	signedTx, err := types.SignTx(tx, signer, a.key)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Built the blob transaction, nonce: %v, commitment: %v, proof: %v", fetchNonce, buildCommitment, buildProof)
+	return signedTx, nil
 }
