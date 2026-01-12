@@ -23,8 +23,8 @@ var (
 	rpcURL      = "http://127.0.0.1:8545"
 	toAddress   = "0x0000000000000000000000000000000000000000"
 	chainID     = 1337 // dev mode
-	batchSize   = 40
-	batchPeriod = 2 * time.Second
+	batchSize   = 100
+	batchPeriod = time.Second
 	txFeeTip    = 1000_000_000 // 1 gwei
 	txFeeCap    = 2000_000_000 // 2 gwei
 
@@ -78,7 +78,7 @@ func main() {
 					log.Println("send tx error:", err)
 					return
 				}
-				log.Printf("sent %s nonce=%d", a.addr.Hex(), tx.Nonce())
+				log.Printf("sent %s nonce=%d, hash=%v", a.addr.Hex(), tx.Nonce(), tx.Hash().Hex())
 			}(acct)
 		}
 	}

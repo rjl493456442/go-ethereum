@@ -375,7 +375,7 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		// If we don't have enough blob space for any further blob transactions,
 		// skip that list altogether
 		if !blobTxs.Empty() && env.blobs >= miner.maxBlobsPerBlock(env.header.Time) {
-			log.Trace("Not enough blob space for further blob transactions")
+			log.Info("Not enough blob space for further blob transactions", "blobs", env.blobs)
 			blobTxs.Clear()
 			// Fall though to pick up any plain txs
 		}
@@ -415,7 +415,7 @@ func (miner *Miner) commitTransactions(env *environment, plainTxs, blobTxs *tran
 		if isCancun {
 			left := miner.maxBlobsPerBlock(env.header.Time) - env.blobs
 			if left < int(ltx.BlobGas/params.BlobTxBlobGasPerBlob) {
-				log.Trace("Not enough blob space left for transaction", "hash", ltx.Hash, "left", left, "needed", ltx.BlobGas/params.BlobTxBlobGasPerBlob)
+				log.Info("Not enough blob space left for transaction", "hash", ltx.Hash, "left", left, "needed", ltx.BlobGas/params.BlobTxBlobGasPerBlob)
 				txs.Pop()
 				continue
 			}
