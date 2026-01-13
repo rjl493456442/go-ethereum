@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
@@ -46,7 +47,7 @@ type account struct {
 }
 
 func main() {
-	var mode = flag.String("mode", "spam", "spam|build")
+	var mode = flag.String("mode", "spam", "spam|build|verify")
 	flag.Parse()
 
 	if useCKZG {
@@ -57,6 +58,8 @@ func main() {
 		spam()
 	case "build":
 		build()
+	case "verify":
+		verify()
 	default:
 		log.Fatal("invalid mode")
 	}
@@ -116,26 +119,24 @@ func build() {
 	var eg errgroup.Group
 	eg.SetLimit(runtime.NumCPU())
 
-	f1, _ := os.Create("cpu.pprof")
+	f1, _ := os.Create("build-cpu.pprof")
 	pprof.StartCPUProfile(f1)
 	defer pprof.StopCPUProfile()
 
 	defer func() {
-		f2, _ := os.Create("heap.pprof")
+		f2, _ := os.Create("build-heap.pprof")
 		runtime.GC() // get up-to-date stats
 		pprof.WriteHeapProfile(f2)
 	}()
 
 	var (
-		total     = 10000
-		slots     = make(chan struct{}, total)
 		start     = time.Now()
 		lock      sync.Mutex
 		durations []time.Duration
+		account   = genAccounts(1)[0]
+		timer     = time.NewTimer(time.Minute * 5)
+		count     atomic.Int64
 	)
-	for i := 0; i < total; i++ {
-		slots <- struct{}{}
-	}
 	for i := 0; i < runtime.NumCPU(); i++ {
 		eg.Go(func() error {
 			start := time.Now()
@@ -147,13 +148,14 @@ func build() {
 
 			for {
 				select {
-				case <-slots:
-				default:
+				case <-timer.C:
 					return nil
+				default:
 				}
-				buildBlobTx(genAccounts(1)[0], func(address common.Address) (uint64, error) {
+				buildBlobTx(account, func(address common.Address) (uint64, error) {
 					return 0, nil
 				}, false)
+				count.Add(1)
 			}
 		})
 	}
@@ -166,12 +168,52 @@ func build() {
 	}
 
 	elapsed := time.Since(start)
-	throughput := float64(total) / (1024 * 1024) / elapsed.Seconds()
+	throughput := float64(count.Load()) / (1024 * 1024) / elapsed.Seconds()
 
 	log.Printf("Total Time: %s", time.Since(start))
 	log.Printf("Aggregated Thread Time: %s", totalThreadTime)
 	log.Printf("Throughput: %.2f ops", throughput)
 }
+
+func verify() {
+	f1, _ := os.Create("verify-cpu.pprof")
+	pprof.StartCPUProfile(f1)
+	defer pprof.StopCPUProfile()
+
+	defer func() {
+		f2, _ := os.Create("verify-heap.pprof")
+		runtime.GC() // get up-to-date stats
+		pprof.WriteHeapProfile(f2)
+	}()
+
+	account := genAccounts(1)[0]
+	tx, err := buildBlobTx(account, func(address common.Address) (uint64, error) {
+		return 0, nil
+	}, false)
+	if err != nil {
+		log.Fatalf("Failed to build tx: %v", err)
+	}
+
+	var (
+		sidecar = tx.BlobTxSidecar()
+		start   = time.Now()
+		count   int
+	)
+	for {
+		if time.Since(start) > 5*time.Minute {
+			break
+		}
+		if err := kzg4844.VerifyCellProofs(sidecar.Blobs, sidecar.Commitments, sidecar.Proofs); err != nil {
+			log.Fatalf("Failed to verify cell proof %v", err)
+		}
+		count += 1
+	}
+	elapsed := time.Since(start)
+	throughput := float64(count) / (1024 * 1024) / elapsed.Seconds()
+	log.Printf("Total Time: %s", time.Since(start))
+	log.Printf("Throughput: %.2f ops", throughput)
+}
+
 func genAccounts(n int) []*account {
 	var accounts []*account
 	for range n {
@@ -185,7 +227,7 @@ func genAccounts(n int) []*account {
 			key:  key,
 			addr: addr,
 		})
-		log.Print("Generated account", addr.Hex())
+		log.Printf("Generated account %v", addr.Hex())
 	}
 	return accounts
 }
