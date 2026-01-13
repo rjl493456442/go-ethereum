@@ -134,8 +134,11 @@ func build() {
 		lock      sync.Mutex
 		durations []time.Duration
 		account   = genAccounts(1)[0]
-		timer     = time.NewTimer(time.Minute * 5)
-		count     atomic.Int64
+		term      = make(chan struct{})
+		timer     = time.AfterFunc(time.Minute*5, func() {
+			close(term)
+		})
+		count atomic.Int64
 	)
 	for i := 0; i < runtime.NumCPU(); i++ {
 		eg.Go(func() error {
@@ -148,7 +151,7 @@ func build() {
 
 			for {
 				select {
-				case <-timer.C:
+				case <-term:
 					return nil
 				default:
 				}
