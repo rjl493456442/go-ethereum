@@ -171,10 +171,11 @@ func build() {
 	}
 
 	elapsed := time.Since(start)
-	throughput := float64(count.Load()) / (1024 * 1024) / elapsed.Seconds()
+	throughput := float64(count.Load()) / elapsed.Seconds()
 
-	log.Printf("Total Time: %s", time.Since(start))
-	log.Printf("Aggregated Thread Time: %s", totalThreadTime)
+	log.Printf("Total time: %s", time.Since(start))
+	log.Printf("Total txs: %d", count.Load())
+	log.Printf("Aggregated thread time: %s", totalThreadTime)
 	log.Printf("Throughput: %.2f ops", throughput)
 }
 
@@ -212,8 +213,9 @@ func verify() {
 		count += 1
 	}
 	elapsed := time.Since(start)
-	throughput := float64(count) / (1024 * 1024) / elapsed.Seconds()
+	throughput := float64(count) / elapsed.Seconds()
 	log.Printf("Total Time: %s", time.Since(start))
+	log.Printf("Total verification: %d", count)
 	log.Printf("Throughput: %.2f ops", throughput)
 }
 
