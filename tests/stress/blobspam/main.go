@@ -6,7 +6,9 @@ import (
 	"flag"
 	"log"
 	"math/big"
+	"os"
 	"runtime"
+	"runtime/pprof"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ var (
 	batchPeriod = 2 * time.Second
 	txFeeTip    = 1000_000_000 // 1 gwei
 	txFeeCap    = 2000_000_000 // 2 gwei
+	useCKZG     = false
 
 	fundAddress common.Address
 	fundKey     *ecdsa.PrivateKey
@@ -46,6 +49,9 @@ func main() {
 	var mode = flag.String("mode", "spam", "spam|build")
 	flag.Parse()
 
+	if useCKZG {
+		log.Println("Enable CKZG", kzg4844.UseCKZG(true))
+	}
 	switch *mode {
 	case "spam":
 		spam()
@@ -110,6 +116,16 @@ func build() {
 	var eg errgroup.Group
 	eg.SetLimit(runtime.NumCPU())
 
+	f1, _ := os.Create("cpu.pprof")
+	pprof.StartCPUProfile(f1)
+	defer pprof.StopCPUProfile()
+
+	defer func() {
+		f2, _ := os.Create("heap.pprof")
+		runtime.GC() // get up-to-date stats
+		pprof.WriteHeapProfile(f2)
+	}()
+
 	var (
 		total     = 10000
 		slots     = make(chan struct{}, total)
@@ -117,6 +133,9 @@ func build() {
 		lock      sync.Mutex
 		durations []time.Duration
 	)
+	for i := 0; i < total; i++ {
+		slots <- struct{}{}
+	}
 	for i := 0; i < runtime.NumCPU(); i++ {
 		eg.Go(func() error {
 			start := time.Now()
