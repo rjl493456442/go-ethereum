@@ -146,6 +146,8 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
+replace github.com/crate-crypto/go-eth-kzg => github.com/Giulio2002/zero-alloc-go-eth-kzg v0.0.0-20260105034637-43cb6f34f8e0
+
 tool (
 	github.com/fjl/gencodec
 	golang.org/x/tools/cmd/stringer
