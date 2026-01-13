@@ -44,6 +44,8 @@ type account struct {
 
 func main() {
 	var mode = flag.String("mode", "spam", "spam|build")
+	flag.Parse()
+
 	switch *mode {
 	case "spam":
 		spam()
