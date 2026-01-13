@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"flag"
 	"log"
 	"math/big"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
@@ -17,12 +20,14 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
-	rpcURL      = "http://127.0.0.1:8545"
-	toAddress   = "0x0000000000000000000000000000000000000000"
-	chainID     = 1337 // dev mode
+	rpcURL    = "http://127.0.0.1:8545"
+	toAddress = "0x0000000000000000000000000000000000000000"
+	chainID   = 1337 // dev mode
+
 	batchSize   = 20
 	batchPeriod = 2 * time.Second
 	txFeeTip    = 1000_000_000 // 1 gwei
@@ -38,6 +43,19 @@ type account struct {
 }
 
 func main() {
+	var mode = flag.String("mode", "spam", "spam|build")
+	switch *mode {
+	case "spam":
+		spam()
+	case "build":
+		build()
+	default:
+		log.Fatal("invalid mode")
+	}
+	return
+}
+
+func spam() {
 	ctx := context.Background()
 
 	key, err := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
@@ -69,7 +87,9 @@ func main() {
 			acctIdx++
 
 			go func(a *account) {
-				tx, err := buildBlobTx(ctx, client, a)
+				tx, err := buildBlobTx(a, func(address common.Address) (uint64, error) {
+					return client.PendingNonceAt(ctx, a.addr)
+				}, true)
 				if err != nil {
 					log.Println("build tx error:", err)
 					return
@@ -84,6 +104,53 @@ func main() {
 	}
 }
 
+func build() {
+	var eg errgroup.Group
+	eg.SetLimit(runtime.NumCPU())
+
+	var (
+		total     = 10000
+		slots     = make(chan struct{}, total)
+		start     = time.Now()
+		lock      sync.Mutex
+		durations []time.Duration
+	)
+	for i := 0; i < runtime.NumCPU(); i++ {
+		eg.Go(func() error {
+			start := time.Now()
+			defer func() {
+				lock.Lock()
+				durations = append(durations, time.Since(start))
+				lock.Unlock()
+			}()
+
+			for {
+				select {
+				case <-slots:
+				default:
+					return nil
+				}
+				buildBlobTx(genAccounts(1)[0], func(address common.Address) (uint64, error) {
+					return 0, nil
+				}, false)
+			}
+		})
+	}
+	eg.Wait()
+
+	// Aggregate total time
+	var totalThreadTime time.Duration
+	for _, t := range durations {
+		totalThreadTime += t
+	}
+
+	elapsed := time.Since(start)
+	throughput := float64(total) / (1024 * 1024) / elapsed.Seconds()
+
+	log.Printf("Total Time: %s", time.Since(start))
+	log.Printf("Aggregated Thread Time: %s", totalThreadTime)
+	log.Printf("Throughput: %.2f ops", throughput)
+}
 func genAccounts(n int) []*account {
 	var accounts []*account
 	for range n {
@@ -173,9 +240,9 @@ func randBlob() kzg4844.Blob {
 	return blob
 }
 
-func buildBlobTx(ctx context.Context, client *ethclient.Client, a *account) (*types.Transaction, error) {
+func buildBlobTx(a *account, getNonce func(address common.Address) (uint64, error), report bool) (*types.Transaction, error) {
 	start := time.Now()
-	nonce, err := client.PendingNonceAt(ctx, a.addr)
+	nonce, err := getNonce(a.addr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -215,6 +282,8 @@ func buildBlobTx(ctx context.Context, client *ethclient.Client, a *account) (*ty
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Built the blob transaction, nonce: %v, commitment: %v, proof: %v", fetchNonce, buildCommitment, buildProof)
+	if report {
+		log.Printf("Built the blob transaction, nonce: %v, commitment: %v, proof: %v", fetchNonce, buildCommitment, buildProof)
+	}
 	return signedTx, nil
 }
