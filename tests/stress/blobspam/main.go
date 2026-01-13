@@ -135,11 +135,11 @@ func build() {
 		durations []time.Duration
 		account   = genAccounts(1)[0]
 		term      = make(chan struct{})
-		timer     = time.AfterFunc(time.Minute*5, func() {
-			close(term)
-		})
-		count atomic.Int64
+		count     atomic.Int64
 	)
+	time.AfterFunc(time.Minute*5, func() {
+		close(term)
+	})
 	for i := 0; i < runtime.NumCPU(); i++ {
 		eg.Go(func() error {
 			start := time.Now()
