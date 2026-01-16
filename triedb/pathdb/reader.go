@@ -53,9 +53,10 @@ func (loc *nodeLoc) string() string {
 // reader implements the database.NodeReader interface, providing the functionalities to
 // retrieve trie nodes by wrapping the internal state layer.
 type reader struct {
-	db    *Database
-	state common.Hash
-	layer layer
+	db          *Database
+	state       common.Hash
+	noHashCheck bool
+	layer       layer
 }
 
 // Node implements database.NodeReader interface, retrieving the node with specified
@@ -67,7 +68,7 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 		return nil, err
 	}
 	// Error out if the local one is inconsistent with the target.
-	if got != hash {
+	if !r.noHashCheck && got != hash {
 		// Location is always available even if the node
 		// is not found.
 		switch loc.loc {
@@ -173,9 +174,10 @@ func (db *Database) NodeReader(root common.Hash) (database.NodeReader, error) {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
 	return &reader{
-		db:    db,
-		state: root,
-		layer: layer,
+		db:          db,
+		state:       root,
+		noHashCheck: db.isVerkle,
+		layer:       layer,
 	}, nil
 }
 
@@ -199,10 +201,14 @@ type HistoricalStateReader struct {
 	db     *Database
 	reader *historyReader
 	id     uint64
+	sign   <-chan struct{}
 }
 
 // HistoricReader constructs a reader for accessing the requested historic state.
 func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, error) {
+	db.lock.RLock()
+	defer db.lock.RUnlock()
+
 	// Bail out if the state history hasn't been fully indexed
 	if db.stateIndexer == nil || db.stateFreezer == nil {
 		return nil, fmt.Errorf("historical state %x is not available", root)
@@ -218,6 +224,7 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 		id:     id,
 		db:     db,
 		reader: newHistoryReader(db.diskdb, db.stateFreezer),
+		sign:   db.revSign,
 	}, nil
 }
 
@@ -248,7 +255,14 @@ func (r *HistoricalStateReader) AccountRLP(address common.Address) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	return r.reader.read(newAccountIdentQuery(address, hash), r.id, dl.stateID(), latest)
+	value, err := r.reader.read(newAccountIdentQuery(address, hash), r.id, dl.stateID(), latest)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStale(r.sign); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 // Account directly retrieves the account associated with a particular address in
@@ -299,5 +313,26 @@ func (r *HistoricalStateReader) Storage(address common.Address, key common.Hash)
 	if err != nil {
 		return nil, err
 	}
-	return r.reader.read(newStorageIdentQuery(address, addrHash, key, keyHash), r.id, dl.stateID(), latest)
+	value, err := r.reader.read(newStorageIdentQuery(address, addrHash, key, keyHash), r.id, dl.stateID(), latest)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStale(r.sign); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+// ErrHistoricalReaderStale is returned indicating the historical reader is stale
+// due to database rollback.
+var ErrHistoricalReaderStale = errors.New("historical reader is stale")
+
+// checkStale checks if the historical state reader is already stale.
+func checkStale(sign <-chan struct{}) error {
+	select {
+	case <-sign:
+		return ErrHistoricalReaderStale
+	default:
+		return nil
+	}
 }

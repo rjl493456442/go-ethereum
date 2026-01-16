@@ -125,10 +125,11 @@ type Database struct {
 	// readOnly is the flag whether the mutation is allowed to be applied.
 	// It will be set automatically when the database is journaled during
 	// the shutdown to reject all following unexpected mutations.
-	readOnly bool       // Flag if database is opened in read only mode
-	waitSync bool       // Flag if database is deactivated due to initial state sync
-	isVerkle bool       // Flag if database is used for verkle tree
-	hasher   nodeHasher // Trie node hasher
+	readOnly bool          // Flag if database is opened in read only mode
+	waitSync bool          // Flag if database is deactivated due to initial state sync
+	isVerkle bool          // Flag if database is used for verkle tree
+	revSign  chan struct{} // Signal whether the database rollback has been performed
+	hasher   nodeHasher    // Trie node hasher
 
 	config *Config        // Configuration for database
 	diskdb ethdb.Database // Persistent storage for matured trie nodes
@@ -155,6 +156,7 @@ func New(diskdb ethdb.Database, config *Config, isVerkle bool) *Database {
 		config:   config,
 		diskdb:   diskdb,
 		hasher:   merkleNodeHasher,
+		revSign:  make(chan struct{}),
 	}
 	// Establish a dedicated database namespace tailored for verkle-specific
 	// data, ensuring the isolation of both verkle and merkle tree data. It's
@@ -476,6 +478,8 @@ func (db *Database) Recover(root common.Hash) error {
 	if !exists {
 		return errStateUnrecoverable
 	}
+	db.markRevert()
+
 	// Apply the state histories upon the disk layer in order
 	var (
 		start = time.Now()
@@ -603,6 +607,15 @@ func (db *Database) journalPath() string {
 		fname = fmt.Sprintf("merkle.journal")
 	}
 	return filepath.Join(db.config.JournalDirectory, fname)
+}
+
+func (db *Database) markRevert() {
+	if db.revSign == nil {
+		log.Error("Revert signal is not available")
+		return
+	}
+	close(db.revSign)
+	db.revSign = make(chan struct{})
 }
 
 // AccountHistory inspects the account history within the specified range.
