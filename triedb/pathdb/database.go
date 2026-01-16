@@ -472,7 +472,8 @@ func (db *Database) Recover(root common.Hash) error {
 		return errors.New("state rollback is non-supported")
 	}
 	// Short circuit if the target state is not recoverable
-	if !db.Recoverable(root) {
+	_, exists := db.HasHistoricalState(root)
+	if !exists {
 		return errStateUnrecoverable
 	}
 	// Apply the state histories upon the disk layer in order
@@ -510,38 +511,29 @@ func (db *Database) Recover(root common.Hash) error {
 	return nil
 }
 
-// Recoverable returns the indicator if the specified state is recoverable.
-//
-// The supplied root must be a valid trie hash value.
-func (db *Database) Recoverable(root common.Hash) bool {
-	// Ensure the requested state is a known state.
+// HasHistoricalState reports whether the specified historical state is
+// accessible. Note that live state from the current disk layer and any
+// diff layers is not considered historical.
+func (db *Database) HasHistoricalState(root common.Hash) (uint64, bool) {
 	id := rawdb.ReadStateID(db.diskdb, root)
 	if id == nil {
-		return false
+		return 0, false // unknown state
 	}
-	// Recoverable state must be below the disk layer. The recoverable
-	// state only refers to the state that is currently not available,
-	// but can be restored by applying state history.
+	// Any potential live states are not regarded as historical
 	dl := db.tree.bottom()
 	if *id >= dl.stateID() {
-		return false
+		return 0, false
 	}
 	// This is a temporary workaround for the unavailability of the freezer in
 	// dev mode. As a consequence, the database loses the ability for deep reorg
 	// in certain cases.
 	// TODO(rjl493456442): Implement the in-memory ancient store.
 	if db.stateFreezer == nil {
-		return false
+		return 0, false
 	}
-	// Ensure the requested state is a canonical state and all state
-	// histories in range [id+1, dl.ID] are present and complete.
-	return checkStateHistories(db.stateFreezer, *id+1, dl.stateID()-*id, func(m *meta) error {
-		if m.parent != root {
-			return errors.New("unexpected state history")
-		}
-		root = m.root
-		return nil
-	}) == nil
+	// State from side chains or pruned history is not accessible
+	meta, err := readStateHistoryMeta(db.stateFreezer, *id+1)
+	return *id, err == nil && meta.parent == root
 }
 
 // Close closes the trie database and the held freezer.

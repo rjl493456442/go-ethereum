@@ -280,15 +280,16 @@ func (db *Database) Recover(target common.Hash) error {
 	return pdb.Recover(target)
 }
 
-// Recoverable returns the indicator if the specified state is enabled to be
-// recovered. It's only supported by path-based database and will return an
-// error for others.
-func (db *Database) Recoverable(root common.Hash) (bool, error) {
+// HasHistoricalState reports whether the specified historical state is
+// accessible. Note that live state from the current disk layer and any
+// diff layers is not considered historical.
+func (db *Database) HasHistoricalState(root common.Hash) (bool, error) {
 	pdb, ok := db.backend.(*pathdb.Database)
 	if !ok {
 		return false, errors.New("not supported")
 	}
-	return pdb.Recoverable(root), nil
+	_, exists := pdb.HasHistoricalState(root)
+	return exists, nil
 }
 
 // Disable deactivates the database and invalidates all available state layers

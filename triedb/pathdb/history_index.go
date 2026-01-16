@@ -107,23 +107,6 @@ func newIndexReader(db ethdb.KeyValueReader, state stateIdent, bitmapSize int) (
 	}, nil
 }
 
-// refresh reloads the last section of index data to account for any additional
-// elements that may have been written to disk.
-func (r *indexReader) refresh() error {
-	// Release the reader for the last section of index data, as its content
-	// may have been modified by additional elements written to the disk.
-	if len(r.descList) != 0 {
-		last := r.descList[len(r.descList)-1]
-		delete(r.readers, last.id)
-	}
-	descList, err := loadIndexData(r.db, r.state, r.bitmapSize)
-	if err != nil {
-		return err
-	}
-	r.descList = descList
-	return nil
-}
-
 // readGreaterThan locates the first element that is greater than the specified
 // id. If no such element is found, MaxUint64 is returned.
 func (r *indexReader) readGreaterThan(id uint64) (uint64, error) {

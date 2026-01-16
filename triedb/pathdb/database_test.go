@@ -611,7 +611,7 @@ func TestDatabaseRollback(t *testing.T) {
 	}
 }
 
-func TestDatabaseRecoverable(t *testing.T) {
+func TestHasHistoricalState(t *testing.T) {
 	// Redefine the diff layer depth allowance for faster testing.
 	maxDiffLayers = 4
 	defer func() {
@@ -628,28 +628,15 @@ func TestDatabaseRecoverable(t *testing.T) {
 		root   common.Hash
 		expect bool
 	}{
-		// Unknown state should be unrecoverable
-		{common.Hash{0x1}, false},
-
-		// Initial state should be recoverable
-		{types.EmptyRootHash, true},
-
-		// common.Hash{} is not a valid state root for revert
-		{common.Hash{}, false},
-
-		// Layers below current disk layer are recoverable
-		{tester.roots[index-1], true},
-
-		// Disk layer itself is not recoverable, since it's
-		// available for accessing.
-		{tester.roots[index], false},
-
-		// Layers above current disk layer are not recoverable
-		// since they are available for accessing.
-		{tester.roots[index+1], false},
+		{common.Hash{0x1}, false},      // unknown
+		{common.Hash{}, false},         // unknown
+		{types.EmptyRootHash, true},    // initial
+		{tester.roots[index-1], true},  // historical state
+		{tester.roots[index], false},   // live state
+		{tester.roots[index+1], false}, // live state
 	}
 	for i, c := range cases {
-		result := tester.db.Recoverable(c.root)
+		_, result := tester.db.HasHistoricalState(c.root)
 		if result != c.expect {
 			t.Fatalf("case: %d, unexpected result, want %t, got %t", i, c.expect, result)
 		}

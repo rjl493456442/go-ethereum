@@ -23,7 +23,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
@@ -54,10 +53,9 @@ func (loc *nodeLoc) string() string {
 // reader implements the database.NodeReader interface, providing the functionalities to
 // retrieve trie nodes by wrapping the internal state layer.
 type reader struct {
-	db          *Database
-	state       common.Hash
-	noHashCheck bool
-	layer       layer
+	db    *Database
+	state common.Hash
+	layer layer
 }
 
 // Node implements database.NodeReader interface, retrieving the node with specified
@@ -69,7 +67,7 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 		return nil, err
 	}
 	// Error out if the local one is inconsistent with the target.
-	if !r.noHashCheck && got != hash {
+	if got != hash {
 		// Location is always available even if the node
 		// is not found.
 		switch loc.loc {
@@ -175,10 +173,9 @@ func (db *Database) NodeReader(root common.Hash) (database.NodeReader, error) {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
 	return &reader{
-		db:          db,
-		state:       root,
-		noHashCheck: db.isVerkle,
-		layer:       layer,
+		db:    db,
+		state: root,
+		layer: layer,
 	}, nil
 }
 
@@ -213,26 +210,12 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 	if !db.stateIndexer.inited() {
 		return nil, errors.New("state histories haven't been fully indexed yet")
 	}
-	// - States at the current disk layer or above are directly accessible
-	//   via `db.StateReader`.
-	//
-	// - States older than the current disk layer (including the disk layer
-	//   itself) are available via `db.HistoricReader`.
-	id := rawdb.ReadStateID(db.diskdb, root)
-	if id == nil {
+	id, exists := db.HasHistoricalState(root)
+	if !exists {
 		return nil, fmt.Errorf("state %#x is not available", root)
 	}
-	// Ensure the requested state is canonical, historical states on side chain
-	// are not accessible.
-	meta, err := readStateHistoryMeta(db.stateFreezer, *id+1)
-	if err != nil {
-		return nil, err // e.g., the referred state history has been pruned
-	}
-	if meta.parent != root {
-		return nil, fmt.Errorf("state %#x is not canonincal", root)
-	}
 	return &HistoricalStateReader{
-		id:     *id,
+		id:     id,
 		db:     db,
 		reader: newHistoryReader(db.diskdb, db.stateFreezer),
 	}, nil

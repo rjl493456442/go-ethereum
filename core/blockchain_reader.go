@@ -394,7 +394,7 @@ func (bc *BlockChain) stateRecoverable(root common.Hash) bool {
 	if bc.triedb.Scheme() == rawdb.HashScheme {
 		return false
 	}
-	result, _ := bc.triedb.Recoverable(root)
+	result, _ := bc.triedb.HasHistoricalState(root)
 	return result
 }
 
