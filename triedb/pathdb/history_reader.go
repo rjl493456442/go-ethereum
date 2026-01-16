@@ -19,7 +19,6 @@ package pathdb
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -29,81 +28,10 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 )
 
-// indexReaderWithLimitTag is a wrapper around indexReader that includes an
-// additional index position. This position represents the ID of the last
-// indexed state history at the time the reader was created, implying that
-// indexes beyond this position are unavailable.
-type indexReaderWithLimitTag struct {
-	reader *indexReader
-	limit  uint64
-	db     ethdb.KeyValueReader
-}
-
-// newIndexReaderWithLimitTag constructs a index reader with indexing position.
-func newIndexReaderWithLimitTag(db ethdb.KeyValueReader, state stateIdent, limit uint64, bitmapSize int) (*indexReaderWithLimitTag, error) {
-	r, err := newIndexReader(db, state, bitmapSize)
-	if err != nil {
-		return nil, err
-	}
-	return &indexReaderWithLimitTag{
-		reader: r,
-		limit:  limit,
-		db:     db,
-	}, nil
-}
-
-// readGreaterThan locates the first element that is greater than the specified
-// id. If no such element is found, MaxUint64 is returned.
-//
-// Note: It is possible that additional histories have been indexed since the
-// reader was created. The reader should be refreshed as needed to load the
-// latest indexed data from disk.
-func (r *indexReaderWithLimitTag) readGreaterThan(id uint64, lastID uint64) (uint64, error) {
-	// Mark the index reader as stale if the tracked indexing position moves
-	// backward. This can occur if the pathdb is reverted and certain state
-	// histories are unindexed. For simplicity, the reader is marked as stale
-	// instead of being refreshed, as this scenario is highly unlikely.
-	if r.limit > lastID {
-		return 0, fmt.Errorf("index reader is stale, limit: %d, last-state-id: %d", r.limit, lastID)
-	}
-	// Try to find the element which is greater than the specified target
-	res, err := r.reader.readGreaterThan(id)
-	if err != nil {
-		return 0, err
-	}
-	// Short circuit if the element is found within the current index
-	if res != math.MaxUint64 {
-		return res, nil
-	}
-	// The element was not found, and no additional histories have been indexed.
-	// Return a not-found result.
-	if r.limit == lastID {
-		return res, nil
-	}
-	// Refresh the index reader and attempt again. If the latest indexed position
-	// is even below the ID of the disk layer, it indicates that state histories
-	// are being removed. In this case, it would theoretically be better to block
-	// the state rollback operation synchronously until all readers are released.
-	// Given that it's very unlikely to occur and users try to perform historical
-	// state queries while reverting the states at the same time. Simply returning
-	// an error should be sufficient for now.
-	metadata := loadIndexMetadata(r.db, toHistoryType(r.reader.state.typ))
-	if metadata == nil || metadata.Last < lastID {
-		return 0, errors.New("state history hasn't been indexed yet")
-	}
-	if err := r.reader.refresh(); err != nil {
-		return 0, err
-	}
-	r.limit = metadata.Last
-
-	return r.reader.readGreaterThan(id)
-}
-
 // historyReader is the structure to access historic state data.
 type historyReader struct {
 	disk    ethdb.KeyValueReader
 	freezer ethdb.AncientReader
-	readers map[string]*indexReaderWithLimitTag
 }
 
 // newHistoryReader constructs the history reader with the supplied db.
@@ -111,7 +39,6 @@ func newHistoryReader(disk ethdb.KeyValueReader, freezer ethdb.AncientReader) *h
 	return &historyReader{
 		disk:    disk,
 		freezer: freezer,
-		readers: make(map[string]*indexReaderWithLimitTag),
 	}
 }
 
@@ -230,7 +157,7 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 		return nil, err
 	} // firstID = tail+1
 
-	// stateID+1 == firstID is allowed, as all the subsequent state histories
+	// stateID+1 == firstID (tail+1) is allowed, as all the subsequent state histories
 	// are present with no gap inside.
 	if stateID < tail {
 		return nil, fmt.Errorf("historical state has been pruned, first: %d, state: %d", tail+1, stateID)
@@ -248,17 +175,19 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 		return nil, fmt.Errorf("state history is not fully indexed, requested: %d, indexed: %s", stateID, indexed)
 	}
 
-	// Construct the index reader to locate the corresponding history for
-	// state retrieval
-	ir, ok := r.readers[state.String()]
-	if !ok {
-		ir, err = newIndexReaderWithLimitTag(r.disk, state.stateIdent, metadata.Last, 0)
-		if err != nil {
-			return nil, err
-		}
-		r.readers[state.String()] = ir
+	// Construct an index reader to locate the corresponding history for state
+	// retrieval. While it is theoretically possible to cache resolved readers,
+	// in practice the state is typically accessed only once for a specific
+	// historical state (e.g. by a chain tracer or an RPC request).
+	//
+	// Moreover, the historical state reader operates asynchronously with the
+	// history indexer, so cached readers may become stale quickly. For the sake
+	// of simplicity, readers are not cached.
+	ir, err := newIndexReader(r.disk, state.stateIdent, 0)
+	if err != nil {
+		return nil, err
 	}
-	historyID, err := ir.readGreaterThan(stateID, lastID)
+	historyID, err := ir.readGreaterThan(stateID)
 	if err != nil {
 		return nil, err
 	}
@@ -267,11 +196,6 @@ func (r *historyReader) read(state stateIdentQuery, stateID uint64, lastID uint6
 	if historyID == math.MaxUint64 {
 		return latestValue, nil
 	}
-	// Resolve data from the specified state history object. Notably, since the history
-	// reader operates completely asynchronously with the indexer/unindexer, it's possible
-	// that the associated state histories are no longer available due to a rollback.
-	// Such truncation should be captured by the state resolver below, rather than returning
-	// invalid data.
 	if state.typ == typeAccount {
 		return r.readAccount(state.address, historyID)
 	}
