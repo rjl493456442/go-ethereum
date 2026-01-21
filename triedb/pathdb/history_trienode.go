@@ -485,6 +485,7 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 			keyData = keySection[keyOffsets[i]:keyOffsets[i+1]]
 		}
 		valueOffset := valOffsets[i]
+
 		err = decodeRestartSection(keyData, func(key []byte, valPos iRange) (bool, error) {
 			oerr := onValue(key, int(valPos.start+valueOffset), int(valPos.limit+valueOffset))
 			return false, oerr
@@ -533,18 +534,23 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	var boundary bool
 	pos := sort.Search(len(keyOffsets), func(i int) bool {
 		_, _, dkey, _, derr := decodeKeyEntry(keySection[keyOffsets[i]:], 0)
 		if derr != nil {
 			err = derr
 			return false
 		}
-		return bytes.Compare(key, dkey) <= 0
+		n := bytes.Compare(key, dkey)
+		if n == 0 {
+			boundary = true
+		}
+		return n <= 0
 	})
 	if err != nil {
 		return 0, 0, err
 	}
-	if pos != len(keyOffsets) {
+	if boundary {
 		_, nValue, dkey, _, derr := decodeKeyEntry(keySection[keyOffsets[pos]:], 0)
 		if derr != nil {
 			return 0, 0, derr
@@ -553,10 +559,12 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 			start := valOffsets[pos]
 			limit := valOffsets[pos] + uint32(nValue)
 			return int(start), int(limit), nil
+		} else {
+			panic("123")
 		}
-		if pos == 0 {
-			return 0, 0, errors.New("not found")
-		}
+	}
+	if pos == 0 {
+		return 0, 0, errors.New("not found")
 	}
 	var keyData []byte
 	if pos == len(keyOffsets) {
@@ -567,17 +575,22 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 	var (
 		start int
 		limit int
+		found bool
 	)
 	err = decodeRestartSection(keyData, func(ikey []byte, val iRange) (bool, error) {
 		if bytes.Equal(key, ikey) {
 			start = int(valOffsets[pos-1] + val.start)
 			limit = int(valOffsets[pos-1] + val.limit)
+			found = true
 			return true, nil
 		}
 		return false, nil
 	})
 	if err != nil {
 		return 0, 0, err
+	}
+	if !found {
+		panic("456")
 	}
 	return start, limit, nil
 }
