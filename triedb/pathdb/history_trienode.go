@@ -607,11 +607,9 @@ type trienodeHistoryReader struct {
 // newTrienodeHistoryReader constructs the reader for specific trienode history.
 func newTrienodeHistoryReader(id uint64, reader ethdb.AncientReader) (*trienodeHistoryReader, error) {
 	r := &trienodeHistoryReader{
-		id:        id,
-		reader:    reader,
-		keyRanges: make(map[common.Hash]iRange),
-		valRanges: make(map[common.Hash]iRange),
-		iReaders:  make(map[common.Hash]*singleTrienodeHistoryReader),
+		id:       id,
+		reader:   reader,
+		iReaders: make(map[common.Hash]*singleTrienodeHistoryReader),
 	}
 	if err := r.decodeHeader(); err != nil {
 		return nil, err
@@ -629,6 +627,9 @@ func (r *trienodeHistoryReader) decodeHeader() error {
 	if err != nil {
 		return err
 	}
+	r.keyRanges = make(map[common.Hash]iRange, len(owners))
+	r.valRanges = make(map[common.Hash]iRange, len(owners))
+
 	for i, owner := range owners {
 		// Decode the key range for this trie chunk
 		var keyStart uint32
