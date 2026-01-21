@@ -27,6 +27,7 @@ import (
 	"slices"
 	"sort"
 	"time"
+	"unsafe"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -440,6 +441,7 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 			if int(nShared) > len(prevKey) {
 				return nil, fmt.Errorf("unexpected shared key prefix: %d, prefix key length: %d", nShared, len(prevKey))
 			}
+			key = make([]byte, 0, nShared+nUnshared)
 			key = append([]byte{}, prevKey[:nShared]...)
 			key = append(key, unsharedKey...)
 		}
@@ -457,7 +459,7 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 		valOff += int(nValue)
 
 		items++
-		keys = append(keys, string(key))
+		keys = append(keys, bytesToString(key))
 	}
 	if keyOff != keyLimit {
 		return nil, fmt.Errorf("excessive key data after decoding, offset: %d, size: %d", keyOff, keyLimit)
@@ -568,7 +570,7 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 	}
 	valueOffsets := make(map[string]iRange)
 	_, err = decodeSingle(keyData, func(key []byte, start int, limit int) error {
-		valueOffsets[string(key)] = iRange{
+		valueOffsets[bytesToString(key)] = iRange{
 			start: uint32(start),
 			limit: uint32(limit),
 		}
@@ -748,4 +750,10 @@ func readTrienodeHistories(reader ethdb.AncientReader, start uint64, count uint6
 		res = append(res, &h)
 	}
 	return res, nil
+}
+
+// bytesToString converts the byte slice to string without allocation. This
+// function holds the assumption the provided slice won't be modified afterwards.
+func bytesToString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
 }
