@@ -346,29 +346,27 @@ func decodeHeader(data []byte) (*trienodeMetadata, []common.Hash, []uint32, []ui
 	}, owners, keyOffsets, valOffsets, nil
 }
 
-func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]string, error) {
-	estimated := len(keySection) / 10
-
+func decodeSingle(keySection []byte) (map[string]iRange, error) {
 	var (
-		prevKey    []byte
-		items      int
-		keyOffsets = make([]uint32, 0, estimated)
-		valOffsets = make([]uint32, 0, estimated)
+		prevKey []byte
+		items   int
+		keyOff  int // the key offset within the single trie data
+		valOff  int // the value offset within the single trie data
 
-		keyOff int // the key offset within the single trie data
-		valOff int // the value offset within the single trie data
-
-		keys = make([]string, 0, estimated)
+		estimated = len(keySection) / 10
+		entries   = make(map[string]iRange, estimated)
 	)
 	// Decode the number of restart section
 	if len(keySection) < 4 {
 		return nil, fmt.Errorf("key section too short, size: %d", len(keySection))
 	}
 	nRestarts := binary.BigEndian.Uint32(keySection[len(keySection)-4:])
-
 	if len(keySection) < int(8*nRestarts)+4 {
 		return nil, fmt.Errorf("key section too short, restarts: %d, size: %d", nRestarts, len(keySection))
 	}
+	keyOffsets := make([]uint32, 0, nRestarts)
+	valOffsets := make([]uint32, 0, nRestarts)
+
 	for i := range int(nRestarts) {
 		o := len(keySection) - 4 - (int(nRestarts)-i)*8
 		keyOffset := binary.BigEndian.Uint32(keySection[o : o+4])
@@ -451,46 +449,45 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 		}
 		prevKey = key
 
-		// Resolve value
-		if onValue != nil {
-			if err := onValue(key, valOff, valOff+int(nValue)); err != nil {
-				return nil, err
-			}
+		entries[bytesToString(key)] = iRange{
+			start: uint32(valOff),
+			limit: uint32(valOff + int(nValue)),
 		}
 		valOff += int(nValue)
 
 		items++
-		keys = append(keys, bytesToString(key))
 	}
 	if keyOff != keyLimit {
 		return nil, fmt.Errorf("excessive key data after decoding, offset: %d, size: %d", keyOff, keyLimit)
 	}
-	return keys, nil
+	return entries, nil
 }
 
 func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, map[string][]byte, error) {
 	var (
 		offset int
+		paths  []string
 		nodes  = make(map[string][]byte)
 	)
-	paths, err := decodeSingle(keySection, func(key []byte, start int, limit int) error {
+	entries, err := decodeSingle(keySection)
+	if err != nil {
+		return nil, nil, err
+	}
+	for key, entry := range entries {
+		start, limit := int(entry.start), int(entry.limit)
 		if start != offset {
-			return fmt.Errorf("gapped value section offset: %d, want: %d", start, offset)
+			return nil, nil, fmt.Errorf("gapped value section offset: %d, want: %d", start, offset)
 		}
 		// start == limit is allowed for zero-value trie node (e.g., non-existent node)
 		if start > limit {
-			return fmt.Errorf("invalid value offsets, start: %d, limit: %d", start, limit)
+			return nil, nil, fmt.Errorf("invalid value offsets, start: %d, limit: %d", start, limit)
 		}
 		if start > len(valueSection) || limit > len(valueSection) {
-			return fmt.Errorf("value section out of range: start: %d, limit: %d, size: %d", start, limit, len(valueSection))
+			return nil, nil, fmt.Errorf("value section out of range: start: %d, limit: %d, size: %d", start, limit, len(valueSection))
 		}
-		nodes[string(key)] = valueSection[start:limit]
-
+		nodes[key] = valueSection[start:limit]
+		paths = append(paths, key)
 		offset = limit
-		return nil
-	})
-	if err != nil {
-		return nil, nil, err
 	}
 	if offset != len(valueSection) {
 		return nil, nil, fmt.Errorf("excessive value data after decoding, offset: %d, size: %d", offset, len(valueSection))
@@ -569,15 +566,7 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 	if err != nil {
 		return nil, err
 	}
-	estimated := len(keyData) / 10
-	valueOffsets := make(map[string]iRange, estimated)
-	_, err = decodeSingle(keyData, func(key []byte, start int, limit int) error {
-		valueOffsets[bytesToString(key)] = iRange{
-			start: uint32(start),
-			limit: uint32(limit),
-		}
-		return nil
-	})
+	entries, err := decodeSingle(keyData)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +574,7 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 		id:                   id,
 		reader:               reader,
 		valueRange:           valueRange,
-		valueInternalOffsets: valueOffsets,
+		valueInternalOffsets: entries,
 	}, nil
 }
 
