@@ -590,7 +590,7 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 		return 0, 0, err
 	}
 	if !found {
-		panic("456")
+		return 0, 0, errors.New("not found - 2")
 	}
 	return start, limit, nil
 }
