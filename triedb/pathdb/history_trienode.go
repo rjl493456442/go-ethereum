@@ -346,33 +346,25 @@ func decodeHeader(data []byte) (*trienodeMetadata, []common.Hash, []uint32, []ui
 	}, owners, keyOffsets, valOffsets, nil
 }
 
-func decodeSingle(keySection []byte, onValue func(string, int, int) error) ([]string, error) {
+func decodeRestarts(keySection []byte) ([]uint32, []uint32, int, error) {
 	var (
-		prevKey    []byte
-		items      int
 		keyOffsets []uint32
 		valOffsets []uint32
-
-		keyOff int // the key offset within the single trie data
-		valOff int // the value offset within the single trie data
-
-		estimated = len(keySection) / 8
-		keys      = make([]string, 0, estimated)
 	)
 	// Decode the number of restart section
 	if len(keySection) < 4 {
-		return nil, fmt.Errorf("key section too short, size: %d", len(keySection))
+		return nil, nil, 0, fmt.Errorf("key section too short, size: %d", len(keySection))
 	}
 	nRestarts := binary.BigEndian.Uint32(keySection[len(keySection)-4:])
 
 	if len(keySection) < int(8*nRestarts)+4 {
-		return nil, fmt.Errorf("key section too short, restarts: %d, size: %d", nRestarts, len(keySection))
+		return nil, nil, 0, fmt.Errorf("key section too short, restarts: %d, size: %d", nRestarts, len(keySection))
 	}
 	for i := range int(nRestarts) {
 		o := len(keySection) - 4 - (int(nRestarts)-i)*8
 		keyOffset := binary.BigEndian.Uint32(keySection[o : o+4])
 		if i != 0 && keyOffset <= keyOffsets[i-1] {
-			return nil, fmt.Errorf("key offset is out of order, prev: %v, cur: %v", keyOffsets[i-1], keyOffset)
+			return nil, nil, 0, fmt.Errorf("key offset is out of order, prev: %v, cur: %v", keyOffsets[i-1], keyOffset)
 		}
 		keyOffsets = append(keyOffsets, keyOffset)
 
@@ -380,100 +372,137 @@ func decodeSingle(keySection []byte, onValue func(string, int, int) error) ([]st
 		// section have zero-size value.
 		valOffset := binary.BigEndian.Uint32(keySection[o+4 : o+8])
 		if i != 0 && valOffset < valOffsets[i-1] {
-			return nil, fmt.Errorf("value offset is out of order, prev: %v, cur: %v", valOffsets[i-1], valOffset)
+			return nil, nil, 0, fmt.Errorf("value offset is out of order, prev: %v, cur: %v", valOffsets[i-1], valOffset)
 		}
 		valOffsets = append(valOffsets, valOffset)
 	}
 	keyLimit := len(keySection) - 4 - int(nRestarts)*8
+	return keyOffsets, valOffsets, keyLimit, nil
+}
 
+// decodeKeyEntry resolves a single entry from the key section with specified offset.
+func decodeKeyEntry(keySection []byte, offset int) (uint64, uint64, []byte, int, error) {
+	var (
+		byteRead int
+	)
+	nShared, nn := binary.Uvarint(keySection[offset:]) // key length shared (varint)
+	if nn <= 0 {
+		return 0, 0, nil, 0, fmt.Errorf("corrupted varint encoding for nShared at offset %d", offset)
+	}
+	byteRead += nn
+
+	nUnshared, nn := binary.Uvarint(keySection[offset+byteRead:]) // key length not shared (varint)
+	if nn <= 0 {
+		return 0, 0, nil, 0, fmt.Errorf("corrupted varint encoding for nUnshared at offset %d", offset+byteRead)
+	}
+	byteRead += nn
+
+	nValue, nn := binary.Uvarint(keySection[offset+byteRead:]) // value length (varint)
+	if nn <= 0 {
+		return 0, 0, nil, 0, fmt.Errorf("corrupted varint encoding for nValue at offset %d", offset+byteRead)
+	}
+	byteRead += nn
+
+	// Validate that the values can fit in an int to prevent overflow on 32-bit systems
+	if nShared > uint64(math.MaxUint32) || nUnshared > uint64(math.MaxUint32) || nValue > uint64(math.MaxUint32) {
+		return 0, 0, nil, 0, errors.New("key/value size too large")
+	}
+
+	// Resolve unshared key
+	if offset+byteRead+int(nUnshared) > len(keySection) {
+		return 0, 0, nil, 0, fmt.Errorf("key length too long, unshared key length: %d, off: %d, section size: %d", nUnshared, offset+byteRead, len(keySection))
+	}
+	unsharedKey := keySection[offset+byteRead : offset+byteRead+int(nUnshared)]
+	byteRead += int(nUnshared)
+
+	return nShared, nValue, unsharedKey, byteRead, nil
+}
+
+func decodeRestartSection(keyData []byte, onEach func(key string, valPos iRange) (bool, error)) error {
+	var (
+		items  int
+		prev   []byte
+		keyOff int    // the key offset within the **restart section**
+		valOff uint32 // the value offset within the **restart section**
+	)
 	// Decode data
-	for keyOff < keyLimit {
-		// Validate the key and value offsets within the single trie data chunk
-		if items%trienodeDataBlockRestartLen == 0 {
-			restartIndex := items / trienodeDataBlockRestartLen
-			if restartIndex >= len(keyOffsets) {
-				return nil, fmt.Errorf("restart index out of range: %d, available restarts: %d", restartIndex, len(keyOffsets))
-			}
-			if keyOff != int(keyOffsets[restartIndex]) {
-				return nil, fmt.Errorf("key offset is not matched, recorded: %d, want: %d", keyOffsets[restartIndex], keyOff)
-			}
-			if valOff != int(valOffsets[restartIndex]) {
-				return nil, fmt.Errorf("value offset is not matched, recorded: %d, want: %d", valOffsets[restartIndex], valOff)
-			}
-		}
-		// Resolve the entry from key section
-		nShared, nn := binary.Uvarint(keySection[keyOff:]) // key length shared (varint)
-		if nn <= 0 {
-			return nil, fmt.Errorf("corrupted varint encoding for nShared at offset %d", keyOff)
+	for keyOff < len(keyData) {
+		nShared, nValue, unsharedKey, nn, err := decodeKeyEntry(keyData, keyOff)
+		if err != nil {
+			return err
 		}
 		keyOff += nn
-		nUnshared, nn := binary.Uvarint(keySection[keyOff:]) // key length not shared (varint)
-		if nn <= 0 {
-			return nil, fmt.Errorf("corrupted varint encoding for nUnshared at offset %d", keyOff)
-		}
-		keyOff += nn
-		nValue, nn := binary.Uvarint(keySection[keyOff:]) // value length (varint)
-		if nn <= 0 {
-			return nil, fmt.Errorf("corrupted varint encoding for nValue at offset %d", keyOff)
-		}
-		keyOff += nn
-
-		// Validate that the values can fit in an int to prevent overflow on 32-bit systems
-		if nShared > uint64(math.MaxUint32) || nUnshared > uint64(math.MaxUint32) || nValue > uint64(math.MaxUint32) {
-			return nil, errors.New("key size too large")
-		}
-
-		// Resolve unshared key
-		if keyOff+int(nUnshared) > len(keySection) {
-			return nil, fmt.Errorf("key length too long, unshared key length: %d, off: %d, section size: %d", nUnshared, keyOff, len(keySection))
-		}
-		unsharedKey := keySection[keyOff : keyOff+int(nUnshared)]
-		keyOff += int(nUnshared)
 
 		// Assemble the full key
 		var key []byte
 		if items%trienodeDataBlockRestartLen == 0 {
 			if nShared != 0 {
-				return nil, fmt.Errorf("unexpected non-zero shared key prefix: %d", nShared)
+				return fmt.Errorf("unexpected non-zero shared key prefix: %d", nShared)
 			}
 			key = unsharedKey
 		} else {
-			if int(nShared) > len(prevKey) {
-				return nil, fmt.Errorf("unexpected shared key prefix: %d, prefix key length: %d", nShared, len(prevKey))
+			if int(nShared) > len(prev) {
+				return fmt.Errorf("unexpected shared key prefix: %d, prefix key length: %d", nShared, len(prev))
 			}
-			key = make([]byte, nShared+nUnshared)
-			copy(key[:nShared], prevKey[:nShared])
+			key = make([]byte, int(nShared)+len(unsharedKey))
+			copy(key[:nShared], prev[:nShared])
 			copy(key[nShared:], unsharedKey)
 		}
-		if items != 0 && bytes.Compare(prevKey, key) >= 0 {
-			return nil, fmt.Errorf("trienode paths are out of order, prev: %v, cur: %v", prevKey, key)
+		if items != 0 && bytes.Compare(prev, key) >= 0 {
+			return fmt.Errorf("trienode paths are out of order, prev: %v, cur: %v", prev, key)
 		}
-		prevKey = key
+		prev = key
 
-		// Resolve value
-		strKey := bytesToString(key)
-		if onValue != nil {
-			if err := onValue(strKey, valOff, valOff+int(nValue)); err != nil {
-				return nil, err
-			}
+		abort, err := onEach(bytesToString(key), iRange{
+			start: valOff,
+			limit: valOff + uint32(nValue),
+		})
+		if err != nil {
+			return err
 		}
-		valOff += int(nValue)
-
+		if abort {
+			return nil
+		}
+		valOff += uint32(nValue)
 		items++
-		keys = append(keys, strKey)
 	}
-	if keyOff != keyLimit {
-		return nil, fmt.Errorf("excessive key data after decoding, offset: %d, size: %d", keyOff, keyLimit)
+	if keyOff != len(keyData) {
+		return fmt.Errorf("excessive key data after decoding, offset: %d, size: %d", keyOff, len(keyData))
 	}
-	return keys, nil
+	return nil
+}
+
+func decodeSingle(keySection []byte, onValue func(string, int, int) error) ([]string, error) {
+	keyOffsets, valOffsets, _, err := decodeRestarts(keySection)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(keyOffsets); i++ {
+		var keyData []byte
+		if i == len(keyOffsets)-1 {
+			keyData = keySection[keyOffsets[i]:]
+		} else {
+			keyData = keySection[keyOffsets[i]:keyOffsets[i+1]]
+		}
+		valueOffset := valOffsets[i]
+		err = decodeRestartSection(keyData, func(key string, valPos iRange) (bool, error) {
+			oerr := onValue(key, int(valPos.start+valueOffset), int(valPos.limit+valueOffset))
+			return false, oerr
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, map[string][]byte, error) {
 	var (
 		offset int
 		nodes  = make(map[string][]byte)
+		paths  []string
 	)
-	paths, err := decodeSingle(keySection, func(key string, start int, limit int) error {
+	_, err := decodeSingle(keySection, func(key string, start int, limit int) error {
 		if start != offset {
 			return fmt.Errorf("gapped value section offset: %d, want: %d", start, offset)
 		}
@@ -487,6 +516,7 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		nodes[key] = valueSection[start:limit]
 
 		offset = limit
+		paths = append(paths, key)
 		return nil
 	})
 	if err != nil {
@@ -496,6 +526,50 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		return nil, nil, fmt.Errorf("excessive value data after decoding, offset: %d, size: %d", offset, len(valueSection))
 	}
 	return paths, nodes, nil
+}
+
+func searchSingle(keySection []byte, key []byte) (int, int, error) {
+	keyOffsets, valOffsets, keyLimit, err := decodeRestarts(keySection)
+	if err != nil {
+		return 0, 0, err
+	}
+	pos := sort.Search(len(keyOffsets), func(i int) bool {
+		_, _, dkey, _, derr := decodeKeyEntry(keySection[keyOffsets[i]:], 0)
+		if derr != nil {
+			err = derr
+			return false
+		}
+		return bytes.Compare(key, dkey) <= 0
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	if pos == 0 {
+		return 0, 0, errors.New("not found")
+	}
+	var keyData []byte
+	if pos == len(keyOffsets) {
+		keyData = keySection[keyOffsets[pos-1]:keyLimit]
+	} else {
+		keyData = keySection[keyOffsets[pos-1]:keyOffsets[pos]]
+	}
+	var (
+		start  int
+		limit  int
+		strkey = string(key)
+	)
+	err = decodeRestartSection(keyData, func(key string, valPos iRange) (bool, error) {
+		if key == strkey {
+			start = int(valOffsets[pos-1] + valPos.start)
+			limit = int(valOffsets[pos-1] + valPos.limit)
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return start, limit, nil
 }
 
 // decode deserializes the contained trie nodes from the provided bytes.
@@ -582,6 +656,18 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 		valueRange:           valueRange,
 		valueInternalOffsets: valueOffsets,
 	}, nil
+}
+
+func newSingleTrienodeHistoryReader2(id uint64, reader ethdb.AncientReader, keyRange iRange, key []byte) ([]byte, error) {
+	keyData, err := rawdb.ReadTrienodeHistoryKeySection(reader, id, uint64(keyRange.start), uint64(keyRange.len()))
+	if err != nil {
+		return nil, err
+	}
+	start, limit, err := searchSingle(keyData, key)
+	if err != nil {
+		return nil, err
+	}
+	return rawdb.ReadTrienodeHistoryValueSection(reader, id, uint64(start), uint64(limit-start))
 }
 
 // read retrieves the trie node data with the provided node path.
@@ -674,6 +760,18 @@ func (r *trienodeHistoryReader) read(owner common.Hash, path string) ([]byte, er
 		r.iReaders[owner] = ir
 	}
 	return ir.read(path)
+}
+
+func (r *trienodeHistoryReader) readSingle(owner common.Hash, path string) ([]byte, error) {
+	keyRange, exists := r.keyRanges[owner]
+	if !exists {
+		return nil, fmt.Errorf("trie %x is unknown", owner)
+	}
+	valRange, exists := r.valRanges[owner]
+	if !exists {
+		return nil, fmt.Errorf("trie %x is unknown", owner)
+	}
+	return newSingleTrienodeHistoryReader2(r.id, r.reader, keyRange, []byte(path))
 }
 
 // writeTrienodeHistory persists the trienode history associated with the given diff layer.

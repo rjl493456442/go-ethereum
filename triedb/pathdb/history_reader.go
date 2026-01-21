@@ -289,7 +289,7 @@ func (r *trienodeReader) readTrienode(addrHash common.Hash, path string, history
 	if err != nil {
 		return nil, err
 	}
-	return tr.read(addrHash, path)
+	return tr.readSingle(addrHash, path)
 }
 
 // assembleNode takes a complete node value as the base and applies a list of
