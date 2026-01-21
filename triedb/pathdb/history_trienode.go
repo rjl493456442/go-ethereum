@@ -544,15 +544,19 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	if pos == 0 {
-		_, nValue, dkey, _, derr := decodeKeyEntry(keySection, 0)
+	if pos != len(keyOffsets) {
+		_, nValue, dkey, _, derr := decodeKeyEntry(keySection[keyOffsets[pos]:], 0)
 		if derr != nil {
 			return 0, 0, derr
 		}
 		if bytes.Equal(dkey, key) {
-			return 0, int(nValue), nil
+			start := valOffsets[pos]
+			limit := valOffsets[pos] + uint32(nValue)
+			return int(start), int(limit), nil
 		}
-		return 0, 0, errors.New("not found")
+		if pos == 0 {
+			return 0, 0, errors.New("not found")
+		}
 	}
 	var keyData []byte
 	if pos == len(keyOffsets) {
