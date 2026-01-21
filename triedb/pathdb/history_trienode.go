@@ -27,6 +27,7 @@ import (
 	"slices"
 	"sort"
 	"time"
+	"unsafe"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -345,7 +346,7 @@ func decodeHeader(data []byte) (*trienodeMetadata, []common.Hash, []uint32, []ui
 	}, owners, keyOffsets, valOffsets, nil
 }
 
-func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]string, error) {
+func decodeSingle(keySection []byte, onValue func(string, int, int) error) ([]string, error) {
 	var (
 		prevKey    []byte
 		items      int
@@ -355,7 +356,8 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 		keyOff int // the key offset within the single trie data
 		valOff int // the value offset within the single trie data
 
-		keys []string
+		estimated = len(keySection) / 8
+		keys      = make([]string, 0, estimated)
 	)
 	// Decode the number of restart section
 	if len(keySection) < 4 {
@@ -436,12 +438,12 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 			}
 			key = unsharedKey
 		} else {
-			// TODO(rjl493456442) mitigate the allocation pressure.
 			if int(nShared) > len(prevKey) {
 				return nil, fmt.Errorf("unexpected shared key prefix: %d, prefix key length: %d", nShared, len(prevKey))
 			}
-			key = append([]byte{}, prevKey[:nShared]...)
-			key = append(key, unsharedKey...)
+			key = make([]byte, nShared+nUnshared)
+			copy(key[:nShared], prevKey[:nShared])
+			copy(key[nShared:], unsharedKey)
 		}
 		if items != 0 && bytes.Compare(prevKey, key) >= 0 {
 			return nil, fmt.Errorf("trienode paths are out of order, prev: %v, cur: %v", prevKey, key)
@@ -449,15 +451,16 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 		prevKey = key
 
 		// Resolve value
+		strKey := bytesToString(key)
 		if onValue != nil {
-			if err := onValue(key, valOff, valOff+int(nValue)); err != nil {
+			if err := onValue(strKey, valOff, valOff+int(nValue)); err != nil {
 				return nil, err
 			}
 		}
 		valOff += int(nValue)
 
 		items++
-		keys = append(keys, string(key))
+		keys = append(keys, strKey)
 	}
 	if keyOff != keyLimit {
 		return nil, fmt.Errorf("excessive key data after decoding, offset: %d, size: %d", keyOff, keyLimit)
@@ -470,7 +473,7 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		offset int
 		nodes  = make(map[string][]byte)
 	)
-	paths, err := decodeSingle(keySection, func(key []byte, start int, limit int) error {
+	paths, err := decodeSingle(keySection, func(key string, start int, limit int) error {
 		if start != offset {
 			return fmt.Errorf("gapped value section offset: %d, want: %d", start, offset)
 		}
@@ -481,7 +484,7 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		if start > len(valueSection) || limit > len(valueSection) {
 			return fmt.Errorf("value section out of range: start: %d, limit: %d, size: %d", start, limit, len(valueSection))
 		}
-		nodes[string(key)] = valueSection[start:limit]
+		nodes[key] = valueSection[start:limit]
 
 		offset = limit
 		return nil
@@ -557,18 +560,14 @@ type singleTrienodeHistoryReader struct {
 	valueInternalOffsets map[string]iRange // value offset within the single trie data
 }
 
-// TODO(rjl493456442): This function performs a large number of allocations.
-// Given the large data size, a byte pool could be used to mitigate this.
 func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRange iRange, valueRange iRange) (*singleTrienodeHistoryReader, error) {
-	// TODO(rjl493456442) the data size is known in advance, allocating the
-	// dedicated byte slices from the pool.
 	keyData, err := rawdb.ReadTrienodeHistoryKeySection(reader, id, uint64(keyRange.start), uint64(keyRange.len()))
 	if err != nil {
 		return nil, err
 	}
 	valueOffsets := make(map[string]iRange)
-	_, err = decodeSingle(keyData, func(key []byte, start int, limit int) error {
-		valueOffsets[string(key)] = iRange{
+	_, err = decodeSingle(keyData, func(key string, start int, limit int) error {
+		valueOffsets[key] = iRange{
 			start: uint32(start),
 			limit: uint32(limit),
 		}
@@ -748,4 +747,10 @@ func readTrienodeHistories(reader ethdb.AncientReader, start uint64, count uint6
 		res = append(res, &h)
 	}
 	return res, nil
+}
+
+// bytesToString takes the byte slice and converts it to string. This function
+// holds the assumption that the provided byte slice won't be modified.
+func bytesToString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
 }
