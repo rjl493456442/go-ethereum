@@ -418,7 +418,7 @@ func decodeKeyEntry(keySection []byte, offset int) (uint64, uint64, []byte, int,
 	return nShared, nValue, unsharedKey, byteRead, nil
 }
 
-func decodeRestartSection(keyData []byte, onEach func(key string, valPos iRange) (bool, error)) error {
+func decodeRestartSection(keyData []byte, onEach func(key []byte, val iRange) (bool, error)) error {
 	var (
 		items  int
 		prev   []byte
@@ -453,7 +453,7 @@ func decodeRestartSection(keyData []byte, onEach func(key string, valPos iRange)
 		}
 		prev = key
 
-		abort, err := onEach(bytesToString(key), iRange{
+		abort, err := onEach(key, iRange{
 			start: valOff,
 			limit: valOff + uint32(nValue),
 		})
@@ -472,7 +472,7 @@ func decodeRestartSection(keyData []byte, onEach func(key string, valPos iRange)
 	return nil
 }
 
-func decodeSingle(keySection []byte, onValue func(string, int, int) error) ([]string, error) {
+func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]string, error) {
 	keyOffsets, valOffsets, _, err := decodeRestarts(keySection)
 	if err != nil {
 		return nil, err
@@ -485,7 +485,7 @@ func decodeSingle(keySection []byte, onValue func(string, int, int) error) ([]st
 			keyData = keySection[keyOffsets[i]:keyOffsets[i+1]]
 		}
 		valueOffset := valOffsets[i]
-		err = decodeRestartSection(keyData, func(key string, valPos iRange) (bool, error) {
+		err = decodeRestartSection(keyData, func(key []byte, valPos iRange) (bool, error) {
 			oerr := onValue(key, int(valPos.start+valueOffset), int(valPos.limit+valueOffset))
 			return false, oerr
 		})
@@ -545,6 +545,13 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 		return 0, 0, err
 	}
 	if pos == 0 {
+		_, nValue, dkey, _, derr := decodeKeyEntry(keySection, 0)
+		if derr != nil {
+			return 0, 0, derr
+		}
+		if bytes.Equal(dkey, key) {
+			return 0, int(nValue), nil
+		}
 		return 0, 0, errors.New("not found")
 	}
 	var keyData []byte
@@ -554,14 +561,13 @@ func searchSingle(keySection []byte, key []byte) (int, int, error) {
 		keyData = keySection[keyOffsets[pos-1]:keyOffsets[pos]]
 	}
 	var (
-		start  int
-		limit  int
-		strkey = string(key)
+		start int
+		limit int
 	)
-	err = decodeRestartSection(keyData, func(key string, valPos iRange) (bool, error) {
-		if key == strkey {
-			start = int(valOffsets[pos-1] + valPos.start)
-			limit = int(valOffsets[pos-1] + valPos.limit)
+	err = decodeRestartSection(keyData, func(ikey []byte, val iRange) (bool, error) {
+		if bytes.Equal(key, ikey) {
+			start = int(valOffsets[pos-1] + val.start)
+			limit = int(valOffsets[pos-1] + val.limit)
 			return true, nil
 		}
 		return false, nil
