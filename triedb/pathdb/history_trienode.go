@@ -347,16 +347,18 @@ func decodeHeader(data []byte) (*trienodeMetadata, []common.Hash, []uint32, []ui
 }
 
 func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]string, error) {
+	estimated := len(keySection) / 10
+
 	var (
 		prevKey    []byte
 		items      int
-		keyOffsets []uint32
-		valOffsets []uint32
+		keyOffsets = make([]uint32, 0, estimated)
+		valOffsets = make([]uint32, 0, estimated)
 
 		keyOff int // the key offset within the single trie data
 		valOff int // the value offset within the single trie data
 
-		keys []string
+		keys = make([]string, 0, estimated)
 	)
 	// Decode the number of restart section
 	if len(keySection) < 4 {
@@ -437,13 +439,12 @@ func decodeSingle(keySection []byte, onValue func([]byte, int, int) error) ([]st
 			}
 			key = unsharedKey
 		} else {
-			// TODO(rjl493456442) mitigate the allocation pressure.
 			if int(nShared) > len(prevKey) {
 				return nil, fmt.Errorf("unexpected shared key prefix: %d, prefix key length: %d", nShared, len(prevKey))
 			}
-			key = make([]byte, 0, nShared+nUnshared)
-			key = append([]byte{}, prevKey[:nShared]...)
-			key = append(key, unsharedKey...)
+			key = make([]byte, nShared+nUnshared)
+			copy(key[:nShared], prevKey[:nShared])
+			copy(key[nShared:], unsharedKey)
 		}
 		if items != 0 && bytes.Compare(prevKey, key) >= 0 {
 			return nil, fmt.Errorf("trienode paths are out of order, prev: %v, cur: %v", prevKey, key)
@@ -568,7 +569,8 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 	if err != nil {
 		return nil, err
 	}
-	valueOffsets := make(map[string]iRange)
+	estimated := len(keyData) / 10
+	valueOffsets := make(map[string]iRange, estimated)
 	_, err = decodeSingle(keyData, func(key []byte, start int, limit int) error {
 		valueOffsets[bytesToString(key)] = iRange{
 			start: uint32(start),
@@ -610,11 +612,9 @@ type trienodeHistoryReader struct {
 // newTrienodeHistoryReader constructs the reader for specific trienode history.
 func newTrienodeHistoryReader(id uint64, reader ethdb.AncientReader) (*trienodeHistoryReader, error) {
 	r := &trienodeHistoryReader{
-		id:        id,
-		reader:    reader,
-		keyRanges: make(map[common.Hash]iRange),
-		valRanges: make(map[common.Hash]iRange),
-		iReaders:  make(map[common.Hash]*singleTrienodeHistoryReader),
+		id:       id,
+		reader:   reader,
+		iReaders: make(map[common.Hash]*singleTrienodeHistoryReader),
 	}
 	if err := r.decodeHeader(); err != nil {
 		return nil, err
@@ -632,6 +632,9 @@ func (r *trienodeHistoryReader) decodeHeader() error {
 	if err != nil {
 		return err
 	}
+	r.keyRanges = make(map[common.Hash]iRange, len(owners))
+	r.valRanges = make(map[common.Hash]iRange, len(owners))
+
 	for i, owner := range owners {
 		// Decode the key range for this trie chunk
 		var keyStart uint32
