@@ -502,7 +502,7 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		nodes  = make(map[string][]byte)
 		paths  []string
 	)
-	_, err := decodeSingle(keySection, func(key string, start int, limit int) error {
+	_, err := decodeSingle(keySection, func(key []byte, start int, limit int) error {
 		if start != offset {
 			return fmt.Errorf("gapped value section offset: %d, want: %d", start, offset)
 		}
@@ -513,10 +513,10 @@ func decodeSingleWithValue(keySection []byte, valueSection []byte) ([]string, ma
 		if start > len(valueSection) || limit > len(valueSection) {
 			return fmt.Errorf("value section out of range: start: %d, limit: %d, size: %d", start, limit, len(valueSection))
 		}
-		nodes[key] = valueSection[start:limit]
+		nodes[string(key)] = valueSection[start:limit]
 
 		offset = limit
-		paths = append(paths, key)
+		paths = append(paths, string(key))
 		return nil
 	})
 	if err != nil {
@@ -646,8 +646,8 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 		return nil, err
 	}
 	valueOffsets := make(map[string]iRange)
-	_, err = decodeSingle(keyData, func(key string, start int, limit int) error {
-		valueOffsets[key] = iRange{
+	_, err = decodeSingle(keyData, func(key []byte, start int, limit int) error {
+		valueOffsets[string(key)] = iRange{
 			start: uint32(start) + valueRange.start,
 			limit: uint32(limit) + valueRange.limit,
 		}
