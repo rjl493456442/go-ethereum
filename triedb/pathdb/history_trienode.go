@@ -422,8 +422,8 @@ func decodeRestartSection(keyData []byte, onEach func(key string, valPos iRange)
 	var (
 		items  int
 		prev   []byte
-		keyOff int    // the key offset within the **restart section**
-		valOff uint32 // the value offset within the **restart section**
+		keyOff int    // the key offset relative to the beginning of restart section
+		valOff uint32 // the value offset relative to the beginning of restart section
 	)
 	// Decode data
 	for keyOff < len(keyData) {
@@ -642,8 +642,8 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 	valueOffsets := make(map[string]iRange)
 	_, err = decodeSingle(keyData, func(key string, start int, limit int) error {
 		valueOffsets[key] = iRange{
-			start: uint32(start),
-			limit: uint32(limit),
+			start: uint32(start) + valueRange.start,
+			limit: uint32(limit) + valueRange.limit,
 		}
 		return nil
 	})
@@ -658,7 +658,7 @@ func newSingleTrienodeHistoryReader(id uint64, reader ethdb.AncientReader, keyRa
 	}, nil
 }
 
-func newSingleTrienodeHistoryReader2(id uint64, reader ethdb.AncientReader, keyRange iRange, key []byte) ([]byte, error) {
+func newSingleTrienodeHistoryReader2(id uint64, reader ethdb.AncientReader, keyRange iRange, valRange iRange, key []byte) ([]byte, error) {
 	keyData, err := rawdb.ReadTrienodeHistoryKeySection(reader, id, uint64(keyRange.start), uint64(keyRange.len()))
 	if err != nil {
 		return nil, err
@@ -667,7 +667,8 @@ func newSingleTrienodeHistoryReader2(id uint64, reader ethdb.AncientReader, keyR
 	if err != nil {
 		return nil, err
 	}
-	return rawdb.ReadTrienodeHistoryValueSection(reader, id, uint64(start), uint64(limit-start))
+	realRestart := start + int(valRange.start)
+	return rawdb.ReadTrienodeHistoryValueSection(reader, id, uint64(realRestart), uint64(limit-start))
 }
 
 // read retrieves the trie node data with the provided node path.
@@ -771,7 +772,7 @@ func (r *trienodeHistoryReader) readSingle(owner common.Hash, path string) ([]by
 	if !exists {
 		return nil, fmt.Errorf("trie %x is unknown", owner)
 	}
-	return newSingleTrienodeHistoryReader2(r.id, r.reader, keyRange, []byte(path))
+	return newSingleTrienodeHistoryReader2(r.id, r.reader, keyRange, valRange, []byte(path))
 }
 
 // writeTrienodeHistory persists the trienode history associated with the given diff layer.
