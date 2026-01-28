@@ -88,9 +88,13 @@ var (
 	storageCacheHitPrefetchMeter  = metrics.NewRegisteredMeter("chain/storage/reads/cache/prefetch/hit", nil)
 	storageCacheMissPrefetchMeter = metrics.NewRegisteredMeter("chain/storage/reads/cache/prefetch/miss", nil)
 
-	accountReadSingleTimer = metrics.NewRegisteredResettingTimer("chain/account/single/reads", nil)
-	storageReadSingleTimer = metrics.NewRegisteredResettingTimer("chain/storage/single/reads", nil)
-	codeReadSingleTimer    = metrics.NewRegisteredResettingTimer("chain/code/single/reads", nil)
+	accountReadSingleTimer          = metrics.NewRegisteredResettingTimer("chain/account/single/reads", nil)
+	accountCacheHitReadSingleTimer  = metrics.NewRegisteredResettingTimer("chain/account/single/cachehit/reads", nil)
+	accountCacheMissReadSingleTimer = metrics.NewRegisteredResettingTimer("chain/account/single/cachemiss/reads", nil)
+	storageReadSingleTimer          = metrics.NewRegisteredResettingTimer("chain/storage/single/reads", nil)
+	storageCacheHitReadSingleTimer  = metrics.NewRegisteredResettingTimer("chain/storage/single/cachehit/reads", nil)
+	storageCacheMissReadSingleTimer = metrics.NewRegisteredResettingTimer("chain/storage/single/cachemiss/reads", nil)
+	codeReadSingleTimer             = metrics.NewRegisteredResettingTimer("chain/code/single/reads", nil)
 
 	snapshotCommitTimer = metrics.NewRegisteredResettingTimer("chain/snapshot/commits", nil)
 	triedbCommitTimer   = metrics.NewRegisteredResettingTimer("chain/triedb/commits", nil)
@@ -2107,11 +2111,38 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 		}
 		// Upload the statistics of reader at the end
 		defer func() {
-			if result != nil {
-				result.stats.StatePrefetchCacheStats = prefetch.GetStats()
-				result.stats.StateReadCacheStats = process.GetStats()
+			if result == nil {
+				return
 			}
+			result.stats.StatePrefetchCacheStats = prefetch.GetStats()
+
+			rStat := process.GetStats()
+			result.stats.StateReadCacheStats = rStat
+
+			var (
+				accountCacheHitSingle  time.Duration
+				accountCacheMissSingle time.Duration
+				storageCacheHitSingle  time.Duration
+				storageCacheMissSingle time.Duration
+			)
+			if rStat.AccountCacheHit != 0 {
+				accountCacheHitSingle = rStat.AccountCacheHitTime / time.Duration(rStat.AccountCacheHit)
+			}
+			if rStat.AccountCacheMiss != 0 {
+				accountCacheMissSingle = rStat.AccountCacheMissTime / time.Duration(rStat.AccountCacheMiss)
+			}
+			if rStat.StorageCacheHit != 0 {
+				storageCacheHitSingle = rStat.StorageCacheHitTime / time.Duration(rStat.StorageCacheHit)
+			}
+			if rStat.StorageCacheMiss != 0 {
+				storageCacheMissSingle = rStat.StorageCacheMissTime / time.Duration(rStat.StorageCacheMiss)
+			}
+			accountCacheHitReadSingleTimer.Update(accountCacheHitSingle)
+			accountCacheMissReadSingleTimer.Update(accountCacheMissSingle)
+			storageCacheHitReadSingleTimer.Update(storageCacheHitSingle)
+			storageCacheMissReadSingleTimer.Update(storageCacheMissSingle)
 		}()
+
 		go func(start time.Time, throwaway *state.StateDB, block *types.Block) {
 			// Disable tracing for prefetcher executions.
 			vmCfg := bc.cfg.VmConfig

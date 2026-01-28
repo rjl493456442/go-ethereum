@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
@@ -116,11 +117,15 @@ type Reader interface {
 
 // ReaderStats wraps the statistics of reader.
 type ReaderStats struct {
-	AccountCacheHit  int64
-	AccountCacheMiss int64
-	StorageCacheHit  int64
-	StorageCacheMiss int64
-	CodeStats        ContractCodeReaderStats
+	AccountCacheHit      int64
+	AccountCacheMiss     int64
+	AccountCacheHitTime  time.Duration
+	AccountCacheMissTime time.Duration
+	StorageCacheHit      int64
+	StorageCacheMiss     int64
+	StorageCacheHitTime  time.Duration
+	StorageCacheMissTime time.Duration
+	CodeStats            ContractCodeReaderStats
 }
 
 // String implements fmt.Stringer, returning string format statistics.
@@ -136,8 +141,8 @@ func (s ReaderStats) String() string {
 		storageCacheHitRate = float64(s.StorageCacheHit) / float64(s.StorageCacheHit+s.StorageCacheMiss) * 100
 	}
 	msg := fmt.Sprintf("Reader statistics\n")
-	msg += fmt.Sprintf("account: hit: %d, miss: %d, rate: %.2f\n", s.AccountCacheHit, s.AccountCacheMiss, accountCacheHitRate)
-	msg += fmt.Sprintf("storage: hit: %d, miss: %d, rate: %.2f\n", s.StorageCacheHit, s.StorageCacheMiss, storageCacheHitRate)
+	msg += fmt.Sprintf("account: hit: %d(%v), miss: %d(%v), rate: %.2f\n", s.AccountCacheHit, common.PrettyDuration(s.AccountCacheHitTime), s.AccountCacheMiss, common.PrettyDuration(s.AccountCacheMissTime), accountCacheHitRate)
+	msg += fmt.Sprintf("storage: hit: %d(%v), miss: %d(%v), rate: %.2f\n", s.StorageCacheHit, common.PrettyDuration(s.StorageCacheHitTime), s.StorageCacheMiss, common.PrettyDuration(s.StorageCacheMissTime), storageCacheHitRate)
 	msg += fmt.Sprintf("code: hit: %d(%v), miss: %d(%v), rate: %.2f\n", s.CodeStats.CacheHit, common.StorageSize(s.CodeStats.CacheHitBytes), s.CodeStats.CacheMiss, common.StorageSize(s.CodeStats.CacheMissBytes), s.CodeStats.HitRate())
 	return msg
 }
@@ -623,10 +628,14 @@ type readerWithStats struct {
 	*stateReaderWithCache
 	ContractCodeReaderWithStats
 
-	accountCacheHit  atomic.Int64
-	accountCacheMiss atomic.Int64
-	storageCacheHit  atomic.Int64
-	storageCacheMiss atomic.Int64
+	accountCacheHit      atomic.Int64
+	accountCacheMiss     atomic.Int64
+	accountCacheHitTime  atomic.Int64
+	accountCacheMissTime atomic.Int64
+	storageCacheHit      atomic.Int64
+	storageCacheMiss     atomic.Int64
+	storageCacheHitTime  atomic.Int64
+	storageCacheMissTime atomic.Int64
 }
 
 // newReaderWithStats constructs the reader with additional statistics tracked.
@@ -642,14 +651,17 @@ func newReaderWithStats(sr *stateReaderWithCache, cr ContractCodeReaderWithStats
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *readerWithStats) Account(addr common.Address) (*types.StateAccount, error) {
+	start := time.Now()
 	account, incache, err := r.stateReaderWithCache.account(addr)
 	if err != nil {
 		return nil, err
 	}
 	if incache {
 		r.accountCacheHit.Add(1)
+		r.accountCacheHitTime.Add(int64(time.Since(start)))
 	} else {
 		r.accountCacheMiss.Add(1)
+		r.accountCacheMissTime.Add(int64(time.Since(start)))
 	}
 	return account, nil
 }
@@ -660,14 +672,17 @@ func (r *readerWithStats) Account(addr common.Address) (*types.StateAccount, err
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *readerWithStats) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
+	s := time.Now()
 	value, incache, err := r.stateReaderWithCache.storage(addr, slot)
 	if err != nil {
 		return common.Hash{}, err
 	}
 	if incache {
 		r.storageCacheHit.Add(1)
+		r.storageCacheHitTime.Add(int64(time.Since(s)))
 	} else {
 		r.storageCacheMiss.Add(1)
+		r.storageCacheMissTime.Add(int64(time.Since(s)))
 	}
 	return value, nil
 }
@@ -675,10 +690,14 @@ func (r *readerWithStats) Storage(addr common.Address, slot common.Hash) (common
 // GetStats implements ReaderWithStats, returning the statistics of state reader.
 func (r *readerWithStats) GetStats() ReaderStats {
 	return ReaderStats{
-		AccountCacheHit:  r.accountCacheHit.Load(),
-		AccountCacheMiss: r.accountCacheMiss.Load(),
-		StorageCacheHit:  r.storageCacheHit.Load(),
-		StorageCacheMiss: r.storageCacheMiss.Load(),
-		CodeStats:        r.ContractCodeReaderWithStats.GetStats(),
+		AccountCacheHit:      r.accountCacheHit.Load(),
+		AccountCacheMiss:     r.accountCacheMiss.Load(),
+		AccountCacheHitTime:  time.Duration(r.accountCacheHitTime.Load()),
+		AccountCacheMissTime: time.Duration(r.accountCacheMissTime.Load()),
+		StorageCacheHit:      r.storageCacheHit.Load(),
+		StorageCacheMiss:     r.storageCacheMiss.Load(),
+		StorageCacheHitTime:  time.Duration(r.storageCacheHitTime.Load()),
+		StorageCacheMissTime: time.Duration(r.storageCacheMissTime.Load()),
+		CodeStats:            r.ContractCodeReaderWithStats.GetStats(),
 	}
 }
