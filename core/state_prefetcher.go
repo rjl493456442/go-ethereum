@@ -63,7 +63,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 	workers.SetLimit(max(1, 4*runtime.NumCPU()/5)) // Aggressively run the prefetching
 
 	txs := block.Transactions()
-	earlyTxs := min(8, len(txs))
+	earlyTxs := min(4, len(txs))
 
 	// prefetchTx executes a single transaction to warm the cache
 	prefetchTx := func(i int, tx *types.Transaction) {
