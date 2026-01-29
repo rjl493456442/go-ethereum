@@ -62,80 +62,74 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 	)
 	workers.SetLimit(max(1, 4*runtime.NumCPU()/5)) // Aggressively run the prefetching
 
-	// Track completion of early transactions to signal readiness
-	var (
-		earlyTxs    = min(8, len(block.Transactions())) // Prefetch first 8 txs before signaling
-		earlyDone   atomic.Int32
-		readyClosed atomic.Bool
-	)
+	txs := block.Transactions()
+	earlyTxs := min(8, len(txs))
 
-	// Iterate over and process the individual transactions
-	for i, tx := range block.Transactions() {
-		txIndex := i               // capture for closure
-		stateCpy := statedb.Copy() // closure
+	// prefetchTx executes a single transaction to warm the cache
+	prefetchTx := func(i int, tx *types.Transaction) {
+		if interrupt != nil && interrupt.Load() {
+			return
+		}
+		stateCpy := statedb.Copy()
+
+		sender, err := types.Sender(signer, tx)
+		if err != nil {
+			fails.Add(1)
+			return
+		}
+		reader.Account(sender)
+
+		if tx.To() != nil {
+			account, _ := reader.Account(*tx.To())
+			if account != nil && !bytes.Equal(account.CodeHash, types.EmptyCodeHash.Bytes()) {
+				reader.Code(*tx.To(), common.BytesToHash(account.CodeHash))
+			}
+		}
+		for _, list := range tx.AccessList() {
+			reader.Account(list.Address)
+			for _, slot := range list.StorageKeys {
+				reader.Storage(list.Address, slot)
+			}
+		}
+
+		evm := vm.NewEVM(NewEVMBlockContext(header, p.chain, nil), stateCpy, p.config, cfg)
+		msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+		if err != nil {
+			fails.Add(1)
+			return
+		}
+		msg.SkipNonceChecks = true
+		stateCpy.SetTxContext(tx.Hash(), i)
+
+		if _, err := ApplyMessage(evm, msg, new(GasPool).AddGas(block.GasLimit())); err != nil {
+			fails.Add(1)
+		}
+	}
+
+	// Prefetch early transactions first (in parallel but prioritized)
+	for i := 0; i < earlyTxs; i++ {
+		idx, tx := i, txs[i]
 		workers.Go(func() error {
-			// If block precaching was interrupted, abort
-			if interrupt != nil && interrupt.Load() {
-				return nil
-			}
-			// Preload the touched accounts and storage slots in advance
-			sender, err := types.Sender(signer, tx)
-			if err != nil {
-				fails.Add(1)
-				return nil
-			}
-			reader.Account(sender)
+			prefetchTx(idx, tx)
+			return nil
+		})
+	}
+	workers.Wait() // Wait for early txs to complete
 
-			if tx.To() != nil {
-				account, _ := reader.Account(*tx.To())
+	// Signal executor can start
+	if ready != nil {
+		close(ready)
+	}
 
-				// Preload the contract code if the destination has non-empty code
-				if account != nil && !bytes.Equal(account.CodeHash, types.EmptyCodeHash.Bytes()) {
-					reader.Code(*tx.To(), common.BytesToHash(account.CodeHash))
-				}
-			}
-			for _, list := range tx.AccessList() {
-				reader.Account(list.Address)
-				if len(list.StorageKeys) > 0 {
-					for _, slot := range list.StorageKeys {
-						reader.Storage(list.Address, slot)
-					}
-				}
-			}
-			// Execute the message to preload the implicit touched states
-			evm := vm.NewEVM(NewEVMBlockContext(header, p.chain, nil), stateCpy, p.config, cfg)
-
-			// Convert the transaction into an executable message and pre-cache its sender
-			msg, err := TransactionToMessage(tx, signer, header.BaseFee)
-			if err != nil {
-				fails.Add(1)
-				return nil // Also invalid block, bail out
-			}
-			// Disable the nonce check
-			msg.SkipNonceChecks = true
-
-			stateCpy.SetTxContext(tx.Hash(), txIndex)
-
-			// We attempt to apply a transaction. The goal is not to execute
-			// the transaction successfully, rather to warm up touched data slots.
-			if _, err := ApplyMessage(evm, msg, new(GasPool).AddGas(block.GasLimit())); err != nil {
-				fails.Add(1)
-			}
-			// Signal readiness after early transactions complete
-			if txIndex < earlyTxs {
-				if earlyDone.Add(1) >= int32(earlyTxs) && ready != nil && readyClosed.CompareAndSwap(false, true) {
-					close(ready)
-				}
-			}
+	// Prefetch remaining transactions in parallel
+	for i := earlyTxs; i < len(txs); i++ {
+		idx, tx := i, txs[i]
+		workers.Go(func() error {
+			prefetchTx(idx, tx)
 			return nil
 		})
 	}
 	workers.Wait()
-
-	// Ensure ready is closed even if block has fewer than earlyTxs transactions
-	if ready != nil && readyClosed.CompareAndSwap(false, true) {
-		close(ready)
-	}
 
 	blockPrefetchTxsValidMeter.Mark(int64(len(block.Transactions())) - fails.Load())
 	blockPrefetchTxsInvalidMeter.Mark(fails.Load())
