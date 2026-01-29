@@ -106,22 +106,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		}
 	}
 
-	// Prefetch early transactions first (in parallel but prioritized)
-	for i := 0; i < earlyTxs; i++ {
-		idx, tx := i, txs[i]
-		workers.Go(func() error {
-			prefetchTx(idx, tx)
-			return nil
-		})
-	}
-	workers.Wait() // Wait for early txs to complete
-
-	// Signal executor can start
-	if ready != nil {
-		close(ready)
-	}
-
-	// Prefetch remaining transactions in parallel
+	// Start remaining transactions first (they run in background)
 	for i := earlyTxs; i < len(txs); i++ {
 		idx, tx := i, txs[i]
 		workers.Go(func() error {
@@ -129,6 +114,27 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 			return nil
 		})
 	}
+
+	// Prefetch first 8 transactions with dedicated workers, then signal ready.
+	// This ensures txs 0-7 are complete before executor starts, while remaining
+	// txs are already running in parallel.
+	var earlyWorkers errgroup.Group
+	earlyWorkers.SetLimit(earlyTxs) // All 8 can run in parallel
+	for i := 0; i < earlyTxs; i++ {
+		idx, tx := i, txs[i]
+		earlyWorkers.Go(func() error {
+			prefetchTx(idx, tx)
+			return nil
+		})
+	}
+	earlyWorkers.Wait() // Wait only for first 8
+
+	// Signal executor can start
+	if ready != nil {
+		close(ready)
+	}
+
+	// Wait for remaining txs to complete
 	workers.Wait()
 
 	blockPrefetchTxsValidMeter.Mark(int64(len(block.Transactions())) - fails.Load())
