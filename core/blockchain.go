@@ -2083,6 +2083,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 		startTime = time.Now()
 		statedb   *state.StateDB
 		interrupt atomic.Bool
+		pstart    time.Time // process start time, may be set early to include prefetch wait
 	)
 	defer interrupt.Store(true) // terminate the prefetch at the end
 
@@ -2143,17 +2144,25 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 			storageCacheMissReadSingleTimer.Update(storageCacheMissSingle)
 		}()
 
+		// Create a channel to signal when prefetcher has warmed initial state
+		prefetchReady := make(chan struct{})
+
 		go func(start time.Time, throwaway *state.StateDB, block *types.Block) {
 			// Disable tracing for prefetcher executions.
 			vmCfg := bc.cfg.VmConfig
 			vmCfg.Tracer = nil
-			bc.prefetcher.Prefetch(block, throwaway, vmCfg, &interrupt)
+			bc.prefetcher.Prefetch(block, throwaway, vmCfg, &interrupt, prefetchReady)
 
 			blockPrefetchExecuteTimer.Update(time.Since(start))
 			if interrupt.Load() {
 				blockPrefetchInterruptMeter.Mark(1)
 			}
 		}(time.Now(), throwaway, block)
+
+		// Wait for prefetcher to warm initial state before processing.
+		// Start the process timer now so it includes the wait time.
+		pstart = time.Now()
+		<-prefetchReady
 	}
 
 	// If we are past Byzantium, enable prefetching to pull in trie node paths
@@ -2194,7 +2203,9 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 	}
 
 	// Process block using the parent state as reference point
-	pstart := time.Now()
+	if pstart.IsZero() {
+		pstart = time.Now()
+	}
 	res, err := bc.processor.Process(block, statedb, bc.cfg.VmConfig)
 	if err != nil {
 		bc.reportBadBlock(block, res, err)
