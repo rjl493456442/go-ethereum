@@ -156,9 +156,17 @@ type slowBlockWrites struct {
 
 // slowBlockCache represents cache hit/miss statistics for cross-client analysis.
 type slowBlockCache struct {
-	Account slowBlockCacheEntry     `json:"account"`
-	Storage slowBlockCacheEntry     `json:"storage"`
-	Code    slowBlockCodeCacheEntry `json:"code"`
+	Account  slowBlockCacheEntry     `json:"account"`
+	Storage  slowBlockCacheEntry     `json:"storage"`
+	Code     slowBlockCodeCacheEntry `json:"code"`
+	Prefetch slowBlockPrefetchEntry  `json:"prefetch,omitempty"`
+}
+
+// slowBlockPrefetchEntry represents prefetcher cache statistics.
+type slowBlockPrefetchEntry struct {
+	StorageHits   int64   `json:"storage_hits"`
+	StorageMisses int64   `json:"storage_misses"`
+	HitRate       float64 `json:"hit_rate"`
 }
 
 // slowBlockCacheEntry represents cache statistics for account/storage caches.
@@ -253,6 +261,11 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 				HitRate:   calculateHitRate(s.StateReadCacheStats.CodeStats.CacheHit, s.StateReadCacheStats.CodeStats.CacheMiss),
 				HitBytes:  s.StateReadCacheStats.CodeStats.CacheHitBytes,
 				MissBytes: s.StateReadCacheStats.CodeStats.CacheMissBytes,
+			},
+			Prefetch: slowBlockPrefetchEntry{
+				StorageHits:   s.StatePrefetchCacheStats.StorageCacheHit,
+				StorageMisses: s.StatePrefetchCacheStats.StorageCacheMiss,
+				HitRate:       calculateHitRate(s.StatePrefetchCacheStats.StorageCacheHit, s.StatePrefetchCacheStats.StorageCacheMiss),
 			},
 		},
 	}
