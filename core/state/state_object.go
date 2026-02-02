@@ -277,27 +277,28 @@ func (s *stateObject) finalise() {
 	s.newContract = false
 }
 
-// updateTrie is responsible for persisting cached storage changes into the
-// object's storage trie. In case the storage trie is not yet loaded, this
-// function will load the trie automatically. If any issues arise during the
-// loading or updating of the trie, an error will be returned. Furthermore,
-// this function will return the mutated storage trie, or nil if there is no
-// storage change at all.
+// updateTrie is responsible for saving cached storage mutations into the
+// storage trie. But it will not write trie nodes into the database. If it's
+// called in the context of state commit, the changes will be written into
+// the database as a whole at the final step.
 //
-// It assumes all the dirty storage slots have been finalized before.
-func (s *stateObject) updateTrie() (Trie, error) {
+// Returns the trie, prefetch wait time, trie update time, slot count, and error.
+func (s *stateObject) updateTrie() (Trie, time.Duration, time.Duration, int, error) {
 	// Short circuit if nothing was accessed, don't trigger a prefetcher warning
 	if len(s.uncommittedStorage) == 0 {
 		// Nothing was written, so we could stop early. Unless we have both reads
 		// and witness collection enabled, in which case we need to fetch the trie.
 		if s.db.witness == nil || len(s.originStorage) == 0 {
-			return s.trie, nil
+			return s.trie, 0, 0, 0, nil
 		}
 	}
 	// Retrieve a pretecher populated trie, or fall back to the database. This will
 	// block until all prefetch tasks are done, which are needed for witnesses even
 	// for unmodified state objects.
+	prefetchStart := time.Now()
 	tr := s.getPrefetchedTrie()
+	prefetchWait := time.Since(prefetchStart)
+
 	if tr != nil {
 		// Prefetcher returned a live trie, swap it out for the current one
 		s.trie = tr
@@ -307,12 +308,13 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		tr, err = s.getTrie()
 		if err != nil {
 			s.db.setError(err)
-			return nil, err
+			return nil, 0, 0, 0, err
 		}
 	}
 	// Short circuit if nothing changed, don't bother with hashing anything
-	if len(s.uncommittedStorage) == 0 {
-		return s.trie, nil
+	slotCount := len(s.uncommittedStorage)
+	if slotCount == 0 {
+		return s.trie, prefetchWait, 0, 0, nil
 	}
 	// Perform trie updates before deletions. This prevents resolution of unnecessary trie nodes
 	// in circumstances similar to the following:
@@ -325,8 +327,9 @@ func (s *stateObject) updateTrie() (Trie, error) {
 	// into a shortnode. This requires `B` to be resolved from disk.
 	// Whereas if the created node is handled first, then the collapse is avoided, and `B` is not resolved.
 	var (
-		deletions []common.Hash
-		used      = make([]common.Hash, 0, len(s.uncommittedStorage))
+		deletions       []common.Hash
+		used            = make([]common.Hash, 0, len(s.uncommittedStorage))
+		trieUpdateStart = time.Now()
 	)
 	for key, origin := range s.uncommittedStorage {
 		// Skip noop changes, persist actual changes
@@ -342,7 +345,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		if (value != common.Hash{}) {
 			if err := tr.UpdateStorage(s.address, key[:], common.TrimLeftZeroes(value[:])); err != nil {
 				s.db.setError(err)
-				return nil, err
+				return nil, 0, 0, 0, err
 			}
 			s.db.StorageUpdated.Add(1)
 		} else {
@@ -354,15 +357,19 @@ func (s *stateObject) updateTrie() (Trie, error) {
 	for _, key := range deletions {
 		if err := tr.DeleteStorage(s.address, key[:]); err != nil {
 			s.db.setError(err)
-			return nil, err
+			return nil, 0, 0, 0, err
 		}
 		s.db.StorageDeleted.Add(1)
 	}
+	trieUpdateTime := time.Since(trieUpdateStart)
+
 	if s.db.prefetcher != nil {
 		s.db.prefetcher.used(s.addrHash, s.data.Root, nil, used)
 	}
 	s.uncommittedStorage = make(Storage) // empties the commit markers
-	return tr, nil
+
+	// Return timing info for the caller to track
+	return tr, prefetchWait, trieUpdateTime, slotCount, nil
 }
 
 // updateRoot flushes all cached storage mutations to trie, recalculating the
@@ -370,11 +377,28 @@ func (s *stateObject) updateTrie() (Trie, error) {
 func (s *stateObject) updateRoot() {
 	// Flush cached storage mutations into trie, short circuit if any error
 	// is occurred or there is no change in the trie.
-	tr, err := s.updateTrie()
+	tr, prefetchWait, trieUpdateTime, slotCount, err := s.updateTrie()
 	if err != nil || tr == nil {
 		return
 	}
+	hashStart := time.Now()
 	s.data.Root = tr.Hash()
+	hashTime := time.Since(hashStart)
+
+	// Track the slowest storage trie (determines wall-clock time since hashing is parallel)
+	totalTime := prefetchWait + trieUpdateTime + hashTime
+	s.db.storageTimingMu.Lock()
+	if totalTime > s.db.storageTiming.TotalTime {
+		s.db.storageTiming = slowestStorageTrie{
+			Address:      s.address,
+			TotalTime:    totalTime,
+			PrefetchWait: prefetchWait,
+			TrieUpdate:   trieUpdateTime,
+			HashTime:     hashTime,
+			SlotCount:    slotCount,
+		}
+	}
+	s.db.storageTimingMu.Unlock()
 }
 
 // commitStorage overwrites the clean storage with the storage changes and

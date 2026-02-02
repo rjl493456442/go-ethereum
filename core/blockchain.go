@@ -2260,6 +2260,15 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 	stats.AccountUpdates = statedb.AccountUpdates // Account updates are complete(in validation)
 	stats.StorageUpdates = statedb.StorageUpdates // Storage updates are complete(in validation)
 	stats.AccountHashes = statedb.AccountHashes   // Account hashes are complete(in validation)
+
+	// Slowest storage trie timing (determines wall-clock time since hashing is parallel)
+	slowest := statedb.SlowestStorageTrie()
+	stats.SlowestTrieAddress = slowest.Address
+	stats.SlowestTrieTotalTime = slowest.TotalTime
+	stats.SlowestTriePrefetchWait = slowest.PrefetchWait
+	stats.SlowestTrieUpdate = slowest.TrieUpdate
+	stats.SlowestTrieHash = slowest.HashTime
+	stats.SlowestTrieSlotCount = slowest.SlotCount
 	stats.CodeReads = statedb.CodeReads
 
 	stats.AccountLoaded = statedb.AccountLoaded

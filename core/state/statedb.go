@@ -65,6 +65,18 @@ func (m *mutation) isDelete() bool {
 	return m.typ == deletion
 }
 
+// slowestStorageTrie tracks timing for the slowest storage trie during state hashing.
+// Since storage tries are hashed in parallel, the wall-clock time is determined by
+// the slowest one, not the sum of all.
+type slowestStorageTrie struct {
+	Address      common.Address // Address of the slowest storage trie
+	TotalTime    time.Duration  // Total time (prefetch wait + trie update + hash)
+	PrefetchWait time.Duration  // Time waiting for trie-prefetcher
+	TrieUpdate   time.Duration  // Time updating storage trie nodes
+	HashTime     time.Duration  // Time hashing the storage trie
+	SlotCount    int            // Number of storage slots updated
+}
+
 // StateDB structs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
@@ -148,6 +160,8 @@ type StateDB struct {
 	StorageReads    time.Duration
 	StorageUpdates  time.Duration
 	StorageCommits  time.Duration
+	storageTiming   slowestStorageTrie // Tracks the slowest storage trie timing
+	storageTimingMu sync.Mutex         // Mutex for concurrent updates to storage timing
 	SnapshotCommits time.Duration
 	TrieDBCommits   time.Duration
 	CodeReads       time.Duration
@@ -167,6 +181,14 @@ type StateDB struct {
 	CodeLoadBytes   int // Total bytes of resolved code
 	CodeUpdated     int // Number of contracts with code changes that persisted
 	CodeUpdateBytes int // Total bytes of persisted code written
+}
+
+// SlowestStorageTrie returns timing info for the slowest storage trie during state hashing.
+// Since storage tries are hashed in parallel, the wall-clock time is determined by the slowest one.
+func (s *StateDB) SlowestStorageTrie() slowestStorageTrie {
+	s.storageTimingMu.Lock()
+	defer s.storageTimingMu.Unlock()
+	return s.storageTiming
 }
 
 // New creates a new state from a given trie.

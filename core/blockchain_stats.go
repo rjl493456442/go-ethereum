@@ -38,6 +38,14 @@ type ExecuteStats struct {
 	StorageCommits time.Duration // Time spent on the storage trie commit
 	CodeReads      time.Duration // Time spent on the contract code read
 
+	// Slowest storage trie timing (determines wall-clock time since hashing is parallel)
+	SlowestTrieAddress      common.Address // Address of the slowest storage trie
+	SlowestTrieTotalTime    time.Duration  // Total time for slowest trie
+	SlowestTriePrefetchWait time.Duration  // Prefetch wait time for slowest trie
+	SlowestTrieUpdate       time.Duration  // Trie update time for slowest trie
+	SlowestTrieHash         time.Duration  // Hash time for slowest trie
+	SlowestTrieSlotCount    int            // Number of slots in slowest trie
+
 	AccountLoaded   int // Number of accounts loaded
 	AccountUpdated  int // Number of accounts updated
 	AccountDeleted  int // Number of accounts deleted
@@ -132,6 +140,14 @@ type slowBlockTime struct {
 	StateHashMs float64 `json:"state_hash_ms"`
 	CommitMs    float64 `json:"commit_ms"`
 	TotalMs     float64 `json:"total_ms"`
+
+	// Slowest storage trie breakdown (determines wall-clock time since hashing is parallel)
+	SlowestTrieAddress    string  `json:"slowest_trie_address"`
+	SlowestTrieTotalMs    float64 `json:"slowest_trie_total_ms"`
+	SlowestTriePrefetchMs float64 `json:"slowest_trie_prefetch_ms"`
+	SlowestTrieUpdateMs   float64 `json:"slowest_trie_update_ms"`
+	SlowestTrieHashMs     float64 `json:"slowest_trie_hash_ms"`
+	SlowestTrieSlotCount  int     `json:"slowest_trie_slot_count"`
 }
 
 type slowBlockThru struct {
@@ -226,6 +242,14 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 			StateHashMs: durationToMs(s.AccountHashes + s.AccountUpdates + s.StorageUpdates),
 			CommitMs:    durationToMs(max(s.AccountCommits, s.StorageCommits) + s.TrieDBCommit + s.SnapshotCommit + s.BlockWrite),
 			TotalMs:     durationToMs(s.TotalTime),
+
+			// Slowest storage trie breakdown
+			SlowestTrieAddress:    s.SlowestTrieAddress.Hex(),
+			SlowestTrieTotalMs:    durationToMs(s.SlowestTrieTotalTime),
+			SlowestTriePrefetchMs: durationToMs(s.SlowestTriePrefetchWait),
+			SlowestTrieUpdateMs:   durationToMs(s.SlowestTrieUpdate),
+			SlowestTrieHashMs:     durationToMs(s.SlowestTrieHash),
+			SlowestTrieSlotCount:  s.SlowestTrieSlotCount,
 		},
 		Throughput: slowBlockThru{
 			MgasPerSec: s.MgasPerSecond,
