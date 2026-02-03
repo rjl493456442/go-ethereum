@@ -203,9 +203,10 @@ type BlockChainConfig struct {
 	ChainHistoryMode history.HistoryMode
 
 	// Misc options
-	NoPrefetch bool            // Whether to disable heuristic state prefetching when processing blocks
-	Overrides  *ChainOverrides // Optional chain config overrides
-	VmConfig   vm.Config       // Config options for the EVM Interpreter
+	NoPrefetch               bool            // Whether to disable heuristic state prefetching when processing blocks
+	StatePrefetcherHeadStart int             // Number of transactions to prefetch before signaling ready (default 1)
+	Overrides                *ChainOverrides // Optional chain config overrides
+	VmConfig                 vm.Config       // Config options for the EVM Interpreter
 
 	// TxLookupLimit specifies the maximum number of blocks from head for which
 	// transaction hashes will be indexed.
@@ -424,7 +425,7 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 	bc.flushInterval.Store(int64(cfg.TrieTimeLimit))
 	bc.statedb = state.NewDatabase(bc.triedb, nil)
 	bc.validator = NewBlockValidator(chainConfig, bc)
-	bc.prefetcher = newStatePrefetcher(chainConfig, bc.hc)
+	bc.prefetcher = newStatePrefetcher(chainConfig, bc.hc, cfg.StatePrefetcherHeadStart)
 	bc.processor = NewStateProcessor(bc.hc)
 
 	genesisHeader := bc.GetHeaderByNumber(0)
@@ -2261,7 +2262,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 	stats.StorageUpdates = statedb.StorageUpdates // Storage updates are complete(in validation)
 	stats.AccountHashes = statedb.AccountHashes   // Account hashes are complete(in validation)
 
-	// Slowest storage trie timing (determines wall-clock time since hashing is parallel)
+	// Slowest storage trie timing
 	slowest := statedb.SlowestStorageTrie()
 	stats.SlowestTrieAddress = slowest.Address
 	stats.SlowestTrieTotalTime = slowest.TotalTime

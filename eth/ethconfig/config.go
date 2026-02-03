@@ -101,8 +101,9 @@ type Config struct {
 	SnapDiscoveryURLs []string
 
 	// State options.
-	NoPruning  bool // Whether to disable pruning and flush everything to disk
-	NoPrefetch bool // Whether to disable prefetching and only load state on demand
+	NoPruning                bool // Whether to disable pruning and flush everything to disk
+	NoPrefetch               bool // Whether to disable prefetching and only load state on demand
+	StatePrefetcherHeadStart int  // Number of transactions to prefetch before signaling ready (default 1)
 
 	// Deprecated: use 'TransactionHistory' instead.
 	TxLookupLimit uint64 `toml:",omitempty"` // The maximum number of blocks from head whose tx indices are reserved.

@@ -107,6 +107,7 @@ var (
 		utils.CacheGCFlag,
 		utils.CacheSnapshotFlag,
 		utils.CacheNoPrefetchFlag,
+		utils.StatePrefetcherHeadStartFlag,
 		utils.CachePreimagesFlag,
 		utils.CacheLogSizeFlag,
 		utils.FDLimitFlag,

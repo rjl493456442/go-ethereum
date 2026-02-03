@@ -34,15 +34,22 @@ import (
 // from disk. Transactions are executed in parallel to fully leverage the
 // SSD's read performance.
 type statePrefetcher struct {
-	config *params.ChainConfig // Chain configuration options
-	chain  *HeaderChain        // Canonical block chain
+	config    *params.ChainConfig // Chain configuration options
+	chain     *HeaderChain        // Canonical block chain
+	headStart int                 // Number of transactions to prefetch before signaling ready
 }
 
 // newStatePrefetcher initialises a new statePrefetcher.
-func newStatePrefetcher(config *params.ChainConfig, chain *HeaderChain) *statePrefetcher {
+// headStart controls how many transactions to prefetch before signaling ready.
+// A value of 0 means signal ready immediately (no head start).
+func newStatePrefetcher(config *params.ChainConfig, chain *HeaderChain, headStart int) *statePrefetcher {
+	if headStart < 0 {
+		headStart = 0
+	}
 	return &statePrefetcher{
-		config: config,
-		chain:  chain,
+		config:    config,
+		chain:     chain,
+		headStart: headStart,
 	}
 }
 
@@ -63,7 +70,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 	workers.SetLimit(max(1, 4*runtime.NumCPU()/5)) // Aggressively run the prefetching
 
 	txs := block.Transactions()
-	earlyTxs := min(1, len(txs))
+	earlyTxs := min(p.headStart, len(txs))
 
 	// prefetchTx executes a single transaction to warm the cache
 	prefetchTx := func(i int, tx *types.Transaction) {
