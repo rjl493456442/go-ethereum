@@ -277,12 +277,14 @@ func (s *stateObject) finalise() {
 	s.newContract = false
 }
 
-// updateTrie is responsible for saving cached storage mutations into the
-// storage trie. But it will not write trie nodes into the database. If it's
-// called in the context of state commit, the changes will be written into
-// the database as a whole at the final step.
+// updateTrie is responsible for persisting cached storage changes into the
+// object's storage trie. In case the storage trie is not yet loaded, this
+// function will load the trie automatically. If any issues arise during the
+// loading or updating of the trie, an error will be returned. Furthermore,
+// this function will return the mutated storage trie, or nil if there is no
+// storage change at all.
 //
-// Returns the trie, prefetch wait time, trie update time, slot count, and error.
+// It assumes all the dirty storage slots have been finalized before.
 func (s *stateObject) updateTrie() (Trie, time.Duration, time.Duration, int, error) {
 	// Short circuit if nothing was accessed, don't trigger a prefetcher warning
 	if len(s.uncommittedStorage) == 0 {

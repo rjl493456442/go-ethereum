@@ -66,8 +66,6 @@ func (m *mutation) isDelete() bool {
 }
 
 // slowestStorageTrie tracks timing for the slowest storage trie during state hashing.
-// Since storage tries are hashed in parallel, the wall-clock time is determined by
-// the slowest one, not the sum of all.
 type slowestStorageTrie struct {
 	Address      common.Address // Address of the slowest storage trie
 	TotalTime    time.Duration  // Total time (prefetch wait + trie update + hash)
