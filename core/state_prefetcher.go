@@ -72,12 +72,18 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 	txs := block.Transactions()
 	earlyTxs := min(p.headStart, len(txs))
 
+	// If no head start, signal ready immediately (matches original behavior where
+	// prefetcher and main executor ran completely in parallel from the start)
+	if earlyTxs == 0 && ready != nil {
+		close(ready)
+		ready = nil // Prevent double-close later
+	}
+
 	// prefetchTx executes a single transaction to warm the cache
-	prefetchTx := func(i int, tx *types.Transaction) {
+	prefetchTx := func(i int, tx *types.Transaction, stateCpy *state.StateDB) {
 		if interrupt != nil && interrupt.Load() {
 			return
 		}
-		stateCpy := statedb.Copy()
 
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
@@ -94,8 +100,10 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		}
 		for _, list := range tx.AccessList() {
 			reader.Account(list.Address)
-			for _, slot := range list.StorageKeys {
-				reader.Storage(list.Address, slot)
+			if len(list.StorageKeys) > 0 {
+				for _, slot := range list.StorageKeys {
+					reader.Storage(list.Address, slot)
+				}
 			}
 		}
 
@@ -115,26 +123,26 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 
 	// Start remaining transactions first (they run in background)
 	for i := earlyTxs; i < len(txs); i++ {
-		idx, tx := i, txs[i]
+		idx, tx, stateCpy := i, txs[i], statedb.Copy()
 		workers.Go(func() error {
-			prefetchTx(idx, tx)
+			prefetchTx(idx, tx, stateCpy)
 			return nil
 		})
 	}
 
-	// Prefetch first 8 transactions with dedicated workers, then signal ready.
-	// This ensures txs 0-7 are complete before executor starts, while remaining
+	// Prefetch earlyTxs with dedicated workers, then signal ready.
+	// This ensures txs 0-earlyTxs are complete before executor starts, while remaining
 	// txs are already running in parallel.
 	var earlyWorkers errgroup.Group
-	earlyWorkers.SetLimit(earlyTxs) // All 8 can run in parallel
+	earlyWorkers.SetLimit(earlyTxs) // All earlyTxs can run in parallel
 	for i := 0; i < earlyTxs; i++ {
-		idx, tx := i, txs[i]
+		idx, tx, stateCpy := i, txs[i], statedb.Copy()
 		earlyWorkers.Go(func() error {
-			prefetchTx(idx, tx)
+			prefetchTx(idx, tx, stateCpy)
 			return nil
 		})
 	}
-	earlyWorkers.Wait() // Wait only for first 8
+	earlyWorkers.Wait() // Wait only for first earlyTxs
 
 	// Signal executor can start
 	if ready != nil {
