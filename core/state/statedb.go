@@ -247,7 +247,7 @@ func (s *StateDB) StartPrefetcher(namespace string, witness *stateless.Witness, 
 	// To prevent this, the account trie is always scheduled for prefetching once
 	// the prefetcher is constructed. For more details, see:
 	// https://github.com/ethereum/go-ethereum/issues/29880
-	s.prefetcher = newTriePrefetcher(s.db.TrieDB().IsVerkle(), s.nReader, s.originalRoot, namespace, witness == nil)
+	s.prefetcher = newTriePrefetcher(s.db.TrieDB().IsVerkle(), s.db.TrieDB(), s.nReader, s.originalRoot, namespace, witness == nil)
 	if err := s.prefetcher.prefetch(common.Hash{}, s.originalRoot, common.Address{}, nil, nil, false); err != nil {
 		log.Error("Failed to prefetch account trie", "root", s.originalRoot, "err", err)
 	}

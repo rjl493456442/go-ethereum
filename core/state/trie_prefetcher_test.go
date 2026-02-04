@@ -52,7 +52,7 @@ func TestUseAfterTerminate(t *testing.T) {
 	t.SkipNow()
 
 	db := filledStateDB()
-	prefetcher := newTriePrefetcher(false, nil, db.originalRoot, "", true)
+	prefetcher := newTriePrefetcher(false, nil, nil, db.originalRoot, "", true)
 	skey := common.HexToHash("aaa")
 
 	if err := prefetcher.prefetch(common.Hash{}, db.originalRoot, common.Address{}, nil, []common.Hash{skey}, false); err != nil {
@@ -91,7 +91,7 @@ func TestVerklePrefetcher(t *testing.T) {
 
 	state, _ = New(root, sdb)
 	sRoot := state.GetStorageRoot(addr)
-	fetcher := newTriePrefetcher(true, nil, root, "", false)
+	fetcher := newTriePrefetcher(true, nil, nil, root, "", false)
 
 	// Read account
 	fetcher.prefetch(common.Hash{}, root, common.Address{}, []common.Address{addr}, nil, false)
