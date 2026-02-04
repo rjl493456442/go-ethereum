@@ -38,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/ethereum/go-ethereum/triedb/database"
 	"github.com/holiman/uint256"
 	"golang.org/x/sync/errgroup"
 )
@@ -90,6 +91,7 @@ type StateDB struct {
 	db         Database
 	prefetcher *triePrefetcher
 	reader     Reader
+	nReader    database.NodeReader
 	trie       Trie // it's resolved on first access
 
 	// originalRoot is the pre-state root, before any changes were made.
@@ -195,16 +197,21 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWithReader(root, db, reader)
+	nReader, err := db.NodeReader(root)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithReader(root, db, reader, nReader)
 }
 
 // NewWithReader creates a new state for the specified state root. Unlike New,
 // this function accepts an additional Reader which is bound to the given root.
-func NewWithReader(root common.Hash, db Database, reader Reader) (*StateDB, error) {
+func NewWithReader(root common.Hash, db Database, reader Reader, nReader database.NodeReader) (*StateDB, error) {
 	sdb := &StateDB{
 		db:                   db,
 		originalRoot:         root,
 		reader:               reader,
+		nReader:              nReader,
 		stateObjects:         make(map[common.Address]*stateObject),
 		stateObjectsDestruct: make(map[common.Address]*stateObject),
 		mutations:            make(map[common.Address]*mutation),
@@ -240,7 +247,7 @@ func (s *StateDB) StartPrefetcher(namespace string, witness *stateless.Witness, 
 	// To prevent this, the account trie is always scheduled for prefetching once
 	// the prefetcher is constructed. For more details, see:
 	// https://github.com/ethereum/go-ethereum/issues/29880
-	s.prefetcher = newTriePrefetcher(s.db, s.originalRoot, namespace, witness == nil)
+	s.prefetcher = newTriePrefetcher(s.db.TrieDB().IsVerkle(), s.nReader, s.originalRoot, namespace, witness == nil)
 	if err := s.prefetcher.prefetch(common.Hash{}, s.originalRoot, common.Address{}, nil, nil, false); err != nil {
 		log.Error("Failed to prefetch account trie", "root", s.originalRoot, "err", err)
 	}
@@ -695,6 +702,7 @@ func (s *StateDB) Copy() *StateDB {
 	state := &StateDB{
 		db:                   s.db,
 		reader:               s.reader,
+		nReader:              s.nReader,
 		originalRoot:         s.originalRoot,
 		stateObjects:         make(map[common.Address]*stateObject, len(s.stateObjects)),
 		stateObjectsDestruct: make(map[common.Address]*stateObject, len(s.stateObjectsDestruct)),
@@ -822,7 +830,11 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// This operation must be done before state object storage hashing,
 	// as it assumes the main trie is already loaded.
 	if s.trie == nil {
-		tr, err := s.db.OpenTrie(s.originalRoot)
+		o := &trienodeReaderOpener{
+			reader:   s.nReader,
+			Database: s.db.TrieDB(),
+		}
+		tr, err := trie.NewStateTrie(trie.StateTrieID(s.originalRoot), o)
 		if err != nil {
 			s.setError(err)
 			return common.Hash{}

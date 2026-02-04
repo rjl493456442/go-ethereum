@@ -2103,11 +2103,15 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 		if err != nil {
 			return nil, err
 		}
-		throwaway, err := state.NewWithReader(parentRoot, bc.statedb, prefetch)
+		prefetchNodeReader, processNodeReader, err := bc.statedb.TrieReaderWithStats(parentRoot)
 		if err != nil {
 			return nil, err
 		}
-		statedb, err = state.NewWithReader(parentRoot, bc.statedb, process)
+		throwaway, err := state.NewWithReader(parentRoot, bc.statedb, prefetch, prefetchNodeReader)
+		if err != nil {
+			return nil, err
+		}
+		statedb, err = state.NewWithReader(parentRoot, bc.statedb, process, processNodeReader)
 		if err != nil {
 			return nil, err
 		}
@@ -2152,6 +2156,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 			// Disable tracing for prefetcher executions.
 			vmCfg := bc.cfg.VmConfig
 			vmCfg.Tracer = nil
+
 			bc.prefetcher.Prefetch(block, throwaway, vmCfg, &interrupt, prefetchReady)
 
 			blockPrefetchExecuteTimer.Update(time.Since(start))

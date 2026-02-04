@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie/transitiontrie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
+	"github.com/ethereum/go-ethereum/triedb/database"
 )
 
 const (
@@ -46,6 +47,8 @@ const (
 type Database interface {
 	// Reader returns a state reader associated with the specified state root.
 	Reader(root common.Hash) (Reader, error)
+
+	NodeReader(root common.Hash) (database.NodeReader, error)
 
 	// OpenTrie opens the main account trie.
 	OpenTrie(root common.Hash) (Trie, error)
@@ -219,6 +222,13 @@ func (db *CachingDB) Reader(stateRoot common.Hash) (Reader, error) {
 		return nil, err
 	}
 	return newReader(newCachingCodeReader(db.disk, db.codeCache, db.codeSizeCache), sr), nil
+}
+
+func (db *CachingDB) NodeReader(root common.Hash) (database.NodeReader, error) {
+	if root == types.EmptyRootHash {
+		return &emptyTrienodeReader{}, nil
+	}
+	return db.triedb.NodeReader(root)
 }
 
 // ReadersWithCacheStats creates a pair of state readers that share the same

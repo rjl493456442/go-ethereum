@@ -84,6 +84,7 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		if interrupt != nil && interrupt.Load() {
 			return
 		}
+		stateCpy.StartPrefetcher("prefetcher", nil, nil)
 
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
@@ -119,6 +120,10 @@ func (p *statePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		if _, err := ApplyMessage(evm, msg, new(GasPool).AddGas(block.GasLimit())); err != nil {
 			fails.Add(1)
 		}
+		// Emit the prefetching tasks at the end of transaction. Ideally stream them
+		// out alongside the execution. TODO(rjl493456442)
+		stateCpy.Finalise(true)
+		stateCpy.StopPrefetcher() // Block until all the prefetching tasks are completed
 	}
 
 	// Start remaining transactions first (they run in background)

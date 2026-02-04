@@ -237,6 +237,13 @@ func NewHistoricDatabase(disk ethdb.KeyValueStore, triedb *triedb.Database) *His
 	}
 }
 
+func (db *HistoricDB) NodeReader(root common.Hash) (database.NodeReader, error) {
+	if root == types.EmptyRootHash {
+		return &emptyTrienodeReader{}, nil
+	}
+	return db.triedb.NodeReader(root)
+}
+
 // Reader implements Database interface, returning a reader of the specific state.
 func (db *HistoricDB) Reader(stateRoot common.Hash) (Reader, error) {
 	var readers []StateReader

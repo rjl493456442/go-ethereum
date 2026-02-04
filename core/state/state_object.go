@@ -127,8 +127,11 @@ func (s *stateObject) touch() {
 // subsequent reads to expand the same trie instead of reloading from disk.
 func (s *stateObject) getTrie() (Trie, error) {
 	if s.trie == nil {
-		// Assumes the primary account trie is already loaded
-		tr, err := s.db.db.OpenStorageTrie(s.db.originalRoot, s.address, s.data.Root, s.db.trie)
+		o := &trienodeReaderOpener{
+			reader:   s.db.nReader,
+			Database: s.db.Database().TrieDB(),
+		}
+		tr, err := trie.NewStateTrie(trie.StorageTrieID(s.db.originalRoot, crypto.Keccak256Hash(s.address.Bytes()), s.data.Root), o)
 		if err != nil {
 			return nil, err
 		}
