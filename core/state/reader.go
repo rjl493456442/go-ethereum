@@ -22,13 +22,10 @@ import (
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/overlay"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
-	"github.com/ethereum/go-ethereum/trie/bintrie"
-	"github.com/ethereum/go-ethereum/trie/transitiontrie"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/database"
 )
@@ -148,70 +145,26 @@ func (r *flatReader) Storage(addr common.Address, key common.Hash) (common.Hash,
 	return value, nil
 }
 
-// trieReader implements the StateReader interface, providing functions to access
-// state from the referenced trie.
+// merkleTreeReader implements the StateReader interface, providing functions
+// to access state from the referenced merkle trie.
 //
 // trieReader is safe for concurrent read.
-type trieReader struct {
+type merkleTreeReader struct {
 	root common.Hash      // State root which uniquely represent a state
 	db   *triedb.Database // Database for loading trie
 
-	// Main trie, resolved in constructor. Note either the Merkle-Patricia-tree
-	// or Verkle-tree is not safe for concurrent read.
-	mainTrie Trie
-
+	mainTrie Trie                           // Account trie
 	subRoots map[common.Address]common.Hash // Set of storage roots, cached when the account is resolved
 	subTries map[common.Address]Trie        // Group of storage tries, cached when it's resolved
 	lock     sync.Mutex                     // Lock for protecting concurrent read
 }
 
-// newTrieReader constructs a trie reader of the specific state. An error will be
-// returned if the associated trie specified by root is not existent.
-func newTrieReader(root common.Hash, db *triedb.Database) (*trieReader, error) {
-	var (
-		tr  Trie
-		err error
-	)
-	if !db.IsVerkle() {
-		tr, err = trie.NewStateTrie(trie.StateTrieID(root), db)
-	} else {
-		// When IsVerkle() is true, create a BinaryTrie wrapped in TransitionTrie
-		binTrie, binErr := bintrie.NewBinaryTrie(root, db)
-		if binErr != nil {
-			return nil, binErr
-		}
-
-		// Based on the transition status, determine if the overlay
-		// tree needs to be created, or if a single, target tree is
-		// to be picked.
-		ts := overlay.LoadTransitionState(db.Disk(), root, true)
-		if ts.InTransition() {
-			mpt, err := trie.NewStateTrie(trie.StateTrieID(ts.BaseRoot), db)
-			if err != nil {
-				return nil, err
-			}
-			tr = transitiontrie.NewTransitionTrie(mpt, binTrie, false)
-		} else {
-			// HACK: Use TransitionTrie with nil base as a wrapper to make BinaryTrie
-			// satisfy the Trie interface. This works around the import cycle between
-			// trie and trie/bintrie packages.
-			//
-			// TODO: In future PRs, refactor the package structure to avoid this hack:
-			// - Option 1: Move common interfaces (Trie, NodeIterator) to a separate
-			//   package that both trie and trie/bintrie can import
-			// - Option 2: Create a factory function in the trie package that returns
-			//   BinaryTrie as a Trie interface without direct import
-			// - Option 3: Move BinaryTrie to the main trie package
-			//
-			// The current approach works but adds unnecessary overhead and complexity
-			// by using TransitionTrie when there's no actual transition happening.
-			tr = transitiontrie.NewTransitionTrie(nil, binTrie, false)
-		}
-	}
+func newMerkleTreeReader(root common.Hash, db *triedb.Database) (*merkleTreeReader, error) {
+	tr, err := trie.NewStateTrie(trie.StateTrieID(root), db)
 	if err != nil {
 		return nil, err
 	}
-	return &trieReader{
+	return &merkleTreeReader{
 		root:     root,
 		db:       db,
 		mainTrie: tr,
@@ -221,7 +174,7 @@ func newTrieReader(root common.Hash, db *triedb.Database) (*trieReader, error) {
 }
 
 // account is the inner version of Account and assumes the r.lock is already held.
-func (r *trieReader) account(addr common.Address) (*types.StateAccount, error) {
+func (r *merkleTreeReader) account(addr common.Address) (*types.StateAccount, error) {
 	account, err := r.mainTrie.GetAccount(addr)
 	if err != nil {
 		return nil, err
@@ -238,7 +191,7 @@ func (r *trieReader) account(addr common.Address) (*types.StateAccount, error) {
 //
 // An error will be returned if the trie state is corrupted. An nil account
 // will be returned if it's not existent in the trie.
-func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
+func (r *merkleTreeReader) Account(addr common.Address) (*types.StateAccount, error) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
@@ -250,43 +203,89 @@ func (r *trieReader) Account(addr common.Address) (*types.StateAccount, error) {
 //
 // An error will be returned if the trie state is corrupted. An empty storage
 // slot will be returned if it's not existent in the trie.
-func (r *trieReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
+func (r *merkleTreeReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	var (
-		tr    Trie
-		found bool
-		value common.Hash
-	)
-	if r.db.IsVerkle() {
-		tr = r.mainTrie
-	} else {
-		tr, found = r.subTries[addr]
-		if !found {
-			root, ok := r.subRoots[addr]
+	tr, found := r.subTries[addr]
+	if !found {
+		root, ok := r.subRoots[addr]
 
-			// The storage slot is accessed without account caching. It's unexpected
-			// behavior but try to resolve the account first anyway.
-			if !ok {
-				_, err := r.account(addr)
-				if err != nil {
-					return common.Hash{}, err
-				}
-				root = r.subRoots[addr]
-			}
-			var err error
-			tr, err = trie.NewStateTrie(trie.StorageTrieID(r.root, crypto.Keccak256Hash(addr.Bytes()), root), r.db)
+		// The storage slot is accessed without account caching. It's unexpected
+		// behavior but try to resolve the account first anyway.
+		if !ok {
+			_, err := r.account(addr)
 			if err != nil {
 				return common.Hash{}, err
 			}
-			r.subTries[addr] = tr
+			root = r.subRoots[addr]
 		}
+		var err error
+		tr, err = trie.NewStateTrie(trie.StorageTrieID(r.root, crypto.Keccak256Hash(addr.Bytes()), root), r.db)
+		if err != nil {
+			return common.Hash{}, err
+		}
+		r.subTries[addr] = tr
 	}
 	ret, err := tr.GetStorage(addr, key.Bytes())
 	if err != nil {
 		return common.Hash{}, err
 	}
+	var value common.Hash
+	value.SetBytes(ret)
+	return value, nil
+}
+
+// binaryTreeReader implements the StateReader interface, providing functions to
+// access state from the referenced binary trie.
+//
+// binaryTreeReader is safe for concurrent read.
+type binaryTreeReader struct {
+	tr   Trie       // Binary tree
+	lock sync.Mutex // Lock for protecting concurrent read
+}
+
+// newBinaryTreeReader constructs a trie reader of the specific state. An error
+// will be returned if the associated trie specified by root is not existent.
+func newBinaryTreeReader(root common.Hash, db *triedb.Database, firstBinary bool) (*binaryTreeReader, error) {
+	tr, err := openBinaryTree(root, db, firstBinary)
+	if err != nil {
+		return nil, err
+	}
+	return &binaryTreeReader{
+		tr: tr,
+	}, nil
+}
+
+// Account implements StateReader, retrieving the account specified by the address.
+//
+// An error will be returned if the trie state is corrupted. An nil account
+// will be returned if it's not existent in the trie.
+func (r *binaryTreeReader) Account(addr common.Address) (*types.StateAccount, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	account, err := r.tr.GetAccount(addr)
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+// Storage implements StateReader, retrieving the storage slot specified by the
+// address and slot key.
+//
+// An error will be returned if the trie state is corrupted. An empty storage
+// slot will be returned if it's not existent in the trie.
+func (r *binaryTreeReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	ret, err := r.tr.GetStorage(addr, key.Bytes())
+	if err != nil {
+		return common.Hash{}, err
+	}
+	var value common.Hash
 	value.SetBytes(ret)
 	return value, nil
 }

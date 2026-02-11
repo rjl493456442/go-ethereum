@@ -2074,11 +2074,22 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 		startTime = time.Now()
 		statedb   *state.StateDB
 		interrupt atomic.Bool
-		sdb       = state.NewDatabase(bc.triedb, bc.codedb).WithSnapshot(bc.snaps)
+		sdb       state.Database
 	)
+	if !bc.chainConfig.IsVerkle(block.Number(), block.Time()) {
+		sdb = state.NewDatabase(bc.triedb, bc.codedb).WithSnapshot(bc.snaps)
+	} else {
+		parent := rawdb.ReadHeader(bc.db, block.ParentHash(), block.NumberU64()-1)
+		sdb = state.NewBinaryDB(bc.triedb, bc.codedb, !bc.chainConfig.IsVerkle(parent.Number, parent.Time))
+	}
 	defer interrupt.Store(true) // terminate the prefetch at the end
 
-	if bc.cfg.NoPrefetch {
+	type DatabaseCachable interface {
+		ReadersWithCacheStats(root common.Hash) (state.Reader, state.Reader, error)
+	}
+	cachable, isCachable := sdb.(DatabaseCachable)
+
+	if bc.cfg.NoPrefetch || !isCachable {
 		statedb, err = state.New(parentRoot, sdb)
 		if err != nil {
 			return nil, err
@@ -2089,7 +2100,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 		//
 		// Note: the main processor and prefetcher share the same reader with a local
 		// cache for mitigating the overhead of state access.
-		prefetch, process, err := sdb.ReadersWithCacheStats(parentRoot)
+		prefetch, process, err := cachable.ReadersWithCacheStats(parentRoot)
 		if err != nil {
 			return nil, err
 		}
