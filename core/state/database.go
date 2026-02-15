@@ -108,6 +108,15 @@ type Trie interface {
 	// to be moved to the stateWriter interface when the latter is ready.
 	UpdateContractCode(address common.Address, codeHash common.Hash, code []byte) error
 
+	// GetContractCode retrieves the contract code from the trie. For MPT this
+	// returns nil (code is stored separately). For binary tries, code is stored
+	// in the trie itself as chunks.
+	GetContractCode(addr common.Address, codeHash common.Hash) ([]byte, error)
+
+	// GetContractCodeSize returns the code size from the trie header without
+	// reading chunks. Returns 0 for MPT (code size is stored separately).
+	GetContractCodeSize(addr common.Address) (int, error)
+
 	// Hash returns the root hash of the trie. It does not write to the database and
 	// can be used even if the trie doesn't have one.
 	Hash() common.Hash
@@ -284,8 +293,9 @@ func (db *CachingDB) Commit(update *stateUpdate) error {
 	if update.empty() {
 		return nil
 	}
-	// Commit dirty contract code if any exists
-	if len(update.codes) > 0 {
+	// Commit dirty contract code if any exists (skip for verkle/binary trie,
+	// where code is stored in the trie itself)
+	if len(update.codes) > 0 && !db.triedb.IsVerkle() {
 		batch := db.codedb.NewBatchWithSize(len(update.codes))
 		for _, code := range update.codes {
 			batch.Put(code.hash, code.blob)

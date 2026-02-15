@@ -231,6 +231,16 @@ func (t *TransitionTrie) UpdateContractCode(addr common.Address, codeHash common
 	return t.overlay.UpdateContractCode(addr, codeHash, code)
 }
 
+// GetContractCode retrieves the contract code from the overlay binary trie.
+func (t *TransitionTrie) GetContractCode(addr common.Address, codeHash common.Hash) ([]byte, error) {
+	return t.overlay.GetContractCode(addr, codeHash)
+}
+
+// GetContractCodeSize returns the code size from the overlay binary trie.
+func (t *TransitionTrie) GetContractCodeSize(addr common.Address) (int, error) {
+	return t.overlay.GetContractCodeSize(addr)
+}
+
 // Witness returns a set containing all trie nodes that have been accessed.
 func (t *TransitionTrie) Witness() map[string][]byte {
 	panic("not implemented")

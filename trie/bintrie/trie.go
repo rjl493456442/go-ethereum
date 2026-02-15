@@ -400,6 +400,109 @@ func (t *BinaryTrie) UpdateContractCode(addr common.Address, codeHash common.Has
 	return nil
 }
 
+// GetContractCode retrieves the contract code from the trie by reading
+// and reassembling the chunked code stored via UpdateContractCode.
+func (t *BinaryTrie) GetContractCode(addr common.Address, codeHash common.Hash) ([]byte, error) {
+	// Read the header stem to get code size from BasicData
+	headerKey := GetBinaryTreeKey(addr, zero[:])
+
+	var values [][]byte
+	var err error
+	switch r := t.root.(type) {
+	case *InternalNode:
+		values, err = r.GetValuesAtStem(headerKey[:StemSize], t.nodeResolver)
+	case *StemNode:
+		values = r.Values
+	case Empty:
+		return nil, nil
+	default:
+		return nil, errInvalidRootType
+	}
+	if err != nil {
+		return nil, err
+	}
+	if values == nil || values[BasicDataLeafKey] == nil {
+		return nil, nil
+	}
+
+	// Read code size from BasicData (uint32 big-endian at offset BasicDataCodeSizeOffset-1)
+	codeSize := binary.BigEndian.Uint32(values[BasicDataLeafKey][BasicDataCodeSizeOffset-1 : BasicDataCodeSizeOffset+3])
+	if codeSize == 0 {
+		return nil, nil
+	}
+
+	// Calculate number of chunks
+	chunkCount := (int(codeSize) + StemSize - 1) / StemSize
+	code := make([]byte, 0, codeSize)
+
+	var currentValues [][]byte
+	for chunknr := uint64(0); chunknr < uint64(chunkCount); chunknr++ {
+		groupOffset := (chunknr + 128) % StemNodeWidth
+
+		if groupOffset == 0 || chunknr == 0 {
+			// Need to read a new stem
+			var offset [HashSize]byte
+			binary.LittleEndian.PutUint64(offset[24:], chunknr+128)
+			key := GetBinaryTreeKey(addr, offset[:])
+
+			switch r := t.root.(type) {
+			case *InternalNode:
+				currentValues, err = r.GetValuesAtStem(key[:StemSize], t.nodeResolver)
+			case *StemNode:
+				currentValues = r.Values
+			default:
+				return nil, fmt.Errorf("GetContractCode: unexpected root type %T", t.root)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("GetContractCode (addr=%x chunk=%d) error: %w", addr[:], chunknr, err)
+			}
+		}
+
+		if currentValues == nil || currentValues[groupOffset] == nil {
+			return nil, fmt.Errorf("GetContractCode (addr=%x): missing chunk %d", addr[:], chunknr)
+		}
+
+		chunk := currentValues[groupOffset]
+		// Skip the first byte (pushdata metadata), take StemSize bytes of actual code
+		if len(chunk) > 1 {
+			code = append(code, chunk[1:]...)
+		}
+	}
+
+	// Truncate to actual code size
+	if len(code) > int(codeSize) {
+		code = code[:codeSize]
+	}
+	return code, nil
+}
+
+// GetContractCodeSize returns the size of the contract code without reading the chunks.
+func (t *BinaryTrie) GetContractCodeSize(addr common.Address) (int, error) {
+	headerKey := GetBinaryTreeKey(addr, zero[:])
+
+	var values [][]byte
+	var err error
+	switch r := t.root.(type) {
+	case *InternalNode:
+		values, err = r.GetValuesAtStem(headerKey[:StemSize], t.nodeResolver)
+	case *StemNode:
+		values = r.Values
+	case Empty:
+		return 0, nil
+	default:
+		return 0, errInvalidRootType
+	}
+	if err != nil {
+		return 0, err
+	}
+	if values == nil || values[BasicDataLeafKey] == nil {
+		return 0, nil
+	}
+
+	codeSize := binary.BigEndian.Uint32(values[BasicDataLeafKey][BasicDataCodeSizeOffset-1 : BasicDataCodeSizeOffset+3])
+	return int(codeSize), nil
+}
+
 // PrefetchAccount attempts to resolve specific accounts from the database
 // to accelerate subsequent trie operations.
 func (t *BinaryTrie) PrefetchAccount(addresses []common.Address) error {

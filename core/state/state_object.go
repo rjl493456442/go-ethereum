@@ -551,6 +551,15 @@ func (s *stateObject) Code() []byte {
 		s.db.CodeLoadBytes += len(s.code)
 	}(time.Now())
 
+	// Try reading code from the trie first (binary trie stores code in-trie)
+	if s.db.trie != nil {
+		code, err := s.db.trie.GetContractCode(s.address, common.BytesToHash(s.CodeHash()))
+		if err == nil && len(code) > 0 {
+			s.code = code
+			return code
+		}
+	}
+	// Fallback to KV store reader
 	code := s.db.reader.Code(s.address, common.BytesToHash(s.CodeHash()))
 	if len(code) == 0 {
 		s.db.setError(fmt.Errorf("code is not found %x", s.CodeHash()))
@@ -574,6 +583,14 @@ func (s *stateObject) CodeSize() int {
 		s.db.CodeReads += time.Since(start)
 	}(time.Now())
 
+	// Try reading code size from the trie first (binary trie stores it in header)
+	if s.db.trie != nil {
+		size, err := s.db.trie.GetContractCodeSize(s.address)
+		if err == nil && size > 0 {
+			return size
+		}
+	}
+	// Fallback to KV store reader
 	size := s.db.reader.CodeSize(s.address, common.BytesToHash(s.CodeHash()))
 	if size == 0 {
 		s.db.setError(fmt.Errorf("code is not found %x", s.CodeHash()))

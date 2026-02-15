@@ -230,6 +230,16 @@ func (t *StateTrie) UpdateContractCode(_ common.Address, _ common.Hash, _ []byte
 	return nil
 }
 
+// GetContractCode is a no-op for MPT tries (code is stored separately in KV store).
+func (t *StateTrie) GetContractCode(_ common.Address, _ common.Hash) ([]byte, error) {
+	return nil, nil
+}
+
+// GetContractCodeSize is a no-op for MPT tries (code size is stored separately).
+func (t *StateTrie) GetContractCodeSize(_ common.Address) (int, error) {
+	return 0, nil
+}
+
 // MustDelete removes any existing value for key from the trie. This function
 // will omit any encountered error but just print out an error message.
 func (t *StateTrie) MustDelete(key []byte) {
