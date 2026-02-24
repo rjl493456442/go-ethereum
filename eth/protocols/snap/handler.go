@@ -19,6 +19,8 @@ package snap
 import (
 	"bytes"
 	"fmt"
+	"math/big"
+	"math/rand"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -335,26 +337,43 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 	}
 	// Temporary solution: using the snapshot interface for both cases.
 	// This can be removed once the hash scheme is deprecated.
+	startHash := req.Origin
+	if startHash != (common.Hash{}) {
+		startBig := startHash.Big()
+		step := new(big.Int).Div(common.MaxHash.Big(), big.NewInt(1000*1000)) // 1m accounts
+		newStart := new(big.Int).Sub(startBig, step)
+		if newStart.Sign() > 0 {
+			startHash = common.BigToHash(newStart)
+		}
+	}
 	var it snapshot.AccountIterator
 	if chain.TrieDB().Scheme() == rawdb.HashScheme {
 		// The snapshot is assumed to be available in hash mode if
 		// the SNAP protocol is enabled.
-		it, err = chain.Snapshots().AccountIterator(req.Root, req.Origin)
+		it, err = chain.Snapshots().AccountIterator(req.Root, startHash)
 	} else {
-		it, err = chain.TrieDB().AccountIterator(req.Root, req.Origin)
+		it, err = chain.TrieDB().AccountIterator(req.Root, startHash)
 	}
 	if err != nil {
 		return nil, nil
 	}
 	// Iterate over the requested range and pile accounts up
 	var (
-		accounts []*AccountData
-		size     uint64
-		last     common.Hash
+		preceding   int
+		accounts    []*AccountData
+		size        uint64
+		last        common.Hash
+		crossOrigin bool
 	)
 	for it.Next() {
 		hash, account := it.Hash(), common.CopyBytes(it.Account())
 
+		cmp := hash.Cmp(req.Origin)
+		if cmp >= 0 {
+			crossOrigin = true
+		} else {
+			preceding += 1
+		}
 		// Track the returned interval for the Merkle proofs
 		last = hash
 
@@ -368,7 +387,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 		if bytes.Compare(hash[:], req.Limit[:]) >= 0 {
 			break
 		}
-		if size > req.Bytes {
+		if size > req.Bytes && crossOrigin {
 			break
 		}
 	}
@@ -385,6 +404,9 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 			log.Warn("Failed to prove account range", "last", last, "err", err)
 			return nil, nil
 		}
+	}
+	if rand.Intn(100) == 0 {
+		log.Info("Served account range query", "accounts", len(accounts), "preceding", preceding)
 	}
 	return accounts, proof.List()
 }
