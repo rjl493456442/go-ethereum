@@ -2465,7 +2465,9 @@ func (s *Syncer) forwardAccountTask(task *accountTask) {
 			if err != nil {
 				panic(err) // Really shouldn't ever happen
 			}
-			task.genTrie.update(hash[:], full)
+			if err := task.genTrie.update(hash[:], full); err != nil {
+				log.Error("Failed to update account trie", "err", err)
+			}
 		} else {
 			// If the storage task is incomplete, explicitly delete the corresponding
 			// account item from the account trie to ensure that all nodes along the
@@ -2531,7 +2533,7 @@ func (s *Syncer) OnAccounts(peer SyncPeer, id uint64, hashes []common.Hash, acco
 		size += common.StorageSize(len(node))
 	}
 	logger := peer.Log().New("reqid", id)
-	logger.Trace("Delivering range of accounts", "hashes", len(hashes), "accounts", len(accounts), "proofs", len(proof), "bytes", size)
+	logger.Info("Delivering range of accounts", "hashes", len(hashes), "accounts", len(accounts), "proofs", len(proof), "bytes", size)
 
 	// Whether or not the response is valid, we can mark the peer as idle and
 	// notify the scheduler to assign a new task. If the response is invalid,
@@ -2641,7 +2643,7 @@ func (s *Syncer) onByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error
 		size += common.StorageSize(len(code))
 	}
 	logger := peer.Log().New("reqid", id)
-	logger.Trace("Delivering set of bytecodes", "bytecodes", len(bytecodes), "bytes", size)
+	logger.Info("Delivering set of bytecodes", "bytecodes", len(bytecodes), "bytes", size)
 
 	// Whether or not the response is valid, we can mark the peer as idle and
 	// notify the scheduler to assign a new task. If the response is invalid,
@@ -2681,7 +2683,7 @@ func (s *Syncer) onByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error
 	// the requested data. For bytecode range queries that means the peer is not
 	// yet synced.
 	if len(bytecodes) == 0 {
-		logger.Info("Peer rejected bytecode request")
+		logger.Warn("Peer rejected bytecode request")
 		s.statelessPeers[peer.ID()] = struct{}{}
 		s.lock.Unlock()
 
@@ -3133,6 +3135,7 @@ func (s *Syncer) reportSyncProgress(force bool) {
 	// Don't report anything until we have a meaningful progress
 	synced := s.accountBytes + s.bytecodeBytes + s.storageBytes
 	if synced == 0 {
+		log.Info("Nothing delivered yet")
 		return
 	}
 	accountGaps := new(big.Int)
@@ -3141,6 +3144,7 @@ func (s *Syncer) reportSyncProgress(force bool) {
 	}
 	accountFills := new(big.Int).Sub(hashSpace, accountGaps)
 	if accountFills.BitLen() == 0 {
+		log.Info("Nothing delivered yet")
 		return
 	}
 	s.logTime = time.Now()
@@ -3150,6 +3154,7 @@ func (s *Syncer) reportSyncProgress(force bool) {
 	).Uint64())
 	// Don't report anything until we have a meaningful progress
 	if estBytes < 1.0 {
+		log.Info("Nothing delivered yet")
 		return
 	}
 	// Cap the estimated state size using the synced size to avoid negative values
