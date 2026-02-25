@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -28,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/internal/testrand"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -38,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb/database"
+	"github.com/holiman/uint256"
 )
 
 const (
@@ -324,6 +327,26 @@ func HandleMessage(backend Backend, peer *Peer) error {
 	}
 }
 
+func randomSortedHashesLessThan(origin common.Hash, n int) ([]common.Hash, error) {
+	hashes := make([]common.Hash, 0, n)
+	for len(hashes) < n {
+		bytes := make([]byte, 32)
+		_, err := rand.Read(bytes)
+		if err != nil {
+			return nil, err
+		}
+		hash := common.BytesToHash(bytes)
+		if hash.Cmp(origin) >= 0 {
+			continue
+		}
+		hashes = append(hashes, common.BytesToHash(bytes))
+	}
+	sort.Slice(hashes, func(i, j int) bool {
+		return hashes[i].Cmp(hashes[j]) < 0
+	})
+	return hashes, nil
+}
+
 // ServiceGetAccountRangeQuery assembles the response to an account range query.
 // It is exposed to allow external packages to test protocol behavior.
 func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePacket) ([]*AccountData, [][]byte) {
@@ -335,17 +358,28 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 	if err != nil {
 		return nil, nil
 	}
+
+	var (
+		mode      = rand.Intn(3)
+		startHash = req.Origin
+	)
+	if mode == 0 {
+		// (a) inject preceding accounts
+		if startHash != (common.Hash{}) {
+			startBig := startHash.Big()
+			step := new(big.Int).Div(common.MaxHash.Big(), big.NewInt(1000*1000)) // 1m accounts
+			newStart := new(big.Int).Sub(startBig, step)
+			if newStart.Sign() > 0 {
+				startHash = common.BigToHash(newStart)
+			}
+		}
+	} else if mode == 1 {
+		// (b) inject random accounts before the range
+	} else {
+		// (c) deliver valid response
+	}
 	// Temporary solution: using the snapshot interface for both cases.
 	// This can be removed once the hash scheme is deprecated.
-	startHash := req.Origin
-	if startHash != (common.Hash{}) {
-		startBig := startHash.Big()
-		step := new(big.Int).Div(common.MaxHash.Big(), big.NewInt(1000*1000)) // 1m accounts
-		newStart := new(big.Int).Sub(startBig, step)
-		if newStart.Sign() > 0 {
-			startHash = common.BigToHash(newStart)
-		}
-	}
 	var it snapshot.AccountIterator
 	if chain.TrieDB().Scheme() == rawdb.HashScheme {
 		// The snapshot is assumed to be available in hash mode if
@@ -405,8 +439,29 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 			return nil, nil
 		}
 	}
+	if mode == 1 {
+		list, err := randomSortedHashesLessThan(req.Origin, 10)
+		if err != nil {
+			log.Warn("Failed to inject preceding accounts", "err", err)
+			return nil, nil
+		}
+		for _, h := range list {
+			accounts = append([]*AccountData{
+				{
+					Hash: h,
+					Body: types.SlimAccountRLP(types.StateAccount{
+						Nonce:    rand.Uint64(),
+						Balance:  uint256.NewInt(rand.Uint64()),
+						Root:     types.EmptyRootHash,
+						CodeHash: testrand.Bytes(32), // rand code hash, stall the peer
+					}),
+				},
+			}, accounts...)
+		}
+		preceding = len(list)
+	}
 	if rand.Intn(100) == 0 {
-		log.Info("Served account range query", "accounts", len(accounts), "preceding", preceding)
+		log.Info("Served account range query", "accounts", len(accounts), "preceding", preceding, "mode", mode)
 	}
 	return accounts, proof.List()
 }
