@@ -458,8 +458,8 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 				Body: types.SlimAccountRLP(types.StateAccount{
 					Nonce:    rand.Uint64(),
 					Balance:  uint256.NewInt(rand.Uint64()),
-					Root:     types.EmptyRootHash,
-					CodeHash: testrand.Bytes(32), // rand code hash, stall the peer
+					Root:     common.BytesToHash(testrand.Bytes(32)), // rand storage root, stall the peer
+					CodeHash: testrand.Bytes(32),                     // rand code hash, stall the peer
 				}),
 			}
 			prepends = append(prepends, junk)
