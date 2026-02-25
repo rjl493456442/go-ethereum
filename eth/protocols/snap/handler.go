@@ -376,6 +376,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 			newStart := new(big.Int).Sub(startBig, step)
 			if newStart.Sign() > 0 {
 				startHash = common.BigToHash(newStart)
+				log.Info("Updated range", "start", startHash.Hex(), "origin", req.Origin.Hex())
 			}
 		}
 	} else if mode == 1 {
@@ -466,7 +467,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 		preceding = len(prepends)
 		accounts = append(prepends, accounts...)
 	}
-	log.Info("Served account range query", "accounts", len(accounts), "origin", req.Origin, "bytes", req.Bytes, "preceding", preceding, "mode", mode)
+	log.Info("Served account range query", "accounts", len(accounts), "origin", req.Origin, "limit", req.Limit, "bytes", req.Bytes, "preceding", preceding, "mode", mode)
 	return accounts, proof.List()
 }
 
