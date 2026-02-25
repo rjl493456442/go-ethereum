@@ -2033,6 +2033,7 @@ func (s *Syncer) processBytecodeResponse(res *bytecodeResponse) {
 
 		// If the bytecode was not delivered, reschedule it
 		if code == nil {
+			log.Info("Requested bytecode is not delivered", "hash", hash)
 			res.task.codeTasks[hash] = struct{}{}
 			continue
 		}
@@ -2680,7 +2681,7 @@ func (s *Syncer) onByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error
 	// the requested data. For bytecode range queries that means the peer is not
 	// yet synced.
 	if len(bytecodes) == 0 {
-		logger.Debug("Peer rejected bytecode request")
+		logger.Info("Peer rejected bytecode request")
 		s.statelessPeers[peer.ID()] = struct{}{}
 		s.lock.Unlock()
 
