@@ -328,8 +328,13 @@ func HandleMessage(backend Backend, peer *Peer) error {
 }
 
 func randomSortedHashesLessThan(origin common.Hash, n int) ([]common.Hash, error) {
-	hashes := make([]common.Hash, 0, n)
-	for len(hashes) < n {
+	var (
+		hashes   = make([]common.Hash, 0, n)
+		attempts int
+	)
+	for len(hashes) < n && attempts < 2*n {
+		attempts += 1
+
 		bytes := make([]byte, 32)
 		_, err := rand.Read(bytes)
 		if err != nil {
