@@ -1179,6 +1179,14 @@ func (s *Syncer) assignBytecodeTasks(success chan *bytecodeResponse, fail chan *
 		for hash := range task.codeTasks {
 			delete(task.codeTasks, hash)
 			hashes = append(hashes, hash)
+
+			missByteCodesLock.Lock()
+			_, isMiss := missByteCodes[hash]
+			missByteCodesLock.Unlock()
+
+			if isMiss {
+				log.Info("Emitted the request for missing bytecode", "hash", hash)
+			}
 			if len(hashes) >= cap {
 				break
 			}
@@ -2033,7 +2041,10 @@ func (s *Syncer) processBytecodeResponse(res *bytecodeResponse) {
 
 		// If the bytecode was not delivered, reschedule it
 		if code == nil {
-			log.Info("Requested bytecode is not delivered", "hash", hash)
+			log.Error("Requested bytecode is not delivered", "hash", hash)
+			missByteCodesLock.Lock()
+			missByteCodes[hash] = struct{}{}
+			missByteCodesLock.Unlock()
 			res.task.codeTasks[hash] = struct{}{}
 			continue
 		}
@@ -2635,6 +2646,11 @@ func (s *Syncer) OnByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error
 	return s.onHealByteCodes(peer, id, bytecodes)
 }
 
+var (
+	missByteCodes     = make(map[common.Hash]struct{})
+	missByteCodesLock sync.Mutex
+)
+
 // onByteCodes is a callback method to invoke when a batch of contract
 // bytes codes are received from a remote peer in the syncing phase.
 func (s *Syncer) onByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error {
@@ -2643,7 +2659,7 @@ func (s *Syncer) onByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error
 		size += common.StorageSize(len(code))
 	}
 	logger := peer.Log().New("reqid", id)
-	logger.Info("Delivering set of bytecodes", "bytecodes", len(bytecodes), "bytes", size)
+	logger.Trace("Delivering set of bytecodes", "bytecodes", len(bytecodes), "bytes", size)
 
 	// Whether or not the response is valid, we can mark the peer as idle and
 	// notify the scheduler to assign a new task. If the response is invalid,
@@ -2683,7 +2699,13 @@ func (s *Syncer) onByteCodes(peer SyncPeer, id uint64, bytecodes [][]byte) error
 	// the requested data. For bytecode range queries that means the peer is not
 	// yet synced.
 	if len(bytecodes) == 0 {
-		logger.Warn("Peer rejected bytecode request")
+		logger.Error("Peer rejected bytecode request")
+		for _, hash := range req.hashes {
+			logger.Error("Request hashes", "hash", hash)
+			missByteCodesLock.Lock()
+			missByteCodes[hash] = struct{}{}
+			missByteCodesLock.Unlock()
+		}
 		s.statelessPeers[peer.ID()] = struct{}{}
 		s.lock.Unlock()
 
