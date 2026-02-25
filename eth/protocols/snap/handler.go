@@ -365,7 +365,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 	}
 
 	var (
-		mode      = rand.Intn(3)
+		mode      = rand.Intn(10)
 		startHash = req.Origin
 	)
 	if mode == 0 {
@@ -465,9 +465,7 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 		}
 		preceding = len(list)
 	}
-	if rand.Intn(100) == 0 {
-		log.Info("Served account range query", "accounts", len(accounts), "preceding", preceding, "mode", mode)
-	}
+	log.Info("Served account range query", "accounts", len(accounts), "preceding", preceding, "mode", mode)
 	return accounts, proof.List()
 }
 
