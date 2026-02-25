@@ -450,22 +450,23 @@ func ServiceGetAccountRangeQuery(chain *core.BlockChain, req *GetAccountRangePac
 			log.Warn("Failed to inject preceding accounts", "err", err)
 			return nil, nil
 		}
+		var prepends []*AccountData
 		for _, h := range list {
-			accounts = append([]*AccountData{
-				{
-					Hash: h,
-					Body: types.SlimAccountRLP(types.StateAccount{
-						Nonce:    rand.Uint64(),
-						Balance:  uint256.NewInt(rand.Uint64()),
-						Root:     types.EmptyRootHash,
-						CodeHash: testrand.Bytes(32), // rand code hash, stall the peer
-					}),
-				},
-			}, accounts...)
+			junk := &AccountData{
+				Hash: h,
+				Body: types.SlimAccountRLP(types.StateAccount{
+					Nonce:    rand.Uint64(),
+					Balance:  uint256.NewInt(rand.Uint64()),
+					Root:     types.EmptyRootHash,
+					CodeHash: testrand.Bytes(32), // rand code hash, stall the peer
+				}),
+			}
+			prepends = append(prepends, junk)
 		}
-		preceding = len(list)
+		preceding = len(prepends)
+		accounts = append(prepends, accounts...)
 	}
-	log.Info("Served account range query", "accounts", len(accounts), "preceding", preceding, "mode", mode)
+	log.Info("Served account range query", "accounts", len(accounts), "origin", req.Origin, "bytes", req.Bytes, "preceding", preceding, "mode", mode)
 	return accounts, proof.List()
 }
 
