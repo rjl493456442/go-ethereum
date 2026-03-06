@@ -79,12 +79,10 @@ var proxyDialer = proxy.FromEnvironment()
 func (t tcpDialer) Dial(ctx context.Context, dest *enode.Node) (net.Conn, error) {
 	addr, _ := dest.TCPEndpoint()
 	if t.useProxy {
-		log.Debug("Dialing peer via proxy", "direct", proxyDialer == proxy.Direct, "addr", addr.String())
 		if v, ok := proxyDialer.(dialerWithContext); ok {
 			return v.DialContext(ctx, "tcp", addr.String())
-		} else {
-			log.Warn("Proxy dialer does not support context, falling back to direct", "addr", addr.String())
 		}
+		log.Trace("Proxy dialer does not support context", "addr", addr.String())
 	}
 	return t.d.DialContext(ctx, "tcp", addr.String())
 }
