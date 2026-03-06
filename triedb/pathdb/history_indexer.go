@@ -245,7 +245,7 @@ func (b *batchIndexer) finish(force bool) error {
 	if err := batch.Write(); err != nil {
 		return err
 	}
-	log.Debug("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "size", common.StorageSize(batchSize), "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("Committed batch indexer", "type", b.typ, "entries", len(b.index), "records", b.pending, "size", common.StorageSize(batchSize), "elapsed", common.PrettyDuration(time.Since(start)))
 
 	b.pending = 0
 	clear(b.index)
@@ -522,6 +522,7 @@ func (i *indexIniter) run(recover bool) {
 				continue
 			}
 			done, interrupt = make(chan struct{}), new(atomic.Int32)
+			i.log.Info("Scheduling indexing", "from", i.indexed.Load(), "to", i.last.Load())
 			go i.index(done, interrupt, i.last.Load())
 
 		case <-i.closed:
