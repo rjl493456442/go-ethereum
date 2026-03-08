@@ -252,7 +252,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		//
 		// MemTableStopWritesThreshold is set to twice the maximum number of
 		// allowed memtables to accommodate temporary spikes.
-		MemTableStopWritesThreshold: memTableNumber * 2,
+		MemTableStopWritesThreshold: memTableNumber * 4,
 
 		// The default compaction concurrency(1 thread),
 		// Here use all available CPUs for faster compaction.
