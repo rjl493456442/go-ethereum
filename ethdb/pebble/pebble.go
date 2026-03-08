@@ -583,7 +583,11 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		// be printed per minute to avoid overwhelming users.
 		if d.writeStalled.Load() && writeDelayCounts[i%2] == writeDelayCounts[(i-1)%2] &&
 			time.Now().After(lastWriteStallReport.Add(degradationWarnInterval)) {
-			d.log.Warn("Database compacting, degraded performance")
+			if reason := d.writeDelayReason; reason != "" {
+				d.log.Warn("Database compacting, degraded performance", "reason", reason)
+			} else {
+				d.log.Warn("Database compacting, degraded performance")
+			}
 			lastWriteStallReport = time.Now()
 		}
 		d.compTimeMeter.Mark(compTimes[i%2] - compTimes[(i-1)%2])
