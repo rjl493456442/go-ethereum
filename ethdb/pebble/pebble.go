@@ -147,12 +147,14 @@ func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
 		d.writeDelayReason = reason
 		metrics.GetOrRegisterGauge(d.namespace+"stall/count/"+reason, nil).Inc(1)
 	}
+	log.Info("writeStallBegin", "reason", reason)
 }
 
 func (d *Database) onWriteStallEnd() {
 	d.writeDelayTime.Add(int64(time.Since(d.writeDelayStartTime)))
 	d.writeStalled.Store(false)
 
+	log.Info("writeStallEnd", "reason", d.writeDelayReason, "elapsed", common.PrettyDuration(time.Since(d.writeDelayStartTime)))
 	if d.writeDelayReason != "" {
 		metrics.GetOrRegisterResettingTimer(d.namespace+"stall/time/"+d.writeDelayReason, nil).UpdateSince(d.writeDelayStartTime)
 		d.writeDelayReason = ""
@@ -252,7 +254,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		//
 		// MemTableStopWritesThreshold is set to twice the maximum number of
 		// allowed memtables to accommodate temporary spikes.
-		MemTableStopWritesThreshold: memTableNumber * 4,
+		MemTableStopWritesThreshold: memTableNumber * 2,
 
 		// The default compaction concurrency(1 thread),
 		// Here use all available CPUs for faster compaction.
