@@ -168,6 +168,7 @@ func (d *Database) onWriteStallEnd() {
 type panicLogger struct{}
 
 func (l panicLogger) Infof(format string, args ...interface{}) {
+	log.Info(fmt.Sprintf(format, args...))
 }
 
 func (l panicLogger) Errorf(format string, args ...interface{}) {
@@ -254,7 +255,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		//
 		// MemTableStopWritesThreshold is set to twice the maximum number of
 		// allowed memtables to accommodate temporary spikes.
-		MemTableStopWritesThreshold: memTableNumber * 2,
+		MemTableStopWritesThreshold: memTableNumber,
 
 		// The default compaction concurrency(1 thread),
 		// Here use all available CPUs for faster compaction.
