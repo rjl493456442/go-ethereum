@@ -2,7 +2,7 @@ module github.com/ethereum/go-ethereum
 
 go 1.24.0
 
-replace github.com/cockroachdb/pebble => github.com/rjl493456442/pebble v0.0.0-20260309060204-3cd4b79135cd
+replace github.com/cockroachdb/pebble => github.com/rjl493456442/pebble v0.0.0-20260310025752-0bc0f0164b4e
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.2.0
@@ -164,7 +164,7 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	golang.org/x/mod v0.29.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/net v0.47.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
