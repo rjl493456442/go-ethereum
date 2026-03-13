@@ -290,7 +290,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		//
 		// By setting the WALBytesPerSync, the cached WAL writes will be periodically
 		// flushed at the background if the accumulated size exceeds this threshold.
-		WALBytesPerSync: 20 * ethdb.IdealBatchSize, // 2MB
+		WALBytesPerSync: 32 * 1024 * 1024,
+		BytesPerSync:    4 * 1024 * 1024,
 
 		// L0CompactionThreshold specifies the number of L0 read-amplification
 		// necessary to trigger an L0 compaction. It essentially refers to the
