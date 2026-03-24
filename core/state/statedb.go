@@ -1484,3 +1484,15 @@ func (s *StateDB) Witness() *stateless.Witness {
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
 }
+
+// DirtyIteratee returns an Iteratee that merges committed state with in-memory
+// mutations from the StateDB. Unlike the plain Iteratee (which only traverses
+// committed state), this includes changes from preceding transactions and the
+// current transaction that have not yet been committed to disk.
+func (s *StateDB) DirtyIteratee() (Iteratee, error) {
+	inner, err := s.db.Iteratee(s.originalRoot)
+	if err != nil {
+		return nil, err
+	}
+	return newDirtyIteratee(inner, s), nil
+}
