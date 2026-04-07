@@ -806,6 +806,18 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		accounts = append(accounts, mut)
 		s.AccountUpdated += 1
 	}
+	// If any prior step (storage-reader Wait above, or the obj.CodeSize()
+	// reader-fallback in the mutations loop) recorded an error in s.dbErr,
+	// the collected AccountMut entries may contain a zero CodeSize for a
+	// contract whose code blob is missing. Running the hasher with those
+	// would silently corrupt the BasicData leaves of every affected
+	// contract. Fail loudly by returning an empty root; the error is
+	// already recorded in s.dbErr and will be surfaced by Commit. This
+	// also catches the pre-existing silent-continue after workers.Wait()
+	// on storage-reader failures.
+	if s.dbErr != nil {
+		return common.Hash{}
+	}
 	if err := s.hasher.UpdateAccount(addresses, accounts); err != nil {
 		s.setError(err)
 		return common.Hash{}

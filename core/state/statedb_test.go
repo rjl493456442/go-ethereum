@@ -34,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
@@ -1314,10 +1315,12 @@ func TestBinaryCodeSizePreserved(t *testing.T) {
 	}
 
 	// Path A: create contract, commit, reload, modify only balance, commit.
-	// On the second commit obj.code is not loaded (dirtyCode=false), so
-	// the previous implementation computed codeLen=0 via len(obj.code).
-	// Triedb layers stay in memory (no tdb.Commit) so we can chain a
-	// second block on top of the first.
+	// On the second commit obj.dirtyCode is false, so account.Code is nil
+	// when the binary hasher receives the AccountMut. The previous
+	// implementation derived codeLen from len(account.Code.Code) and got 0,
+	// silently overwriting the BasicData code_size field.
+	// Triedb layers stay in pathdb memory (the test never calls
+	// triedb.Commit) so we can chain a second block on top of the first.
 	stateA, tdbA := newBinaryState(t)
 	sdbA := NewDatabase(tdbA, nil)
 	stateA.SetBalance(addr, uint256.NewInt(100), tracing.BalanceChangeUnspecified)
@@ -1350,6 +1353,149 @@ func TestBinaryCodeSizePreserved(t *testing.T) {
 
 	if rootA2 != rootB {
 		t.Fatalf("state root mismatch after balance-only update:\n  path A (reload + balance): %x\n  path B (fresh, same final state): %x\n  regression: binaryHasher.updateAccount used len(account.Code.Code)=0 because code was not modified",
+			rootA2, rootB)
+	}
+}
+
+// TestBinaryCodeSizeMissingFailsLoudly is the complementary regression
+// test to TestBinaryCodeSizePreserved: it verifies that when a contract's
+// code blob is unreachable (disk eviction, pruning, corrupt pathdb layer),
+// the IntermediateRoot path fails loudly via the s.dbErr guard rather
+// than silently writing a zero code_size into the BasicData leaf.
+//
+// Without the guard, stateObject.CodeSize() returns 0 on a reader miss,
+// flows through AccountMut.CodeSize, and corrupts the BasicData leaf —
+// the exact bug class the parent fix closes, just triggered differently.
+//
+// The assertion targets IntermediateRoot directly (not just Commit)
+// because commit() already has its own dbErr check that would mask a
+// missing IntermediateRoot guard. Only block proposers calling
+// IntermediateRoot directly need the in-function guard.
+func TestBinaryCodeSizeMissingFailsLoudly(t *testing.T) {
+	var (
+		addr = common.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+		code = make([]byte, 1234)
+	)
+	for i := range code {
+		code[i] = byte(i)
+	}
+	codeHash := crypto.Keccak256Hash(code)
+
+	disk := rawdb.NewMemoryDatabase()
+	tdb := triedb.NewDatabase(disk, triedb.VerkleDefaults)
+
+	// Phase 1: create + commit the contract with code.
+	sdb1 := NewDatabase(tdb, nil)
+	state1, err := New(types.EmptyVerkleHash, sdb1)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	state1.SetBalance(addr, uint256.NewInt(100), tracing.BalanceChangeUnspecified)
+	state1.SetCode(addr, code, tracing.CodeChangeUnspecified)
+	root1, err := state1.Commit(0, true, false)
+	if err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+
+	// Phase 2: delete the code blob from disk. The account still
+	// references it via CodeHash, but no reader will be able to
+	// resolve it.
+	rawdb.DeleteCode(disk, codeHash)
+
+	// Phase 3: reload with a FRESH CodeDB (empty codeSizeCache) so
+	// the deletion actually takes effect. Reusing sdb1 would hit the
+	// cached size entry and mask the failure — codeSizeCache has no
+	// public eviction API, so creating a fresh CodeDB is the only
+	// way to force a disk read on the next CodeSize() lookup.
+	sdb2 := NewDatabase(tdb, NewCodeDB(disk))
+	state2, err := New(root1, sdb2)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	state2.SetBalance(addr, uint256.NewInt(200), tracing.BalanceChangeUnspecified)
+
+	// Phase 4a: IntermediateRoot (the path consensus engines use
+	// directly) must return common.Hash{} on reader miss — this is
+	// the property the dbErr guard in IntermediateRoot guarantees.
+	// Without the guard this would return a corrupt-but-plausible
+	// hash with code_size=0 packed into the BasicData leaf.
+	root := state2.IntermediateRoot(true)
+	if root != (common.Hash{}) {
+		t.Fatalf("expected IntermediateRoot to return empty hash on reader miss, got %x", root)
+	}
+	// Phase 4b: state.Error() must carry the "code is not found"
+	// error recorded by stateObject.CodeSize().
+	if state2.Error() == nil {
+		t.Fatalf("expected state.Error() != nil after reader miss, got nil")
+	}
+}
+
+// TestBinaryCodeSizeStoragePreserved is a regression test that mirrors
+// TestBinaryCodeSizePreserved but uses SetState as the second-block
+// trigger. Storage writes are the dominant real-world path for
+// "contract touched without code reload" — every ERC20 transfer fits
+// this pattern — and they flow through updateTrie/workers.Go, a
+// different code path than SetBalance. Both paths must preserve the
+// account's code_size across a balance-less recommit.
+func TestBinaryCodeSizeStoragePreserved(t *testing.T) {
+	newBinaryState := func(t *testing.T) (*StateDB, *triedb.Database) {
+		t.Helper()
+		disk := rawdb.NewMemoryDatabase()
+		tdb := triedb.NewDatabase(disk, triedb.VerkleDefaults)
+		sdb := NewDatabase(tdb, nil)
+		state, err := New(types.EmptyVerkleHash, sdb)
+		if err != nil {
+			t.Fatalf("failed to initialize state: %v", err)
+		}
+		return state, tdb
+	}
+
+	var (
+		addr = common.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+		code = make([]byte, 1234)
+		slot = common.HexToHash("0x01")
+		val1 = common.HexToHash("0x0a")
+		val2 = common.HexToHash("0x0b")
+	)
+	for i := range code {
+		code[i] = byte(i)
+	}
+
+	// Path A: create contract + initial storage, commit, reload, modify
+	// only storage, commit. On the second commit obj.dirtyCode is false
+	// and account.Code is nil, so stateObject.CodeSize() must fall back
+	// to the reader to recover the real code size.
+	stateA, tdbA := newBinaryState(t)
+	sdbA := NewDatabase(tdbA, nil)
+	stateA.SetCode(addr, code, tracing.CodeChangeUnspecified)
+	stateA.SetState(addr, slot, val1)
+	rootA1, err := stateA.Commit(0, true, false)
+	if err != nil {
+		t.Fatalf("path A first commit: %v", err)
+	}
+
+	stateA, err = New(rootA1, sdbA)
+	if err != nil {
+		t.Fatalf("path A reload: %v", err)
+	}
+	stateA.SetState(addr, slot, val2)
+	rootA2, err := stateA.Commit(1, true, false)
+	if err != nil {
+		t.Fatalf("path A second commit: %v", err)
+	}
+
+	// Path B: construct the same final state in one shot (code + slot=val2).
+	// obj.code is loaded via SetCode, so CodeSize() hits the fast path.
+	stateB, _ := newBinaryState(t)
+	stateB.SetCode(addr, code, tracing.CodeChangeUnspecified)
+	stateB.SetState(addr, slot, val2)
+	rootB, err := stateB.Commit(0, true, false)
+	if err != nil {
+		t.Fatalf("path B commit: %v", err)
+	}
+
+	if rootA2 != rootB {
+		t.Fatalf("state root mismatch after storage-only update:\n  path A (reload + storage): %x\n  path B (fresh, same final state): %x",
 			rootA2, rootB)
 	}
 }
