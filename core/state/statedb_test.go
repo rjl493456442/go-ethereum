@@ -1267,8 +1267,8 @@ func TestStorageDirtiness(t *testing.T) {
 	checkDirty(common.Hash{0x1}, common.Hash{0x1}, true)
 }
 
-// TestVerkleCodeSizePreserved is a regression test for a latent bug in the
-// binary-trie update path of binaryHasher: codeLen was derived from
+// TestBinaryCodeSizePreserved is a regression test for a latent bug in
+// the bintrie update path of binaryHasher: codeLen was derived from
 // account.Code, which is only non-nil when the contract code itself was
 // modified in the current block. For balance- or nonce-only changes,
 // account.Code was nil and the hasher silently wrote codeLen=0 into the
@@ -1284,15 +1284,20 @@ func TestStorageDirtiness(t *testing.T) {
 // commit, reload, modify balance, commit" matches the state root produced
 // by a single commit of the final state. Equality can only hold if the
 // code size survives the balance-only commit.
-func TestVerkleCodeSizePreserved(t *testing.T) {
-	newVerkleState := func(t *testing.T) (*StateDB, *triedb.Database) {
+//
+// Note: triedb.VerkleDefaults and types.EmptyVerkleHash are legacy names
+// from when the binary trie work was branched off the verkle trie code;
+// they configure and seed the bintrie scheme used by binaryHasher.
+func TestBinaryCodeSizePreserved(t *testing.T) {
+	newBinaryState := func(t *testing.T) (*StateDB, *triedb.Database) {
 		t.Helper()
 		disk := rawdb.NewMemoryDatabase()
 		tdb := triedb.NewDatabase(disk, triedb.VerkleDefaults)
 		sdb := NewDatabase(tdb, nil)
-		// A fresh verkle pathdb's disk layer is keyed by EmptyVerkleHash
-		// (all-zero hash), not EmptyRootHash. Using the wrong one fails
-		// with "triedb parent layer missing" at commit.
+		// A fresh bintrie pathdb's disk layer is keyed by EmptyVerkleHash
+		// (all-zero hash, named "Verkle" for legacy reasons), not
+		// EmptyRootHash. Using the wrong one fails with "triedb parent
+		// layer missing" at commit.
 		state, err := New(types.EmptyVerkleHash, sdb)
 		if err != nil {
 			t.Fatalf("failed to initialize state: %v", err)
@@ -1313,7 +1318,7 @@ func TestVerkleCodeSizePreserved(t *testing.T) {
 	// the previous implementation computed codeLen=0 via len(obj.code).
 	// Triedb layers stay in memory (no tdb.Commit) so we can chain a
 	// second block on top of the first.
-	stateA, tdbA := newVerkleState(t)
+	stateA, tdbA := newBinaryState(t)
 	sdbA := NewDatabase(tdbA, nil)
 	stateA.SetBalance(addr, uint256.NewInt(100), tracing.BalanceChangeUnspecified)
 	stateA.SetCode(addr, code, tracing.CodeChangeUnspecified)
@@ -1335,7 +1340,7 @@ func TestVerkleCodeSizePreserved(t *testing.T) {
 	// Path B: construct the same final state in one shot (balance=200 + code).
 	// obj.code is loaded because SetCode was just called, so codeSize is
 	// always correct here — this is the "known-good" reference.
-	stateB, _ := newVerkleState(t)
+	stateB, _ := newBinaryState(t)
 	stateB.SetBalance(addr, uint256.NewInt(200), tracing.BalanceChangeUnspecified)
 	stateB.SetCode(addr, code, tracing.CodeChangeUnspecified)
 	rootB, err := stateB.Commit(0, true, false)
