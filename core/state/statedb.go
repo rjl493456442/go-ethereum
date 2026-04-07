@@ -1017,7 +1017,6 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	}
 	s.DatabaseCommits = time.Since(start)
 
-	// The reader/hasher update must be performed as the final step
 	s.reader, _ = s.db.Reader(s.originalRoot)
 	s.hasher, _ = s.db.Hasher(s.originalRoot)
 	return ret, nil
@@ -1138,4 +1137,16 @@ func (s *StateDB) Witness() *stateless.Witness {
 
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
+}
+
+// StopPrefetcher terminates all the background prefetching activities.
+func (s *StateDB) StopPrefetcher() {
+	if s.hasher == nil {
+		return
+	}
+	prefetch, ok := s.hasher.(Prefetcher)
+	if !ok {
+		return
+	}
+	prefetch.TermPrefetch()
 }
