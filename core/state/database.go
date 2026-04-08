@@ -182,7 +182,7 @@ func (db *CachingDB) WithSnapshot(snapshot *snapshot.Tree) *CachingDB {
 
 // EnablePrefetch enables the hasher prefetching feature.
 func (db *CachingDB) EnablePrefetch(prefetchRead bool) *CachingDB {
-	// db.prefetch = true
+	db.prefetch = true
 	db.prefetchRead = prefetchRead
 	return db
 }
