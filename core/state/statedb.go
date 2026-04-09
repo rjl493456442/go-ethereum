@@ -1018,6 +1018,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	s.DatabaseCommits = time.Since(start)
 
 	s.reader, _ = s.db.Reader(s.originalRoot)
+	s.StopPrefetcher()
 	s.hasher, _ = s.db.Hasher(s.originalRoot)
 	return ret, nil
 }
