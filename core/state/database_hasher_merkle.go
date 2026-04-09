@@ -45,7 +45,7 @@ func newWrapTrie(id *trie.ID, db *triedb.Database, prefetch bool, prefetchRead b
 		return nil, err
 	}
 	var p *prefetcher
-	if prefetch {
+	if prefetch && id.Root != types.EmptyRootHash {
 		p = newPrefetcher(t, prefetchRead)
 	}
 	return &wrapTrie{StateTrie: t, prefetcher: p}, nil
