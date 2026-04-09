@@ -784,7 +784,18 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 			continue
 		}
 		obj := s.stateObjects[addr]
-		mut := AccountMut{Account: &obj.data}
+		// CodeSize must be the account's CURRENT total code size, even for
+		// non-code-touching mutations. obj.CodeSize() returns len(obj.code)
+		// when the code is loaded, otherwise falls back to a code-size
+		// lookup via the reader. Hashers that pack code size into the
+		// on-trie account encoding (e.g. the binary trie BasicData leaf,
+		// per EIP-7864) rely on this value. Passing the default 0 here on
+		// a balance/nonce-only update would silently corrupt the BasicData
+		// leaf of every contract touched without a code write.
+		mut := AccountMut{
+			Account:  &obj.data,
+			CodeSize: obj.CodeSize(),
+		}
 		if obj.dirtyCode {
 			mut.Code = &CodeMut{Code: obj.code}
 
@@ -794,6 +805,18 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		}
 		accounts = append(accounts, mut)
 		s.AccountUpdated += 1
+	}
+	// If any prior step (storage-reader Wait above, or the obj.CodeSize()
+	// reader-fallback in the mutations loop) recorded an error in s.dbErr,
+	// the collected AccountMut entries may contain a zero CodeSize for a
+	// contract whose code blob is missing. Running the hasher with those
+	// would silently corrupt the BasicData leaves of every affected
+	// contract. Fail loudly by returning an empty root; the error is
+	// already recorded in s.dbErr and will be surfaced by Commit. This
+	// also catches the pre-existing silent-continue after workers.Wait()
+	// on storage-reader failures.
+	if s.dbErr != nil {
+		return common.Hash{}
 	}
 	if err := s.hasher.UpdateAccount(addresses, accounts); err != nil {
 		s.setError(err)

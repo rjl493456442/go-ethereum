@@ -17,6 +17,8 @@
 package state
 
 import (
+	"fmt"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -153,22 +155,39 @@ func (h *binaryHasher) deleteAccount(addr common.Address) error {
 }
 
 // update writes the account specified by the address into the state.
+//
+// The account's code size is taken from AccountMut.CodeSize, which the
+// caller (StateDB.IntermediateRoot) populates via stateObject.CodeSize().
+// Per EIP-7864 the code_size field is packed into the BasicData leaf
+// (see trie/bintrie/trie.go:UpdateAccount and the BasicDataCodeSizeOffset
+// constant in trie/bintrie/key_encoding.go for the exact byte layout)
+// and is consensus-critical; BinaryTrie.UpdateAccount rewrites the entire
+// BasicData blob on every call, so passing the wrong codeLen would
+// silently overwrite the stored code_size. In particular, for
+// balance/nonce-only updates account.Code is nil (the caller only
+// populates it when obj.dirtyCode is true), so the previous
+// implementation, which derived codeLen from len(account.Code.Code),
+// produced 0 even though the account still had a real non-zero code
+// size that must be preserved. The caller now consults the stateObject,
+// which falls back to a reader code-size lookup when the bytes are
+// not loaded.
 func (h *binaryHasher) updateAccount(addr common.Address, account AccountMut) error {
-	// Determine code size: use the new code length if provided,
-	// otherwise fall back to the cached or trie-stored value.
-	//
-	// TODO(rjl493456442) the contract code length is not assigned
-	// if it's not modified, fix it.
-	codeLen := 0
-	if account.Code != nil {
-		codeLen = len(account.Code.Code)
+	// Defensive invariant: CodeSize must match the account's current
+	// code size. A zero CodeSize combined with a non-empty CodeHash
+	// indicates the caller forgot to populate it, which would silently
+	// overwrite the EIP-7864 BasicData code_size field. Fail loudly so
+	// the original fixed bug cannot be re-introduced by a new caller
+	// that constructs AccountMut{Account: &x} without setting CodeSize.
+	if common.BytesToHash(account.Account.CodeHash) != types.EmptyCodeHash && account.CodeSize == 0 {
+		return fmt.Errorf("binaryHasher: CodeSize unset for contract %x (codeHash %x)",
+			addr, account.Account.CodeHash)
 	}
 	data := &types.StateAccount{
 		Nonce:    account.Account.Nonce,
 		Balance:  account.Account.Balance,
 		CodeHash: account.Account.CodeHash,
 	}
-	if err := h.trie.UpdateAccount(addr, data, codeLen); err != nil {
+	if err := h.trie.UpdateAccount(addr, data, account.CodeSize); err != nil {
 		return err
 	}
 	// Write chunked code into the trie when dirty.
