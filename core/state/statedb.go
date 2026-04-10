@@ -776,24 +776,28 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 			continue
 		}
 		op.applied = true
+
 		addresses = append(addresses, addr)
-
 		if op.isDelete() {
-			accounts = append(accounts, AccountMut{Account: nil})
+			accounts = append(accounts, AccountMut{
+				Account: nil,
+			})
 			s.AccountDeleted += 1
-			continue
-		}
-		obj := s.stateObjects[addr]
-		mut := AccountMut{Account: &obj.data}
-		if obj.dirtyCode {
-			mut.Code = &CodeMut{Code: obj.code}
+		} else {
+			obj := s.stateObjects[addr]
+			mut := AccountMut{
+				Account: &obj.data,
+			}
+			if obj.dirtyCode {
+				mut.Code = &CodeMut{Code: obj.code}
 
-			// Count code writes post-Finalise so reverted CREATEs are excluded.
-			s.CodeUpdated += 1
-			s.CodeUpdateBytes += len(obj.code)
+				// Count code writes post-Finalise so reverted CREATEs are excluded.
+				s.CodeUpdated += 1
+				s.CodeUpdateBytes += len(obj.code)
+			}
+			accounts = append(accounts, mut)
+			s.AccountUpdated += 1
 		}
-		accounts = append(accounts, mut)
-		s.AccountUpdated += 1
 	}
 	if err := s.hasher.UpdateAccount(addresses, accounts); err != nil {
 		s.setError(err)

@@ -41,7 +41,7 @@ func newWrapBinTrie(root common.Hash, db *triedb.Database, prefetch bool, prefet
 		return nil, err
 	}
 	var p *prefetcher
-	if prefetch {
+	if prefetch && root != types.EmptyVerkleHash {
 		p = newPrefetcher(t, prefetchRead)
 	}
 	return &warpBinTrie{BinaryTrie: t, prefetcher: p}, nil
