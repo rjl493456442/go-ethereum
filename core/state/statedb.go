@@ -917,13 +917,13 @@ func (s *StateDB) handleDestruction(noStorageWiping bool) (map[common.Hash]*acco
 		if s.db.TrieDB().IsVerkle() {
 			continue
 		}
-		if noStorageWiping {
-			return nil, nil, fmt.Errorf("unexpected storage wiping, %x", addr)
-		}
 		// Remove storage slots belonging to the account.
 		storages, storagesOrigin, set, err := s.deleteStorage(addrHash)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to delete storage, err: %w", err)
+		}
+		if len(storagesOrigin) > 0 && noStorageWiping {
+			return nil, nil, fmt.Errorf("unexpected storage wiping, %x", addr)
 		}
 		op.storages, op.storagesOrigin = storages, storagesOrigin
 
