@@ -19,8 +19,9 @@ package core
 import (
 	"context"
 	"fmt"
-	"github.com/ethereum/go-ethereum/core/types/bal"
 	"math/big"
+
+	"github.com/ethereum/go-ethereum/core/types/bal"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -64,13 +65,14 @@ func (p *StateProcessor) chainConfig() *params.ChainConfig {
 // transactions failed to execute due to insufficient gas it will return an error.
 func (p *StateProcessor) Process(ctx context.Context, block *types.Block, statedb *state.StateDB, cfg vm.Config) (*ProcessResult, error) {
 	var (
-		config             = p.chainConfig()
-		receipts           = make(types.Receipts, 0, len(block.Transactions()))
-		header             = block.Header()
-		blockHash          = block.Hash()
-		blockNumber        = block.Number()
-		allLogs            []*types.Log
-		gp                 = NewGasPool(block.GasLimit())
+		config      = p.chainConfig()
+		receipts    = make(types.Receipts, 0, len(block.Transactions()))
+		header      = block.Header()
+		blockHash   = block.Hash()
+		blockNumber = block.Number()
+		allLogs     []*types.Log
+		gp          = NewGasPool(block.GasLimit())
+
 		computedAccessList = bal.NewConstructionBlockAccessList()
 		isAmsterdam        = p.chainConfig().IsAmsterdam(block.Number(), block.Time())
 	)
@@ -84,14 +86,11 @@ func (p *StateProcessor) Process(ctx context.Context, block *types.Block, stated
 		misc.ApplyDAOHardFork(tracingStateDB)
 	}
 	var (
-		context vm.BlockContext
+		context = NewEVMBlockContext(header, p.chain, nil)
 		signer  = types.MakeSigner(config, header.Number, header.Time)
+		evm     = vm.NewEVM(context, tracingStateDB, config, cfg)
 	)
-
 	// Apply pre-execution system calls.
-	context = NewEVMBlockContext(header, p.chain, nil)
-	evm := vm.NewEVM(context, tracingStateDB, config, cfg)
-
 	if beaconRoot := block.BeaconRoot(); beaconRoot != nil {
 		accesses, mutations := ProcessBeaconBlockRoot(*beaconRoot, evm)
 		if isAmsterdam {

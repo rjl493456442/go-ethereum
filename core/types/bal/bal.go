@@ -76,56 +76,6 @@ func (c *ConstructionAccountAccesses) Copy() (res ConstructionAccountAccesses) {
 	return res
 }
 
-type StateMutations struct {
-	list map[common.Address]AccountMutations
-}
-
-func NewStateMutations() *StateMutations {
-	return &StateMutations{make(map[common.Address]AccountMutations)}
-}
-
-func (s StateMutations) String() string {
-	b, _ := json.MarshalIndent(s, "", "    ")
-	return string(b)
-}
-
-// Merge merges the state changes present in next into the caller.  After,
-// the state of the caller is the aggregate diff through next.
-func (s *StateMutations) Merge(next *StateMutations) {
-	if next == nil {
-		return
-	}
-	for account, diff := range next.list {
-		if mut, ok := s.list[account]; ok {
-			if diff.Balance != nil {
-				mut.Balance = diff.Balance
-			}
-			if diff.Code != nil {
-				mut.Code = diff.Code
-			}
-			if diff.Nonce != nil {
-				mut.Nonce = diff.Nonce
-			}
-			if len(diff.StorageWrites) > 0 {
-				if mut.StorageWrites == nil {
-					mut.StorageWrites = maps.Clone(diff.StorageWrites)
-				} else {
-					for key, val := range diff.StorageWrites {
-						mut.StorageWrites[key] = val
-					}
-				}
-			}
-			s.list[account] = mut
-		} else {
-			s.list[account] = *diff.Copy()
-		}
-	}
-}
-
-func (s *StateMutations) Set(addr common.Address, mut *AccountMutations) {
-	s.list[addr] = *mut
-}
-
 type ConstructionBlockAccessList struct {
 	list             map[common.Address]*ConstructionAccountAccesses
 	transactionCount int
@@ -286,38 +236,4 @@ func (e BlockAccessList) Copy() *BlockAccessList {
 		res = append(res, accountAccess.Copy())
 	}
 	return &res
-}
-
-// Eq returns whether the calling instance is equal to the provided one.
-func (a *AccountMutations) Eq(other *AccountMutations) bool {
-	if a.Balance != nil || other.Balance != nil {
-		if a.Balance == nil || other.Balance == nil {
-			return false
-		}
-
-		if !a.Balance.Eq(other.Balance) {
-			return false
-		}
-	}
-
-	if (len(a.Code) != 0 || len(other.Code) != 0) && !bytes.Equal(a.Code, other.Code) {
-		return false
-	}
-
-	if a.Nonce != nil || other.Nonce != nil {
-		if a.Nonce == nil || other.Nonce == nil {
-			return false
-		}
-
-		if *a.Nonce != *other.Nonce {
-			return false
-		}
-	}
-
-	if a.StorageWrites != nil || other.StorageWrites != nil {
-		if !maps.Equal(a.StorageWrites, other.StorageWrites) {
-			return false
-		}
-	}
-	return true
 }
