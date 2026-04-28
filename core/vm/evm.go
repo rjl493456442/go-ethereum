@@ -315,7 +315,8 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 			gas.Exhaust()
 		}
 	} else {
-		evm.StateDB.DiscardSnapshot()
+		// stateBytes := evm.StateDB.DiscardSnapshot()
+		// charge the state cost
 	}
 	return ret, gas, err
 }

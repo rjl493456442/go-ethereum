@@ -39,7 +39,7 @@ type journal interface {
 	// discardSnapshot removes the latest snapshot; after calling this
 	// method, it is no longer possible to revert to that particular snapshot, the
 	// changes are considered part of the parent scope.
-	discardSnapshot()
+	discardSnapshot(stateDB *StateDB) int
 
 	// reset clears the journal so it can be reused.
 	reset()

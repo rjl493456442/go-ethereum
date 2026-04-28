@@ -57,7 +57,7 @@ func newLinearJournal() *linearJournal {
 	s := &linearJournal{
 		dirties: make(map[common.Address]int),
 	}
-	s.snapshot() // create snaphot zero
+	s.snapshot() // create snapshot zero
 	return s
 }
 
@@ -71,9 +71,8 @@ func (j *linearJournal) reset() {
 	j.snapshot()
 }
 
-func (j linearJournal) dirtyAccounts() []common.Address {
+func (j *linearJournal) dirtyAccounts() []common.Address {
 	dirty := make([]common.Address, 0, len(j.dirties))
-	// flatten into list
 	for addr := range j.dirties {
 		dirty = append(dirty, addr)
 	}
@@ -93,6 +92,7 @@ func (j *linearJournal) revertSnapshot(s *StateDB) {
 		return
 	}
 	revision := j.revisions[id]
+
 	// Replay the linearJournal to undo changes and remove invalidated snapshots
 	j.revertTo(s, revision)
 	j.revisions = j.revisions[:id]
@@ -104,16 +104,17 @@ func (j *linearJournal) revertSnapshot(s *StateDB) {
 // discardSnapshot removes the latest snapshot; after calling this
 // method, it is no longer possible to revert to that particular snapshot, the
 // changes are considered part of the parent scope.
-func (j *linearJournal) discardSnapshot() {
+func (j *linearJournal) discardSnapshot(s *StateDB) int {
 	id := len(j.revisions) - 1
 	if id <= 0 {
 		// If a transaction is applied successfully, the statedb.Finalize will
 		// end by clearing and resetting the journal. Invoking a discardSnapshot
 		// afterwards will land here: calling discard on an empty journal.
 		// This is fine
-		return
+		return 0
 	}
 	j.revisions = j.revisions[:id]
+	return 0
 }
 
 // append inserts a new modification entry to the end of the change linearJournal.

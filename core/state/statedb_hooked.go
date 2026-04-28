@@ -143,8 +143,8 @@ func (s *hookedStateDB) Prepare(rules params.Rules, sender, coinbase common.Addr
 	s.inner.Prepare(rules, sender, coinbase, dest, precompiles, txAccesses)
 }
 
-func (s *hookedStateDB) DiscardSnapshot() {
-	s.inner.DiscardSnapshot()
+func (s *hookedStateDB) DiscardSnapshot() int {
+	return s.inner.DiscardSnapshot()
 }
 
 func (s *hookedStateDB) RevertSnapshot() {

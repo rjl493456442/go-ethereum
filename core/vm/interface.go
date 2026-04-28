@@ -93,7 +93,7 @@ type StateDB interface {
 	// DiscardSnapshot removes the ability to roll back the changes in the most
 	// recent journalled scope. After calling this method, the changes are considered
 	// part of the parent scope.
-	DiscardSnapshot()
+	DiscardSnapshot() int
 
 	AddLog(*types.Log)
 	LogsForBurnAccounts() []*types.Log

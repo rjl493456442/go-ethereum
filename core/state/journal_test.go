@@ -133,7 +133,7 @@ func testJournalRefunds(t *testing.T, j journal) {
 			j.refundChange(2)
 			j.refundChange(3)
 		}
-		j.discardSnapshot()
+		j.discardSnapshot(statedb)
 	}
 	j.revertSnapshot(statedb)
 	if have, want := statedb.refund, uint64(0); have != want {

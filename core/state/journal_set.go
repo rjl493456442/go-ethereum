@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
 
@@ -403,19 +404,58 @@ func (j *sparseJournal) revertSnapshot(s *StateDB) {
 // discardSnapshot removes the latest snapshot; after calling this
 // method, it is no longer possible to revert to that particular snapshot, the
 // changes are considered part of the parent scope.
-func (j *sparseJournal) discardSnapshot() {
+func (j *sparseJournal) discardSnapshot(s *StateDB) int {
 	id := len(j.entries) - 1
 	if id == 0 {
 		// If a transaction is applied successfully, the statedb.Finalize will
 		// end by clearing and resetting the journal. Invoking a discardSnapshot
 		// afterwards will land here: calling discard on an empty journal.
 		// This is fine
-		return
+		return 0
 	}
 	entry := j.entries[id]
+
+	// Calculate how much state bytes have been created within the
+	// last call frame.
+	var totalBytes int
+	for addr, origin := range entry.accountChanges {
+		if origin == nil {
+			totalBytes += params.CostPerAccount
+		} else if origin.codeHash == nil {
+			// Account was existent but the contract code was empty
+			current := s.getStateObject(addr)
+			if current == nil || bytes.Equal(current.CodeHash(), types.EmptyCodeHash.Bytes()) {
+				continue
+			}
+			totalBytes += len(current.Code())
+		}
+	}
+	for addr, slots := range entry.storageChanges {
+		for key, value := range slots {
+			current := s.GetState(addr, key)
+
+			prevZero := value.prev == (common.Hash{})
+			curZero := current == (common.Hash{})
+			origZero := value.origin == (common.Hash{})
+
+			if prevZero && !curZero {
+				// 0 → X: new slot, count CostPerSlot
+				totalBytes += params.CostPerSlot
+			} else if !prevZero && curZero && origZero {
+				// X → 0 and original was zero: slot was created earlier
+				// in the tx then cleared, refund CostPerSlot
+				totalBytes -= params.CostPerSlot
+			}
+			// X → 0 where original was non-zero: no refund (pre-existing slot)
+			// X → Y (non-zero to non-zero): free
+		}
+	}
+
 	parent := j.entries[id-1]
 	entry.merge(parent)
 	j.entries = j.entries[:id]
+
+	return totalBytes
 }
 
 func (j *sparseJournal) journalAccountChange(addr common.Address, account *types.StateAccount, destructed, newContract bool) {

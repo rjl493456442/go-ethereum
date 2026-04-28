@@ -749,10 +749,10 @@ func (s *StateDB) Snapshot() {
 }
 
 // DiscardSnapshot removes the ability to roll back the changes in the most
-// recent journalled scope. After calling this method, the changes are considered
-// part of the parent scope.
-func (s *StateDB) DiscardSnapshot() {
-	s.journal.discardSnapshot()
+// recent journalled scope. After calling this method, the changes are
+// considered part of the parent scope.
+func (s *StateDB) DiscardSnapshot() int {
+	return s.journal.discardSnapshot(s)
 }
 
 // RevertSnapshot reverts all state changes made in the most recent journalled scope.
