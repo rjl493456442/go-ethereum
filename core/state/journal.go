@@ -23,11 +23,12 @@ import (
 
 type journal interface {
 	// snapshot starts a new journal scope which can be reverted or discarded.
-	// The lifeycle of journalling is as follows:
+	// The life-cycle of journaling is as follows:
+	//
 	// - snapshot() starts a 'scope'.
 	// - The method snapshot() may be called any number of times.
-	// - For each call to snapshot, there should be a corresponding call to end
-	//  the scope via either of:
+	// - For each call to snapshot, there should be a corresponding call to end the
+	//   scope via either of:
 	//   - revertToSnapshot, which undoes the changes in the scope, or
 	//   - discardSnapshot, which discards the ability to revert the changes in the scope.
 	snapshot()
@@ -43,16 +44,16 @@ type journal interface {
 	// reset clears the journal so it can be reused.
 	reset()
 
-	// dirtyAccounts returns a list of all accounts modified in this journal
+	// dirtyAccounts returns a list of all accounts modified in this journal.
 	dirtyAccounts() []common.Address
 
-	// accessListAddAccount journals the adding of addr to the access list
+	// accessListAddAccount journals the adding of addr to the access list.
 	accessListAddAccount(addr common.Address)
 
-	// accessListAddSlot journals the adding of addr/slot to the access list
+	// accessListAddSlot journals the adding of storage slot to the access list.
 	accessListAddSlot(addr common.Address, slot common.Hash)
 
-	// logChange journals the adding of a log related to the txHash
+	// logChange journals the adding of a log related to the txHash.
 	logChange(txHash common.Hash)
 
 	// createObject journals the event of a new account created in the trie.
@@ -64,8 +65,7 @@ type journal interface {
 	createContract(addr common.Address, account *types.StateAccount)
 
 	// destruct journals the destruction of an account in the trie.
-	// pre-state (i.e the rollback-state) is non-destructed (and, for the purpose
-	// of EIP-XXX (TODO lookup), created in this tx).
+	// It assumes the pre-state (i.e the rollback-state) is non-destructed.
 	destruct(addr common.Address, account *types.StateAccount)
 
 	// storageChange journals a change in the storage data related to addr.
@@ -76,20 +76,23 @@ type journal interface {
 	// It records the key and previous value of the slot.
 	transientStateChange(addr common.Address, key, prev common.Hash)
 
-	// refundChange journals that the refund has been changed, recording the previous value.
+	// refundChange journals that the refund has been changed, recording the
+	// previous value.
 	refundChange(previous uint64)
 
-	// balanceChange journals that the balance of addr has been changed, recording the previous value
-	balanceChange(addr common.Address, account *types.StateAccount, destructed, newContract bool)
+	// balanceChange journals that the balance of addr has been changed,
+	// recording the previous value.
+	balanceChange(addr common.Address, account *types.StateAccount, destructed bool, newContract bool)
 
 	// setCode journals that the code of addr has been set.
-	setCode(addr common.Address, account *types.StateAccount, prevCode []byte)
+	setCode(addr common.Address, account *types.StateAccount, prevCode []byte, destructed bool, newContract bool)
 
-	// nonceChange journals that the nonce of addr was changed, recording the previous value.
-	nonceChange(addr common.Address, account *types.StateAccount, destructed, newContract bool)
+	// nonceChange journals that the nonce of addr was changed, recording
+	// the previous value.
+	nonceChange(addr common.Address, account *types.StateAccount, destructed bool, newContract bool)
 
 	// touchChange journals that the account at addr was touched during execution.
-	touchChange(addr common.Address, account *types.StateAccount, destructed, newContract bool)
+	touchChange(addr common.Address, account *types.StateAccount, destructed bool, newContract bool)
 
 	// copy returns a deep-copied journal.
 	copy() journal

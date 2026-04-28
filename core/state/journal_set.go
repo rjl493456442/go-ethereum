@@ -52,7 +52,7 @@ type doubleHash struct {
 	prev   common.Hash
 }
 
-// scopedJournal represents all changes within a single callscope. These changes
+// scopedJournal represents all changes within a single call scope. These changes
 // are either all reverted, or all committed -- they cannot be partially applied.
 type scopedJournal struct {
 	accountChanges map[common.Address]*journalAccount
@@ -180,7 +180,10 @@ func (j *scopedJournal) journalSetState(addr common.Address, key, prev, origin c
 	}
 	// Do not overwrite a previous value!
 	if _, ok := changes[key]; !ok {
-		changes[key] = doubleHash{origin: origin, prev: prev}
+		changes[key] = doubleHash{
+			origin: origin,
+			prev:   prev,
+		}
 	}
 }
 
@@ -330,14 +333,14 @@ func (j *scopedJournal) merge(parent *scopedJournal) {
 	}
 }
 
-func (j *scopedJournal) addDirtyAccounts(set map[common.Address]any) {
+func (j *scopedJournal) addDirtyAccounts(set map[common.Address]struct{}) {
 	// Changes due to account changes
 	for addr := range j.accountChanges {
-		set[addr] = []interface{}{}
+		set[addr] = struct{}{}
 	}
 	// Changes due to storage changes
 	for addr := range j.storageChanges {
-		set[addr] = []interface{}{}
+		set[addr] = struct{}{}
 	}
 }
 
@@ -352,7 +355,7 @@ type sparseJournal struct {
 // newJournal creates a new initialized journal.
 func newSparseJournal() *sparseJournal {
 	s := new(sparseJournal)
-	s.snapshot() // create snaphot zero
+	s.snapshot() // create snapshot zero
 	return s
 }
 
@@ -389,6 +392,9 @@ func (j *sparseJournal) revertSnapshot(s *StateDB) {
 	id := len(j.entries) - 1
 	j.entries[id].revert(s)
 	j.entries = j.entries[:id]
+
+	// The root scope may also be reverted if the entire transaction's changes
+	// need to be rolled back, such as during block production.
 	if id == 0 {
 		j.snapshot()
 	}
@@ -399,7 +405,6 @@ func (j *sparseJournal) revertSnapshot(s *StateDB) {
 // changes are considered part of the parent scope.
 func (j *sparseJournal) discardSnapshot() {
 	id := len(j.entries) - 1
-	// here we must merge the 'id' with it's parent.
 	if id == 0 {
 		// If a transaction is applied successfully, the statedb.Finalize will
 		// end by clearing and resetting the journal. Invoking a discardSnapshot
@@ -417,18 +422,19 @@ func (j *sparseJournal) journalAccountChange(addr common.Address, account *types
 	j.entries[len(j.entries)-1].journalAccountChange(addr, account, destructed, newContract)
 }
 
-func (j *sparseJournal) nonceChange(addr common.Address, account *types.StateAccount, destructed, newContract bool) {
+func (j *sparseJournal) nonceChange(addr common.Address, account *types.StateAccount, destructed bool, newContract bool) {
 	j.journalAccountChange(addr, account, destructed, newContract)
 }
 
-func (j *sparseJournal) balanceChange(addr common.Address, account *types.StateAccount, destructed, newContract bool) {
+func (j *sparseJournal) balanceChange(addr common.Address, account *types.StateAccount, destructed bool, newContract bool) {
 	j.journalAccountChange(addr, account, destructed, newContract)
 }
 
-func (j *sparseJournal) setCode(addr common.Address, account *types.StateAccount, prev []byte) {
-	j.journalAccountChange(addr, account, false, true)
+func (j *sparseJournal) setCode(addr common.Address, account *types.StateAccount, prev []byte, destructed bool, newContract bool) {
+	j.journalAccountChange(addr, account, destructed, newContract)
+
+	// Keep the code in a lookup if it's not empty.
 	if len(prev) > 0 {
-		// Keep the code in a lookup
 		j.entries[len(j.entries)-1].stashCode(prev)
 	}
 }
@@ -436,6 +442,7 @@ func (j *sparseJournal) setCode(addr common.Address, account *types.StateAccount
 func (j *sparseJournal) createObject(addr common.Address) {
 	// Creating an account which is destructed, hence already exists, is not
 	// allowed, hence we know destructed == 'false'.
+	//
 	// Also, if we are creating the account now, it cannot yet be a
 	// newContract (that might come later)
 	j.journalAccountChange(addr, nil, false, false)
@@ -444,13 +451,15 @@ func (j *sparseJournal) createObject(addr common.Address) {
 func (j *sparseJournal) createContract(addr common.Address, account *types.StateAccount) {
 	// Creating an account which is destructed, hence already exists, is not
 	// allowed, hence we know it to be 'false'.
-	// Also: if we create the contract now, it cannot be previously created
+	//
+	// Also: if we create the contract now, it cannot be previously created.
 	j.journalAccountChange(addr, account, false, false)
 }
 
 func (j *sparseJournal) destruct(addr common.Address, account *types.StateAccount) {
-	// destructing an already destructed account must not be journalled. Hence we
+	// destructing an already destructed account must not be journaled. Hence we
 	// know it to be 'false'.
+	//
 	// Also: if we're allowed to destruct it, it must be `newContract:true`, OR
 	// the concept of newContract is unused and moot.
 	j.journalAccountChange(addr, account, false, true)
@@ -491,16 +500,12 @@ func (j *sparseJournal) transientStateChange(addr common.Address, key, prev comm
 
 func (j *sparseJournal) dirtyAccounts() []common.Address {
 	// The dirty-set should encompass all layers
-	var dirty = make(map[common.Address]any)
+	var dirty = make(map[common.Address]struct{})
 	for _, scope := range j.entries {
 		scope.addDirtyAccounts(dirty)
 	}
 	if j.ripeMagic {
-		dirty[ripemd] = []interface{}{}
+		dirty[ripemd] = struct{}{}
 	}
-	var dirtyList = make([]common.Address, 0, len(dirty))
-	for addr := range dirty {
-		dirtyList = append(dirtyList, addr)
-	}
-	return dirtyList
+	return slices.Collect(maps.Keys(dirty))
 }

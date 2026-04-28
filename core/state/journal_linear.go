@@ -210,7 +210,7 @@ func (j *linearJournal) balanceChange(addr common.Address, account *types.StateA
 	})
 }
 
-func (j *linearJournal) setCode(address common.Address, account *types.StateAccount, prevCode []byte) {
+func (j *linearJournal) setCode(address common.Address, account *types.StateAccount, prevCode []byte, destructed, newContract bool) {
 	j.append(codeChange{
 		account:  address,
 		prevCode: prevCode,
