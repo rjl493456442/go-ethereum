@@ -18,48 +18,58 @@ package vm
 
 import "fmt"
 
-// GasCosts denotes a vector of gas costs in the
-// multidimensional metering paradigm. It represents the cost
-// charged by an individual operation.
+// GasCosts denotes a vector of gas costs in the multidimensional metering
+// paradigm. It represents the cost charged by an individual operation. The
+// state component is signed so it can carry a refund (a previously billed
+// state-creation that has been cancelled within the same transaction).
 type GasCosts struct {
 	RegularGas uint64
-	StateGas   uint64
-}
-
-// Sum returns the total gas (regular + state).
-func (g GasCosts) Sum() uint64 {
-	return g.RegularGas + g.StateGas
+	StateGas   int64
 }
 
 // String returns a visual representation of the gas vector.
-func (g GasCosts) String() string {
+func (g *GasCosts) String() string {
 	return fmt.Sprintf("<%v,%v>", g.RegularGas, g.StateGas)
 }
 
-// GasBudget denotes a vector of remaining gas allowances available
-// for EVM execution in the multidimensional metering paradigm.
-// Unlike GasCosts which represents the price of an operation,
-// GasBudget tracks how much gas is left to spend.
+// GasBudget denotes a vector of remaining gas allowances available for EVM
+// execution in the multidimensional metering paradigm. Unlike GasCosts which
+// represents the price of an operation, GasBudget tracks how much gas is
+// left to spend.
+//
+// Regular gas and state gas are independent dimensions:
+//   - cost.RegularGas is always charged from RegularGas.
+//   - cost.StateGas, when positive, is charged from the StateGas reservoir
+//     first and any shortfall spills onto RegularGas.
+//   - cost.StateGas, when negative, is a refund (a state-creation cancelled
+//     within this tx) and is added back to the StateGas reservoir. It does
+//     not offset cost.RegularGas.
 type GasBudget struct {
-	RegularGas uint64 // The leftover gas for execution and state gas usage
-	StateGas   uint64 // The state gas reservoir
+	RegularGas uint64 // Regular gas pool; charged for cost.RegularGas plus state-gas spillOver.
+	StateGas   uint64 // State gas reservoir; charged first for positive cost.StateGas, refunded on negative.
 }
 
-// NewGasBudget creates a GasBudget with the given initial regular gas allowance.
-func NewGasBudget(gas uint64) GasBudget {
-	return GasBudget{RegularGas: gas}
+// NewGasBudget creates a GasBudget with the given initial regular gas and
+// state gas allowances.
+func NewGasBudget(regularGas, stateGas uint64) GasBudget {
+	return GasBudget{RegularGas: regularGas, StateGas: stateGas}
 }
 
-// Used returns the amount of regular gas consumed so far.
+// Used returns the total amount of gas consumed so far across both buckets.
+// If net refunds have grown the budget above its initial size (rare), Used
+// returns 0 rather than wrapping uint64.
 func (g GasBudget) Used(initial GasBudget) uint64 {
-	return initial.RegularGas - g.RegularGas
+	initialTotal := initial.RegularGas + initial.StateGas
+	currentTotal := g.RegularGas + g.StateGas
+	if currentTotal > initialTotal {
+		panic("gas is overcharged")
+	}
+	return initialTotal - currentTotal
 }
 
-// Exhaust sets all remaining gas to zero, preserving the initial amount
-// for usage tracking.
+// Exhaust sets all remaining regular gas to zero while with state gas unchanged.
 func (g *GasBudget) Exhaust() {
 	g.RegularGas = 0
-	g.StateGas = 0
 }
 
 func (g *GasBudget) Copy() GasBudget {
@@ -71,27 +81,99 @@ func (g GasBudget) String() string {
 	return fmt.Sprintf("<%v,%v>", g.RegularGas, g.StateGas)
 }
 
-// CanAfford reports whether the budget has sufficient gas to cover the cost.
-func (g GasBudget) CanAfford(cost GasCosts) bool {
-	return g.RegularGas >= cost.RegularGas
+// spillOver returns the portion of cost.StateGas that the StateGas
+// reservoir cannot cover and must therefore be paid from RegularGas. It is
+// 0 when cost.StateGas is non-positive or when the reservoir already covers
+// the full state cost.
+func (g GasBudget) spillOver(cost GasCosts) uint64 {
+	if cost.StateGas <= 0 {
+		return 0
+	}
+	owe := uint64(cost.StateGas)
+	if owe <= g.StateGas {
+		return 0
+	}
+	return owe - g.StateGas
 }
 
-// Charge deducts the given gas cost from the budget. It returns the
-// pre-charge gas value and false if the budget does not have sufficient
-// gas to cover the cost.
+// Charge deducts the given gas cost from the budget. The two dimensions are
+// independent:
+//   - cost.RegularGas is taken from RegularGas.
+//   - cost.StateGas, when positive, drains the StateGas reservoir first and
+//     spills any shortfall onto RegularGas.
+//   - cost.StateGas, when negative, tops up the StateGas reservoir as a
+//     refund and does not offset cost.RegularGas.
+//
+// The operation is atomic: it either applies in full or returns false with
+// the budget untouched.
+//
+// Returns the pre-charge RegularGas value (for tracer reporting) and a flag
+// indicating whether the budget covered the cost.
 func (g *GasBudget) Charge(cost GasCosts) (uint64, bool) {
-	prior := g.RegularGas
-	if prior < cost.RegularGas {
+	var (
+		prior     = g.RegularGas
+		regNeeded = cost.RegularGas + g.spillOver(cost)
+	)
+	if regNeeded < cost.RegularGas || regNeeded > g.RegularGas {
 		return prior, false
 	}
-	g.RegularGas -= cost.RegularGas
+	g.RegularGas -= regNeeded
+
+	switch {
+	case cost.StateGas < 0:
+		g.StateGas += uint64(-cost.StateGas)
+	case cost.StateGas > 0:
+		owe := uint64(cost.StateGas)
+		if owe >= g.StateGas {
+			g.StateGas = 0
+		} else {
+			g.StateGas -= owe
+		}
+	}
 	return prior, true
 }
 
-// Refund adds the given gas budget back. It returns the pre-refund gas
-// value and whether the budget was actually changed.
+// Refund adds the given gas budget back. It returns the pre-refund regular
+// gas value and whether the budget was actually changed.
 func (g *GasBudget) Refund(other GasBudget) (uint64, bool) {
 	prior := g.RegularGas
 	g.RegularGas += other.RegularGas
-	return prior, g.RegularGas != prior
+	g.StateGas += other.StateGas
+	return prior, other.RegularGas != 0 || other.StateGas != 0
+}
+
+// RevertStateCharge undoes a cumulative state-gas charge previously applied
+// via Charge — the inverse operation that callers use when a sub-frame is
+// reverted and the state-creation it billed for is being thrown away. The
+// argument carries the same sign convention as cost.StateGas in Charge:
+//
+//   - a positive stateCharge was a real charge: its full amount is added
+//     back to the StateGas reservoir.
+//   - a negative stateCharge was a refund (state cancelled in the same tx):
+//     its absolute value is debited from the StateGas reservoir first; any
+//     shortfall is taken from RegularGas.
+//
+// Returns the pre-revert RegularGas value (for tracer reporting) and a flag
+// indicating whether the budget covered the negative case. On failure the
+// budget is left untouched.
+func (g *GasBudget) RevertStateCharge(stateCharge int64) (uint64, bool) {
+	prior := g.RegularGas
+	if stateCharge >= 0 {
+		// Was a charge — give it back to the reservoir.
+		g.StateGas += uint64(stateCharge)
+		return prior, true
+	}
+	// Was a refund — take it back: state reservoir first, then regular.
+	debit := uint64(-stateCharge)
+	if debit <= g.StateGas {
+		g.StateGas -= debit
+		return prior, true
+	}
+	spillover := debit - g.StateGas
+	if spillover > g.RegularGas {
+		return prior, false
+	}
+	g.StateGas = 0
+	g.RegularGas -= spillover
+	return prior, true
 }

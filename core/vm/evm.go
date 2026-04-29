@@ -129,6 +129,8 @@ type EVM struct {
 	returnData []byte // Last CALL's return data for subsequent reuse
 
 	arena *stackArena
+
+	CostPerStateByte int // EIP-8037: per-byte state creation cost
 }
 
 // NewEVM constructs an EVM instance with the supplied block context, state
@@ -137,13 +139,14 @@ type EVM struct {
 // needed by calling evm.SetTxContext.
 func NewEVM(blockCtx BlockContext, statedb StateDB, chainConfig *params.ChainConfig, config Config) *EVM {
 	evm := &EVM{
-		Context:     blockCtx,
-		StateDB:     statedb,
-		Config:      config,
-		chainConfig: chainConfig,
-		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
-		jumpDests:   newMapJumpDests(),
-		arena:       newArena(),
+		Context:          blockCtx,
+		StateDB:          statedb,
+		Config:           config,
+		chainConfig:      chainConfig,
+		chainRules:       chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
+		jumpDests:        newMapJumpDests(),
+		arena:            newArena(),
+		CostPerStateByte: 1157,
 	}
 	evm.precompiles = activePrecompiledContracts(evm.chainRules)
 
@@ -316,7 +319,10 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 	// above we revert to the snapshot and consume any gas remaining. Additionally,
 	// when we're in homestead this also counts for code storage gas errors.
 	if err != nil {
-		evm.StateDB.RevertToSnapshot(snapshot)
+		stateBytes := evm.StateDB.RevertToSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.RevertStateCharge(stateCost)
+
 		if err != ErrExecutionReverted {
 			if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
 				evm.Config.Tracer.OnGasChange(gas.RegularGas, 0, tracing.GasChangeCallFailedExecution)
@@ -324,7 +330,9 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 			gas.Exhaust()
 		}
 	} else {
-		evm.StateDB.CloseSnapshot(snapshot)
+		stateBytes := evm.StateDB.CloseSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.Charge(GasCosts{StateGas: stateCost})
 	}
 	return ret, gas, err
 }
@@ -369,7 +377,10 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 		gas = contract.Gas
 	}
 	if err != nil {
-		evm.StateDB.RevertToSnapshot(snapshot)
+		stateBytes := evm.StateDB.RevertToSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.RevertStateCharge(stateCost)
+
 		if err != ErrExecutionReverted {
 			if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
 				evm.Config.Tracer.OnGasChange(gas.RegularGas, 0, tracing.GasChangeCallFailedExecution)
@@ -377,7 +388,9 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 			gas.Exhaust()
 		}
 	} else {
-		evm.StateDB.CloseSnapshot(snapshot)
+		stateBytes := evm.StateDB.CloseSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.Charge(GasCosts{StateGas: stateCost})
 	}
 	return ret, gas, err
 }
@@ -415,7 +428,10 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 		gas = contract.Gas
 	}
 	if err != nil {
-		evm.StateDB.RevertToSnapshot(snapshot)
+		stateBytes := evm.StateDB.RevertToSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.RevertStateCharge(stateCost)
+
 		if err != ErrExecutionReverted {
 			if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
 				evm.Config.Tracer.OnGasChange(gas.RegularGas, 0, tracing.GasChangeCallFailedExecution)
@@ -423,7 +439,9 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 			gas.Exhaust()
 		}
 	} else {
-		evm.StateDB.CloseSnapshot(snapshot)
+		stateBytes := evm.StateDB.CloseSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.Charge(GasCosts{StateGas: stateCost})
 	}
 	return ret, gas, err
 }
@@ -472,7 +490,10 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 		gas = contract.Gas
 	}
 	if err != nil {
-		evm.StateDB.RevertToSnapshot(snapshot)
+		stateBytes := evm.StateDB.RevertToSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.RevertStateCharge(stateCost)
+
 		if err != ErrExecutionReverted {
 			if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
 				evm.Config.Tracer.OnGasChange(gas.RegularGas, 0, tracing.GasChangeCallFailedExecution)
@@ -480,7 +501,9 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 			gas.Exhaust()
 		}
 	} else {
-		evm.StateDB.CloseSnapshot(snapshot)
+		stateBytes := evm.StateDB.CloseSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.Charge(GasCosts{StateGas: stateCost})
 	}
 	return ret, gas, err
 }
@@ -582,12 +605,17 @@ func (evm *EVM) create(caller common.Address, code []byte, gas GasBudget, value 
 
 	ret, err = evm.initNewContract(contract, address)
 	if err != nil && (evm.chainRules.IsHomestead || err != ErrCodeStoreOutOfGas) {
-		evm.StateDB.RevertToSnapshot(snapshot)
+		stateBytes := evm.StateDB.RevertToSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.RevertStateCharge(stateCost)
+
 		if err != ErrExecutionReverted {
 			contract.UseGas(GasCosts{RegularGas: contract.Gas.RegularGas}, evm.Config.Tracer, tracing.GasChangeCallFailedExecution)
 		}
 	} else {
-		evm.StateDB.CloseSnapshot(snapshot)
+		stateBytes := evm.StateDB.CloseSnapshot(snapshot)
+		stateCost := int64(stateBytes * evm.CostPerStateByte)
+		gas.Charge(GasCosts{StateGas: stateCost})
 	}
 	return ret, address, contract.Gas, err
 }

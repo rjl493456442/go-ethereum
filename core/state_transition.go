@@ -318,9 +318,14 @@ func (st *stateTransition) buyGas() error {
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil {
 		st.evm.Config.Tracer.OnGasChange(0, st.msg.GasLimit, tracing.GasChangeTxInitialBalance)
 	}
-	st.gasRemaining = vm.NewGasBudget(st.msg.GasLimit)
-	st.initialBudget = st.gasRemaining.Copy()
-
+	if st.evm.ChainConfig().IsAmsterdam(st.evm.Context.BlockNumber, st.evm.Context.Time) && st.msg.GasLimit > params.MaxTxGas {
+		reservoir := st.msg.GasLimit - params.MaxTxGas
+		st.gasRemaining = vm.NewGasBudget(params.MaxTxGas, reservoir)
+		st.initialBudget = st.gasRemaining.Copy()
+	} else {
+		st.gasRemaining = vm.NewGasBudget(st.msg.GasLimit, 0)
+		st.initialBudget = st.gasRemaining.Copy()
+	}
 	mgvalU256, _ := uint256.FromBig(mgval)
 	st.state.SubBalance(st.msg.From, mgvalU256, tracing.BalanceDecreaseGasBuy)
 	return nil
@@ -683,7 +688,7 @@ func (st *stateTransition) calcRefund() vm.GasBudget {
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && refund > 0 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining.RegularGas, st.gasRemaining.RegularGas+refund, tracing.GasChangeTxRefunds)
 	}
-	return vm.NewGasBudget(refund)
+	return vm.NewGasBudget(refund, 0)
 }
 
 // returnGas returns ETH for remaining gas,
