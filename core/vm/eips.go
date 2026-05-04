@@ -43,6 +43,7 @@ var activators = map[int]func(*JumpTable){
 	7939: enable7939,
 	8024: enable8024,
 	7843: enable7843,
+	8037: enable8037,
 }
 
 // EnableEIP enables the given EIP on the config.
@@ -589,4 +590,15 @@ func enable7843(jt *JumpTable) {
 		minStack:    minStack(0, 1),
 		maxStack:    maxStack(0, 1),
 	}
+}
+
+// enable8037 enables the multidimensional-metering as specified in EIP-8037.
+func enable8037(jt *JumpTable) {
+	jt[CREATE].constantGas = params.CreateGasAmsterdam
+	jt[CREATE].dynamicGas = gasCreateEip8037
+	jt[CREATE2].constantGas = params.CreateGasAmsterdam
+	jt[CREATE2].dynamicGas = gasCreate2Eip8037
+	jt[CALL].dynamicGas = gasCallEIP8037
+	jt[SELFDESTRUCT].dynamicGas = gasSelfdestruct8037
+	jt[SSTORE].dynamicGas = gasSStore8037
 }
