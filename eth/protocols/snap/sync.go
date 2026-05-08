@@ -48,7 +48,7 @@ const (
 	// minRequestSize is the minimum number of bytes to request from a remote peer.
 	// This number is used as the low cap for account and storage range requests.
 	// Bytecode and trienode are limited inherently by item count (1).
-	minRequestSize = 64 * 1024
+	minRequestSize = 512 * 1024
 
 	// The per-type maximum byte budgets requested from a remote peer. They are
 	// kept separate so each can be tuned independently against its in-memory
