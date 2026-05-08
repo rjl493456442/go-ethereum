@@ -50,26 +50,41 @@ const (
 	// Bytecode and trienode are limited inherently by item count (1).
 	minRequestSize = 64 * 1024
 
-	// maxRequestSize is the maximum number of bytes to request from a remote peer.
-	// This number is used as the high cap for account and storage range requests.
-	// Bytecode and trienode are limited more explicitly by the caps below.
-	maxRequestSize = 512 * 1024
+	// The per-type maximum byte budgets requested from a remote peer. They are
+	// kept separate so each can be tuned independently against its in-memory
+	// cost on the local side.
+	//
+	// The serving side targets softResponseLimit = 2 MiB per reply, so going
+	// above that would have no effect, peers already truncate their responses
+	// at 2 MiB.
+	//
+	//   - AccountRange responses are kept resident on the syncer (task.res)
+	//     until all dependent storage and bytecode tasks for the range complete,
+	//     so peak account memory is accountConcurrency * maxAccountRequestSize.
+	//
+	//   - StorageRanges, ByteCodes and TrieNodes responses are processed and
+	//     persisted on arrival, so the byte budgets only bound transient peak
+	//     memory of in-flight requests.
+	maxAccountRequestSize  = 2 * 1024 * 1024
+	maxStorageRequestSize  = 2 * 1024 * 1024
+	maxCodeRequestSize     = 2 * 1024 * 1024
+	maxTrieNodeRequestSize = 2 * 1024 * 1024
 
 	// maxCodeRequestCount is the maximum number of bytecode blobs to request in a
 	// single query. If this number is too low, we're not filling responses fully
 	// and waste round trip times. If it's too high, we're capping responses and
 	// waste bandwidth.
 	//
-	// Deployed bytecodes are currently capped at 24KB, so the minimum request
-	// size should be maxRequestSize / 24K. Assuming that most contracts do not
-	// come close to that, requesting 4x should be a good approximation.
-	maxCodeRequestCount = maxRequestSize / (24 * 1024) * 4
+	// Deployed bytecodes are currently capped at 32KB, so the minimum request
+	// size should be maxCodeRequestSize / 32K. Assuming that most contracts do
+	// not come close to that, requesting 4x should be a good approximation.
+	maxCodeRequestCount = maxCodeRequestSize / (32 * 1024) * 4
 
 	// maxTrieRequestCount is the maximum number of trie node blobs to request in
 	// a single query. If this number is too low, we're not filling responses fully
 	// and waste round trip times. If it's too high, we're capping responses and
 	// waste bandwidth.
-	maxTrieRequestCount = maxRequestSize / 512
+	maxTrieRequestCount = maxTrieNodeRequestSize / 512
 
 	// trienodeHealRateMeasurementImpact is the impact a single measurement has on
 	// the local node's trienode processing capacity. A value closer to 0 reacts
@@ -1096,8 +1111,8 @@ func (s *Syncer) assignAccountTasks(success chan *accountResponse, fail chan *ac
 			defer s.pend.Done()
 
 			// Attempt to send the remote request and revert if it fails
-			if cap > maxRequestSize {
-				cap = maxRequestSize
+			if cap > maxAccountRequestSize {
+				cap = maxAccountRequestSize
 			}
 			if cap < minRequestSize { // Don't bother with peers below a bare minimum performance
 				cap = minRequestSize
@@ -1207,7 +1222,7 @@ func (s *Syncer) assignBytecodeTasks(success chan *bytecodeResponse, fail chan *
 			defer s.pend.Done()
 
 			// Attempt to send the remote request and revert if it fails
-			if err := peer.RequestByteCodes(reqid, hashes, maxRequestSize); err != nil {
+			if err := peer.RequestByteCodes(reqid, hashes, maxCodeRequestSize); err != nil {
 				log.Debug("Failed to request bytecodes", "err", err)
 				s.scheduleRevertBytecodeRequest(req)
 			}
@@ -1278,8 +1293,8 @@ func (s *Syncer) assignStorageTasks(success chan *storageResponse, fail chan *st
 		// Generate the network query and send it to the peer. If there are
 		// large contract tasks pending, complete those before diving into
 		// even more new contracts.
-		if cap > maxRequestSize {
-			cap = maxRequestSize
+		if cap > maxStorageRequestSize {
+			cap = maxStorageRequestSize
 		}
 		if cap < minRequestSize { // Don't bother with peers below a bare minimum performance
 			cap = minRequestSize
@@ -1492,7 +1507,7 @@ func (s *Syncer) assignTrienodeHealTasks(success chan *trienodeHealResponse, fai
 			defer s.pend.Done()
 
 			// Attempt to send the remote request and revert if it fails
-			if err := peer.RequestTrieNodes(reqid, root, len(paths), pathsets, maxRequestSize); err != nil {
+			if err := peer.RequestTrieNodes(reqid, root, len(paths), pathsets, maxTrieNodeRequestSize); err != nil {
 				log.Debug("Failed to request trienode healers", "err", err)
 				s.scheduleRevertTrienodeHealRequest(req)
 			}
@@ -1608,7 +1623,7 @@ func (s *Syncer) assignBytecodeHealTasks(success chan *bytecodeHealResponse, fai
 			defer s.pend.Done()
 
 			// Attempt to send the remote request and revert if it fails
-			if err := peer.RequestByteCodes(reqid, hashes, maxRequestSize); err != nil {
+			if err := peer.RequestByteCodes(reqid, hashes, maxCodeRequestSize); err != nil {
 				log.Debug("Failed to request bytecode healers", "err", err)
 				s.scheduleRevertBytecodeHealRequest(req)
 			}
@@ -2128,13 +2143,13 @@ func (s *Syncer) processStorageResponse(res *storageResponse) {
 						lastKey = keys[len(keys)-1]
 					}
 					// If the number of slots remaining is low, decrease the
-					// number of chunks. Somewhere on the order of 10-15K slots
-					// fit into a packet of 500KB. A key/slot pair is maximum 64
-					// bytes, so pessimistically maxRequestSize/64 = 8K.
+					// number of chunks. A key/slot pair is maximum 64 bytes,
+					// so pessimistically maxStorageRequestSize/64 slots fit
+					// into a single packet.
 					//
 					// Chunk so that at least 2 packets are needed to fill a task.
 					if estimate, err := estimateRemainingSlots(len(keys), lastKey); err == nil {
-						if n := estimate / (2 * (maxRequestSize / 64)); n+1 < chunks {
+						if n := estimate / (2 * (maxStorageRequestSize / 64)); n+1 < chunks {
 							chunks = n + 1
 						}
 						log.Debug("Chunked large contract", "initiators", len(keys), "tail", lastKey, "remaining", estimate, "chunks", chunks)
