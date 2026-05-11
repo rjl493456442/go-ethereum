@@ -668,8 +668,9 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
 
 	var (
-		ret   []byte
-		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
+		ret             []byte
+		vmerr           error // vm errors do not effect consensus and are therefore not assigned to err
+		authStateRefund uint64
 	)
 	var execGasUsed vm.GasUsed
 	if contractCreation {
@@ -682,7 +683,8 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		if msg.SetCodeAuthorizations != nil {
 			for _, auth := range msg.SetCodeAuthorizations {
 				// Note errors are ignored, we simply skip invalid authorizations here.
-				st.applyAuthorization(rules, &auth)
+				refund, _ := st.applyAuthorization(rules, &auth)
+				authStateRefund += refund
 			}
 		}
 
@@ -701,11 +703,15 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	if rules.IsAmsterdam {
 		if vmerr != nil {
-			// On outer level tx failure, no state is written
-			if execGasUsed.StateGas > 0 {
-				st.gasRemaining.StateGas += uint64(execGasUsed.StateGas)
-			}
+			// Refund all state gas on outer call error (all state changes were reverted).
+			st.gasRemaining.StateGas = uint64(int64(st.gasRemaining.StateGas) + execGasUsed.StateGas)
 			execGasUsed.StateGas = 0
+			// If this was a contract creation, also refund the account creation costs.
+			if contractCreation {
+				refund := params.AccountCreationSize * st.evm.Context.CostPerStateByte
+				st.gasRemaining.StateGas += refund
+				execGasUsed.StateGas -= int64(refund)
+			}
 		} else {
 			// Compute refunds for selfdestructed slots
 			cpsb := st.evm.Context.CostPerStateByte
@@ -726,6 +732,8 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 				execGasUsed.StateGas -= int64(sdRefund)
 			}
 		}
+		// Return the authorization refunds.
+		execGasUsed.StateGas -= int64(authStateRefund)
 	}
 
 	// Record the gas used excluding gas refunds. This value represents the actual
@@ -757,12 +765,13 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 	if rules.IsAmsterdam {
 		// EIP-8037: 2D gas accounting for Amsterdam.
 		// tx_regular = intrinsic_regular + exec_regular_gas_used
-		// tx_state = intrinsic_state (adjusted) + exec_state_gas_used
-		// execGasUsed.StateGas may be negative when an SSTORE 0→x→0 refund
-		// exceeded the intrinsic-charged state gas
-		txState := cost.StateGas
-		if execGasUsed.StateGas > 0 {
-			txState += uint64(execGasUsed.StateGas)
+		// tx_state = intrinsic_state + gross_state_charges
+		// gross_state_charges (execGasUsed.StateGas) may be negative when
+		// inline refunds (SSTORE 0→x→0, CREATE failure refund, 7702 auth
+		// refunds) exceed the intrinsic-charged state gas. Clamp at 0.
+		var txState uint64
+		if sum := int64(cost.StateGas) + execGasUsed.StateGas; sum > 0 {
+			txState = uint64(sum)
 		}
 		txRegular := cost.RegularGas + execGasUsed.RegularGas
 		txRegular = max(txRegular, floorDataGas)
@@ -843,10 +852,10 @@ func (st *stateTransition) validateAuthorization(auth *types.SetCodeAuthorizatio
 }
 
 // applyAuthorization applies an EIP-7702 code delegation to the state.
-func (st *stateTransition) applyAuthorization(rules params.Rules, auth *types.SetCodeAuthorization) error {
+func (st *stateTransition) applyAuthorization(rules params.Rules, auth *types.SetCodeAuthorization) (stateRefund uint64, err error) {
 	authority, err := st.validateAuthorization(auth)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// If the account already exists in state, refund the new account cost
@@ -854,9 +863,10 @@ func (st *stateTransition) applyAuthorization(rules params.Rules, auth *types.Se
 	var refund uint64
 	if st.state.Exist(authority) {
 		if rules.IsAmsterdam {
-			// EIP-8037: refund account creation state gas to the reservoir
+			// EIP-8037: refund account creation state gas to the reservoir.
 			refund = params.AccountCreationSize * st.evm.Context.CostPerStateByte
 			st.gasRemaining.StateGas += refund
+			stateRefund += refund
 		} else {
 			st.state.AddRefund(params.CallNewAccountGas - params.TxAuthTupleGas)
 		}
@@ -871,7 +881,7 @@ func (st *stateTransition) applyAuthorization(rules params.Rules, auth *types.Se
 		if isDelegated {
 			st.state.SetCode(authority, nil, tracing.CodeChangeAuthorizationClear)
 		}
-		return nil
+		return stateRefund, nil
 	}
 
 	// install delegation to auth.Address if the delegation changed
@@ -879,7 +889,7 @@ func (st *stateTransition) applyAuthorization(rules params.Rules, auth *types.Se
 		st.state.SetCode(authority, types.AddressToDelegation(auth.Address), tracing.CodeChangeAuthorization)
 	}
 
-	return nil
+	return stateRefund, nil
 }
 
 // calcRefund computes refund counter, capped to a refund quotient.
