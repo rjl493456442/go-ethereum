@@ -579,14 +579,25 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	// Check if we have enough gas in the block
 	if rules.IsAmsterdam {
-		subGasAmount := msg.GasLimit
-		if subGasAmount > cost.StateGas {
-			subGasAmount -= cost.StateGas
+		// EIP-8037 per-tx 2D block-inclusion check. For each dimension,
+		// the worst-case contribution is tx.gas minus the other
+		// dimension's intrinsic (capped at MaxTxGas for the regular
+		// dimension).
+		regularReservation := msg.GasLimit
+		if regularReservation > cost.StateGas {
+			regularReservation -= cost.StateGas
 		} else {
-			subGasAmount = 0
+			regularReservation = 0
 		}
-		subGasAmount = min(subGasAmount, params.MaxTxGas)
-		if err := st.gp.SubGas(subGasAmount); err != nil {
+		regularReservation = min(regularReservation, params.MaxTxGas)
+
+		stateReservation := msg.GasLimit
+		if stateReservation > cost.RegularGas {
+			stateReservation -= cost.RegularGas
+		} else {
+			stateReservation = 0
+		}
+		if err := st.gp.CheckGasAmsterdam(regularReservation, stateReservation); err != nil {
 			return nil, err
 		}
 	} else {
@@ -756,7 +767,7 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		}
 		txRegular := cost.RegularGas + execGasUsed.RegularGas
 		txRegular = max(txRegular, floorDataGas)
-		if err := st.gp.ReturnGasAmsterdam(txRegular, txState, st.gasUsed()); err != nil {
+		if err := st.gp.ChargeGasAmsterdam(txRegular, txState, st.gasUsed()); err != nil {
 			return nil, err
 		}
 	} else {

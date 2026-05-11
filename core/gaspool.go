@@ -52,6 +52,19 @@ func (gp *GasPool) SubGas(amount uint64) error {
 	return nil
 }
 
+// CheckGasAmsterdam performs the EIP-8037 per-tx 2D block-inclusion check:
+// the worst-case regular contribution must fit in the regular dimension and
+// the worst-case state contribution must fit in the state dimension
+func (gp *GasPool) CheckGasAmsterdam(regularReservation, stateReservation uint64) error {
+	if gp.initial-gp.cumulativeRegular < regularReservation {
+		return ErrGasLimitReached
+	}
+	if gp.initial-gp.cumulativeState < stateReservation {
+		return ErrGasLimitReached
+	}
+	return nil
+}
+
 // ReturnGas adds the refunded gas back to the pool and updates
 // the cumulative gas usage accordingly.
 func (gp *GasPool) ReturnGas(returned uint64, gasUsed uint64) error {
@@ -73,9 +86,11 @@ func (gp *GasPool) ReturnGas(returned uint64, gasUsed uint64) error {
 	return nil
 }
 
-// ReturnGasAmsterdam calculates the new remaining gas in the pool after the
-// execution of a message.
-func (gp *GasPool) ReturnGasAmsterdam(txRegular, txState, receiptGasUsed uint64) error {
+// ChargeGasAmsterdam calculates the new remaining gas in the pool after the
+// execution of a message. Previously we subtracted and re-added gas to the
+// gaspool. After Amsterdam we only check if we can include the transaction and charge the
+// gaspool at the end.
+func (gp *GasPool) ChargeGasAmsterdam(txRegular, txState, receiptGasUsed uint64) error {
 	gp.cumulativeRegular += txRegular
 	gp.cumulativeState += txState
 	gp.cumulativeUsed += receiptGasUsed
