@@ -59,10 +59,6 @@ func (g GasCosts) String() string {
 type GasBudget struct {
 	RegularGas uint64 // The leftover gas for execution and state gas usage
 	StateGas   uint64 // The state gas reservoir
-
-	// Tracks the gas refunds in this call frame. Needed so we can
-	// revert the refunds if the call frame reverts.
-	StateGasRefund uint64
 }
 
 // NewGasBudgetReg creates a GasBudget with the given initial regular gas allowance.
@@ -75,7 +71,7 @@ func NewGasBudget(regular, state uint64) GasBudget {
 }
 
 func (g *GasBudget) isZero() bool {
-	return g.RegularGas == 0 && g.StateGas == 0 && g.StateGasRefund == 0
+	return g.RegularGas == 0 && g.StateGas == 0
 }
 
 // Used returns the total amount of gas consumed so far (regular + state).
