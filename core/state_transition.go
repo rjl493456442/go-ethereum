@@ -916,7 +916,7 @@ func (st *stateTransition) calcRefund() vm.GasBudget {
 func (st *stateTransition) returnGas() uint64 {
 	gas := st.gasRemaining.RegularGas + st.gasRemaining.StateGas
 	remaining := uint256.NewInt(gas)
-	remaining.Mul(remaining, uint256.MustFromBig(st.msg.GasPrice))
+	remaining.Mul(remaining, st.msg.GasPrice)
 	st.state.AddBalance(st.msg.From, remaining, tracing.BalanceIncreaseGasReturn)
 
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && gas > 0 {
