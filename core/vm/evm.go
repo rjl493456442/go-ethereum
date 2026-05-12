@@ -630,7 +630,10 @@ func (evm *EVM) create(caller common.Address, code []byte, gas GasBudget, value 
 	if err != nil && (evm.chainRules.IsHomestead || err != ErrCodeStoreOutOfGas) {
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
+			// Exceptional halt, drain all the leftover regular gas
 			contract.UseGas(GasCosts{RegularGas: contract.Gas.RegularGas}, evm.Config.Tracer, tracing.GasChangeCallFailedExecution)
+
+			//
 			if evm.chainRules.IsAmsterdam {
 				contract.Gas.HaltReset(&contract.GasUsed, initialStateGas)
 			}
@@ -646,14 +649,21 @@ func (evm *EVM) initNewContract(contract *Contract, address common.Address) ([]b
 	if err != nil {
 		return ret, err
 	}
-
 	// Check prefix before gas calculation.
 	// Reject code starting with 0xEF if EIP-3541 is enabled.
 	if len(ret) >= 1 && ret[0] == 0xEF && evm.chainRules.IsLondon {
 		return ret, ErrInvalidCode
 	}
-
-	if evm.chainRules.IsAmsterdam {
+	if evm.chainRules.IsEIP4762 {
+		consumed, wanted := evm.AccessEvents.CodeChunksRangeGas(address, 0, uint64(len(ret)), uint64(len(ret)), true, contract.Gas.RegularGas)
+		contract.UseGas(GasCosts{RegularGas: consumed}, evm.Config.Tracer, tracing.GasChangeWitnessCodeChunk)
+		if len(ret) > 0 && (consumed < wanted) {
+			return ret, ErrCodeStoreOutOfGas
+		}
+		if err := CheckMaxCodeSize(&evm.chainRules, uint64(len(ret))); err != nil {
+			return ret, err
+		}
+	} else if evm.chainRules.IsAmsterdam {
 		// Check max code size BEFORE charging gas so over-max code
 		// does not consume state gas (which would inflate tx_state).
 		if err := CheckMaxCodeSize(&evm.chainRules, uint64(len(ret))); err != nil {
@@ -664,18 +674,10 @@ func (evm *EVM) initNewContract(contract *Contract, address common.Address) ([]b
 		if !contract.UseGas(regularGas, evm.Config.Tracer, tracing.GasChangeCallCodeStorage) {
 			return ret, ErrCodeStoreOutOfGas
 		}
+		// Charge state gas then.
 		stateGas := GasCosts{StateGas: uint64(len(ret)) * evm.Context.CostPerStateByte}
 		if !contract.UseGas(stateGas, evm.Config.Tracer, tracing.GasChangeCallCodeStorage) {
 			return ret, ErrCodeStoreOutOfGas
-		}
-	} else if evm.chainRules.IsEIP4762 {
-		consumed, wanted := evm.AccessEvents.CodeChunksRangeGas(address, 0, uint64(len(ret)), uint64(len(ret)), true, contract.Gas.RegularGas)
-		contract.UseGas(GasCosts{RegularGas: consumed}, evm.Config.Tracer, tracing.GasChangeWitnessCodeChunk)
-		if len(ret) > 0 && (consumed < wanted) {
-			return ret, ErrCodeStoreOutOfGas
-		}
-		if err := CheckMaxCodeSize(&evm.chainRules, uint64(len(ret))); err != nil {
-			return ret, err
 		}
 	} else {
 		createDataGas := GasCosts{RegularGas: uint64(len(ret)) * params.CreateDataGas}
@@ -686,7 +688,6 @@ func (evm *EVM) initNewContract(contract *Contract, address common.Address) ([]b
 			return ret, err
 		}
 	}
-
 	if len(ret) > 0 {
 		evm.StateDB.SetCode(address, ret, tracing.CodeChangeContractCreation)
 	}

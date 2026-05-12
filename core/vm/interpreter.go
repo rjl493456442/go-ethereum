@@ -233,6 +233,7 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 				}
 				contract.Gas.RegularGas -= dynamicCost.RegularGas
 				contract.GasUsed.RegularGas += dynamicCost.RegularGas
+
 				// Then charge state gas.
 				stateOnly := GasCosts{StateGas: dynamicCost.StateGas}
 				if _, ok := contract.Gas.Charge(stateOnly); !ok {

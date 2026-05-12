@@ -908,7 +908,7 @@ func (st *stateTransition) calcRefund() vm.GasBudget {
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && refund > 0 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining.RegularGas, st.gasRemaining.RegularGas+refund, tracing.GasChangeTxRefunds)
 	}
-	return vm.NewGasBudgetReg(refund)
+	return vm.NewGasBudget(refund, 0)
 }
 
 // returnGas returns ETH for remaining gas,

@@ -19,24 +19,25 @@ package vm
 import "fmt"
 
 // GasUsed is the per-frame accumulator for gas consumption.
-// StateGas is signed, because it can be negative in a 0 -> x -> 0 scenario.
+// StateGas is signed, because it can be negative in a 0-> x-> 0 scenario.
 type GasUsed struct {
 	RegularGas uint64
 	StateGas   int64
 }
 
+// Add accumulates a gas cost into the per-frame counters.
 func (g *GasUsed) Add(costs GasCosts) {
 	g.RegularGas += costs.RegularGas
 	g.StateGas += int64(costs.StateGas)
 }
 
+// isZero reports whether nothing has been accumulated on either axis.
 func (g *GasUsed) isZero() bool {
 	return g.RegularGas == 0 && g.StateGas == 0
 }
 
-// GasCosts denotes a vector of gas costs in the
-// multidimensional metering paradigm. It represents the cost
-// charged by an individual operation.
+// GasCosts denotes a vector of gas costs in the multidimensional metering
+// paradigm. It represents the cost charged by an individual operation.
 type GasCosts struct {
 	RegularGas uint64
 	StateGas   uint64
@@ -52,20 +53,16 @@ func (g GasCosts) String() string {
 	return fmt.Sprintf("<%v,%v>", g.RegularGas, g.StateGas)
 }
 
-// GasBudget denotes a vector of remaining gas allowances available
-// for EVM execution in the multidimensional metering paradigm.
-// Unlike GasCosts which represents the price of an operation,
-// GasBudget tracks how much gas is left to spend.
+// GasBudget denotes a vector of remaining gas allowances available for EVM
+// execution in the multidimensional metering paradigm. Unlike GasCosts which
+// represents the price of an operation, GasBudget tracks how much gas is
+// left to spend.
 type GasBudget struct {
 	RegularGas uint64 // The leftover gas for execution and state gas usage
 	StateGas   uint64 // The state gas reservoir
 }
 
-// NewGasBudgetReg creates a GasBudget with the given initial regular gas allowance.
-func NewGasBudgetReg(gas uint64) GasBudget {
-	return GasBudget{RegularGas: gas}
-}
-
+// NewGasBudget initializes the gas budget.
 func NewGasBudget(regular, state uint64) GasBudget {
 	return GasBudget{RegularGas: regular, StateGas: state}
 }
@@ -100,8 +97,12 @@ func (g *GasBudget) HaltReset(gasUsed *GasUsed, initialStateGas uint64) {
 	gasUsed.StateGas = 0
 }
 
+// Copy returns a deep-copied gas budget object.
 func (g *GasBudget) Copy() GasBudget {
-	return GasBudget{RegularGas: g.RegularGas, StateGas: g.StateGas}
+	return GasBudget{
+		RegularGas: g.RegularGas,
+		StateGas:   g.StateGas,
+	}
 }
 
 // String returns a visual representation of the gas budget vector.

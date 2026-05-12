@@ -157,12 +157,27 @@ func (c *Contract) RefundGas(err error, initialRegularGasUsed uint64, gas GasBud
 	c.GasUsed.RegularGas = initialRegularGasUsed + gasUsed.RegularGas
 }
 
-// Refunds the account creation state costs if a CREATE/CREATE2 call fails.
-func (c *Contract) RefundCreateStateGas(refund uint64) {
-	if refund > 0 {
-		c.Gas.StateGas += refund
-		c.GasUsed.StateGas -= int64(refund)
-	}
+// refundStateGas unwinds a previously-charged state-gas amount, in lockstep
+// on both axes:
+//
+//   - The state reservoir is credited immediately; subsequent charges in this
+//     frame can spend it.
+//   - The signed gross counter is reduced.
+//
+// Callers (as of EIP-8037):
+//
+//   - CREATE / CREATE2 sub-frame failure: the parent unwinds the pre-charged
+//     account-creation state-gas (AccountCreationSize × CostPerStateByte).
+//
+//   - SSTORE (0->A->0): the frame unwinds its own slot-creation state-gas
+//     (StorageCreationSize × CostPerStateByte) when the slot is cleared back
+//     to its original-zero value within the same transaction.
+//
+// The refund is unconditional and uncapped; the EIP-3529 20% refund counter
+// does NOT apply here (that counter is for the regular-gas dimension only).
+func (c *Contract) refundStateGas(refund uint64) {
+	c.Gas.StateGas += refund
+	c.GasUsed.StateGas -= int64(refund)
 }
 
 // Address returns the contracts address
