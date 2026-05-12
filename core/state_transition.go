@@ -672,9 +672,10 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		vmerr           error // vm errors do not effect consensus and are therefore not assigned to err
 		authStateRefund uint64
 	)
-	var execGasUsed vm.GasUsed
 	if contractCreation {
-		ret, _, st.gasRemaining, execGasUsed, vmerr = st.evm.Create(msg.From, msg.Data, st.gasRemaining, value)
+		var result vm.GasBudget
+		ret, _, result, vmerr = st.evm.Create(msg.From, msg.Data, st.gasRemaining.ForwardAll(), value)
+		st.gasRemaining.Absorb(result)
 	} else {
 		// Increment the nonce for the next transaction.
 		st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
@@ -696,21 +697,17 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		if addr, ok := types.ParseDelegation(st.state.GetCode(*msg.To)); ok {
 			st.state.AddAddressToAccessList(addr)
 		}
-
 		// Execute the transaction's call.
-		ret, st.gasRemaining, execGasUsed, vmerr = st.evm.Call(msg.From, st.to(), msg.Data, st.gasRemaining, value)
+		var result vm.GasBudget
+		ret, result, vmerr = st.evm.Call(msg.From, st.to(), msg.Data, st.gasRemaining.ForwardAll(), value)
+		st.gasRemaining.Absorb(result)
 	}
-
 	if rules.IsAmsterdam {
 		if vmerr != nil {
-			// Refund all state gas on outer call error (all state changes were reverted).
-			st.gasRemaining.StateGas = uint64(int64(st.gasRemaining.StateGas) + execGasUsed.StateGas)
-			execGasUsed.StateGas = 0
 			// If this was a contract creation, also refund the account creation costs.
 			if contractCreation {
 				refund := params.AccountCreationSize * st.evm.Context.CostPerStateByte
-				st.gasRemaining.StateGas += refund
-				execGasUsed.StateGas -= int64(refund)
+				st.gasRemaining.RefundState(refund)
 			}
 		} else {
 			// Compute refunds for selfdestructed slots
@@ -722,18 +719,17 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 				r += uint64(st.state.GetCodeSize(addr)) * cpsb
 				sdRefund += r
 			}
-			if execGasUsed.StateGas <= 0 {
+			if st.gasRemaining.UsedStateGas <= 0 {
 				sdRefund = 0
-			} else if sdRefund > uint64(execGasUsed.StateGas) {
-				sdRefund = uint64(execGasUsed.StateGas)
+			} else if sdRefund > uint64(st.gasRemaining.UsedStateGas) {
+				sdRefund = uint64(st.gasRemaining.UsedStateGas)
 			}
 			if sdRefund > 0 {
-				st.gasRemaining.StateGas += sdRefund
-				execGasUsed.StateGas -= int64(sdRefund)
+				st.gasRemaining.RefundState(sdRefund)
 			}
 		}
 		// Return the authorization refunds.
-		execGasUsed.StateGas -= int64(authStateRefund)
+		st.gasRemaining.UsedStateGas -= int64(authStateRefund)
 	}
 
 	// Record the gas used excluding gas refunds. This value represents the actual
@@ -741,7 +737,7 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 	peakGasUsed := st.gasUsed()
 
 	// Compute refund counter, capped to a refund quotient.
-	st.gasRemaining.Refund(st.calcRefund())
+	st.gasRemaining.RefundRegular(st.calcRefund())
 
 	if rules.IsPrague {
 		// After EIP-7623: Data-heavy transactions pay the floor gas.
@@ -770,10 +766,10 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		// inline refunds (SSTORE 0→x→0, CREATE failure refund, 7702 auth
 		// refunds) exceed the intrinsic-charged state gas. Clamp at 0.
 		var txState uint64
-		if sum := int64(cost.StateGas) + execGasUsed.StateGas; sum > 0 {
+		if sum := int64(cost.StateGas) + st.gasRemaining.UsedStateGas; sum > 0 {
 			txState = uint64(sum)
 		}
-		txRegular := cost.RegularGas + execGasUsed.RegularGas
+		txRegular := cost.RegularGas + st.gasRemaining.UsedRegularGas
 		txRegular = max(txRegular, floorDataGas)
 		if err := st.gp.ChargeGasAmsterdam(txRegular, txState, st.gasUsed()); err != nil {
 			return nil, err
@@ -893,7 +889,7 @@ func (st *stateTransition) applyAuthorization(rules params.Rules, auth *types.Se
 }
 
 // calcRefund computes refund counter, capped to a refund quotient.
-func (st *stateTransition) calcRefund() vm.GasBudget {
+func (st *stateTransition) calcRefund() uint64 {
 	var refund uint64
 	if !st.evm.ChainConfig().IsLondon(st.evm.Context.BlockNumber) {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
@@ -908,7 +904,7 @@ func (st *stateTransition) calcRefund() vm.GasBudget {
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && refund > 0 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining.RegularGas, st.gasRemaining.RegularGas+refund, tracing.GasChangeTxRefunds)
 	}
-	return vm.NewGasBudget(refund, 0)
+	return refund
 }
 
 // returnGas returns ETH for remaining gas,

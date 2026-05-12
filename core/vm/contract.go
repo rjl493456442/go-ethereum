@@ -42,9 +42,10 @@ type Contract struct {
 	IsDeployment bool
 	IsSystemCall bool
 
-	Gas     GasBudget
-	GasUsed GasUsed
-	value   *uint256.Int
+	// Gas carries the unified gas state for this frame: running balance,
+	// reservoir, and per-frame usage accumulators. See GasBudget.
+	Gas   GasBudget
+	value *uint256.Int
 }
 
 // NewContract returns a new contract environment for the execution of EVM.
@@ -114,7 +115,6 @@ func (c *Contract) GetOp(n uint64) OpCode {
 	if n < uint64(len(c.Code)) {
 		return OpCode(c.Code[n])
 	}
-
 	return STOP
 }
 
@@ -126,58 +126,49 @@ func (c *Contract) Caller() common.Address {
 	return c.caller
 }
 
-// UseGas attempts the use gas and subtracts it and returns true on success
-func (c *Contract) UseGas(cost GasCosts, logger *tracing.Hooks, reason tracing.GasChangeReason) (ok bool) {
-	prior, ok := c.Gas.Charge(cost)
-	if !ok {
+// chargeRegular deducts regular gas only, with tracer integration.
+// Returns false on OOG. Delegates the arithmetic to GasBudget.ChargeRegular.
+func (c *Contract) chargeRegular(r uint64, logger *tracing.Hooks, reason tracing.GasChangeReason) bool {
+	prior := c.Gas.RegularGas
+	if !c.Gas.ChargeRegular(r) {
 		return false
 	}
 	if logger != nil && logger.OnGasChange != nil && reason != tracing.GasChangeIgnored {
 		logger.OnGasChange(prior, c.Gas.RegularGas, reason)
 	}
-	c.GasUsed.Add(cost)
 	return true
 }
 
-// RefundGas refunds gas to the contract.
-func (c *Contract) RefundGas(err error, initialRegularGasUsed uint64, gas GasBudget, gasUsed GasUsed, logger *tracing.Hooks, reason tracing.GasChangeReason) {
-	if err != nil {
-		gas.StateGas = uint64(int64(gas.StateGas) + gasUsed.StateGas)
-		gasUsed.StateGas = 0
-	}
-	if gas.isZero() && gasUsed.isZero() {
-		return
-	}
-	if logger != nil && logger.OnGasChange != nil && reason != tracing.GasChangeIgnored {
-		logger.OnGasChange(c.Gas.RegularGas, c.Gas.RegularGas+gas.RegularGas, reason)
-	}
-	c.Gas.RegularGas += gas.RegularGas
-	c.Gas.StateGas = gas.StateGas
-	c.GasUsed.StateGas += gasUsed.StateGas
-	c.GasUsed.RegularGas = initialRegularGasUsed + gasUsed.RegularGas
+// chargeState deducts state gas (spilling into regular when the reservoir is
+// exhausted), with tracer integration. Returns false on OOG.
+func (c *Contract) chargeState(s uint64, logger *tracing.Hooks, reason tracing.GasChangeReason) bool {
+	// TODO: invoke the OnGasChangeV2 hook with both dimensions.
+	return c.Gas.ChargeState(s)
 }
 
-// refundStateGas unwinds a previously-charged state-gas amount, in lockstep
-// on both axes:
+// RefundGas absorbs a sub-call's leftover GasBudget into this contract's gas
+// state. Thin wrapper around GasBudget.Absorb with tracer integration.
+func (c *Contract) RefundGas(child GasBudget, logger *tracing.Hooks, reason tracing.GasChangeReason) {
+	if logger != nil && logger.OnGasChange != nil && reason != tracing.GasChangeIgnored && child.RegularGas != 0 {
+		logger.OnGasChange(c.Gas.RegularGas, c.Gas.RegularGas+child.RegularGas, reason)
+	}
+	c.Gas.Absorb(child)
+}
+
+// forwardGas drains `regular` regular gas and the entire state reservoir
+// from this contract's running budget and returns the initial GasBudget for
+// a child frame. The caller's UsedRegularGas is bumped by the forwarded
+// amount so that the absorb-on-return path correctly reclaims the unused
+// portion. Thin wrapper around GasBudget.Forward with tracer integration.
 //
-//   - The state reservoir is credited immediately; subsequent charges in this
-//     frame can spend it.
-//   - The signed gross counter is reduced.
-//
-// Callers (as of EIP-8037):
-//
-//   - CREATE / CREATE2 sub-frame failure: the parent unwinds the pre-charged
-//     account-creation state-gas (AccountCreationSize × CostPerStateByte).
-//
-//   - SSTORE (0->A->0): the frame unwinds its own slot-creation state-gas
-//     (StorageCreationSize × CostPerStateByte) when the slot is cleared back
-//     to its original-zero value within the same transaction.
-//
-// The refund is unconditional and uncapped; the EIP-3529 20% refund counter
-// does NOT apply here (that counter is for the regular-gas dimension only).
-func (c *Contract) refundStateGas(refund uint64) {
-	c.Gas.StateGas += refund
-	c.GasUsed.StateGas -= int64(refund)
+// Caller must ensure `regular` is no larger than the running balance (the
+// opcode's dynamic gas table is expected to validate that before invoking
+// the opcode handler).
+func (c *Contract) forwardGas(regular uint64, logger *tracing.Hooks, reason tracing.GasChangeReason) GasBudget {
+	if logger != nil && logger.OnGasChange != nil && reason != tracing.GasChangeIgnored && regular != 0 {
+		logger.OnGasChange(c.Gas.RegularGas, c.Gas.RegularGas-regular, reason)
+	}
+	return c.Gas.Forward(regular)
 }
 
 // Address returns the contracts address

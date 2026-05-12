@@ -168,7 +168,7 @@ func makeCallVariantGasCallEIP2929(oldCalculator gasFunc, addressPosition int) g
 			evm.StateDB.AddAddressToAccessList(addr)
 			// Charge the remaining difference here already, to correctly calculate available
 			// gas for call
-			if !contract.UseGas(GasCosts{RegularGas: coldCost}, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
+			if !contract.chargeRegular(coldCost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
 				return GasCosts{}, ErrOutOfGas
 			}
 		}
@@ -309,7 +309,7 @@ func makeCallVariantGasCallEIP7702(intrinsicFunc intrinsicGasFunc) gasFunc {
 
 			// Charge the remaining difference here already, to correctly calculate
 			// available gas for call
-			if !contract.UseGas(GasCosts{RegularGas: eip2929Cost}, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
+			if !contract.chargeRegular(eip2929Cost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
 				return GasCosts{}, ErrOutOfGas
 			}
 		}
@@ -338,7 +338,7 @@ func makeCallVariantGasCallEIP7702(intrinsicFunc intrinsicGasFunc) gasFunc {
 				evm.StateDB.AddAddressToAccessList(target)
 				eip7702Cost = params.ColdAccountAccessCostEIP2929
 			}
-			if !contract.UseGas(GasCosts{RegularGas: eip7702Cost}, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
+			if !contract.chargeRegular(eip7702Cost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
 				return GasCosts{}, ErrOutOfGas
 			}
 		}
@@ -355,8 +355,8 @@ func makeCallVariantGasCallEIP7702(intrinsicFunc intrinsicGasFunc) gasFunc {
 		contract.Gas.RegularGas += eip2929Cost + eip7702Cost
 		// Undo the RegularGasUsed increments from the direct UseGas charges,
 		// since this gas will be re-charged via the returned cost.
-		contract.GasUsed.RegularGas -= eip2929Cost
-		contract.GasUsed.RegularGas -= eip7702Cost
+		contract.Gas.UsedRegularGas -= eip2929Cost
+		contract.Gas.UsedRegularGas -= eip7702Cost
 
 		// Aggregate the gas costs from all components, including EIP-2929, EIP-7702,
 		// the CALL opcode itself, and the cost incurred by nested calls.
@@ -392,7 +392,7 @@ func makeCallVariantGasCallEIP8037(intrinsicFunc intrinsicGasFunc, stateGasFunc 
 		if !evm.StateDB.AddressInAccessList(addr) {
 			evm.StateDB.AddAddressToAccessList(addr)
 			eip2929Cost = params.ColdAccountAccessCostEIP2929 - params.WarmStorageReadCostEIP2929
-			if !contract.UseGas(GasCosts{RegularGas: eip2929Cost}, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
+			if !contract.chargeRegular(eip2929Cost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
 				return GasCosts{}, ErrOutOfGas
 			}
 		}
@@ -406,7 +406,7 @@ func makeCallVariantGasCallEIP8037(intrinsicFunc intrinsicGasFunc, stateGasFunc 
 		// Charge intrinsic cost directly (regular gas). This must happen
 		// BEFORE state gas to prevent reservoir inflation, and also serves
 		// as the OOG guard before stateful operations.
-		if !contract.UseGas(GasCosts{RegularGas: intrinsicCost}, evm.Config.Tracer, tracing.GasChangeCallOpCode) {
+		if !contract.chargeRegular(intrinsicCost, evm.Config.Tracer, tracing.GasChangeCallOpCode) {
 			return GasCosts{}, ErrOutOfGas
 		}
 
@@ -418,7 +418,7 @@ func makeCallVariantGasCallEIP8037(intrinsicFunc intrinsicGasFunc, stateGasFunc 
 				evm.StateDB.AddAddressToAccessList(target)
 				eip7702Cost = params.ColdAccountAccessCostEIP2929
 			}
-			if !contract.UseGas(GasCosts{RegularGas: eip7702Cost}, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
+			if !contract.chargeRegular(eip7702Cost, evm.Config.Tracer, tracing.GasChangeCallStorageColdAccess) {
 				return GasCosts{}, ErrOutOfGas
 			}
 		}
@@ -429,11 +429,10 @@ func makeCallVariantGasCallEIP8037(intrinsicFunc intrinsicGasFunc, stateGasFunc 
 			return GasCosts{}, err
 		}
 		if stateGas.StateGas > 0 {
-			stateGasCost := GasCosts{StateGas: stateGas.StateGas}
-			if _, ok := contract.Gas.Charge(stateGasCost); !ok {
+			// Charge updates contract.Gas.UsedStateGas in lockstep.
+			if _, ok := contract.Gas.Charge(GasCosts{StateGas: stateGas.StateGas}); !ok {
 				return GasCosts{}, ErrOutOfGas
 			}
-			contract.GasUsed.Add(stateGasCost)
 		}
 
 		// Calculate the gas budget for the nested call (63/64 rule).
@@ -445,7 +444,7 @@ func makeCallVariantGasCallEIP8037(intrinsicFunc intrinsicGasFunc, stateGasFunc 
 		// Temporarily undo direct regular charges for tracer reporting.
 		// The interpreter will charge the returned totalCost.
 		contract.Gas.RegularGas += eip2929Cost + eip7702Cost + intrinsicCost
-		contract.GasUsed.RegularGas -= eip2929Cost + eip7702Cost + intrinsicCost
+		contract.Gas.UsedRegularGas -= eip2929Cost + eip7702Cost + intrinsicCost
 
 		// Aggregate total cost.
 		var (

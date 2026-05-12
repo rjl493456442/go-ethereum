@@ -700,7 +700,7 @@ func gasSStore8037(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memo
 			// EIP-8037 point (2): refund state gas directly to the reservoir
 			// at the SSTORE restoration point (0→x→0 in same tx); not to the
 			// refund counter, which is capped at gas_used/5.
-			contract.refundStateGas(params.StorageCreationSize * evm.Context.CostPerStateByte)
+			contract.Gas.RefundState(params.StorageCreationSize * evm.Context.CostPerStateByte)
 
 			// Regular portion of the refund still goes through the refund counter.
 			evm.StateDB.AddRefund(params.SstoreResetGasEIP2200 - params.ColdSloadCostEIP2929 - params.WarmStorageReadCostEIP2929)

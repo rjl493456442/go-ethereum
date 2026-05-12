@@ -55,7 +55,7 @@ func TestLoopInterrupt(t *testing.T) {
 		timeout := make(chan bool)
 
 		go func(evm *EVM) {
-			_, _, _, err := evm.Call(common.Address{}, address, nil, NewGasBudget(math.MaxUint64, 0), new(uint256.Int))
+			_, _, err := evm.Call(common.Address{}, address, nil, NewGasBudget(math.MaxUint64, 0), new(uint256.Int))
 			errChannel <- err
 		}(evm)
 

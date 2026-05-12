@@ -174,7 +174,7 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 			// associated costs.
 			contractAddr := contract.Address()
 			consumed, wanted := evm.TxContext.AccessEvents.CodeChunksRangeGas(contractAddr, pc, 1, uint64(len(contract.Code)), false, contract.Gas.RegularGas)
-			contract.UseGas(GasCosts{RegularGas: consumed}, evm.Config.Tracer, tracing.GasChangeWitnessCodeChunk)
+			contract.chargeRegular(consumed, evm.Config.Tracer, tracing.GasChangeWitnessCodeChunk)
 			if consumed < wanted {
 				return nil, ErrOutOfGas
 			}
@@ -192,11 +192,8 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
 		}
 		// for tracing: this gas consumption event is emitted below in the debug section.
-		if contract.Gas.RegularGas < cost {
+		if !contract.chargeRegular(cost, nil, tracing.GasChangeIgnored) {
 			return nil, ErrOutOfGas
-		} else {
-			contract.Gas.RegularGas -= cost
-			contract.GasUsed.RegularGas += cost
 		}
 
 		// All ops with a dynamic memory usage also has a dynamic gas cost.
@@ -225,26 +222,13 @@ func (evm *EVM) Run(contract *Contract, input []byte, readOnly bool) (ret []byte
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrOutOfGas, err)
 			}
-			// for tracing: this gas consumption event is emitted below in the debug section.
-			if evm.chainRules.IsAmsterdam && dynamicCost.StateGas > 0 {
-				// EIP-8037: charge regular gas before state gas.
-				if contract.Gas.RegularGas < dynamicCost.RegularGas {
-					return nil, ErrOutOfGas
-				}
-				contract.Gas.RegularGas -= dynamicCost.RegularGas
-				contract.GasUsed.RegularGas += dynamicCost.RegularGas
-
-				// Then charge state gas.
-				stateOnly := GasCosts{StateGas: dynamicCost.StateGas}
-				if _, ok := contract.Gas.Charge(stateOnly); !ok {
-					return nil, ErrOutOfGas
-				}
-				contract.GasUsed.Add(stateOnly)
-			} else {
-				if _, ok := contract.Gas.Charge(dynamicCost); !ok {
-					return nil, ErrOutOfGas
-				}
-				contract.GasUsed.Add(dynamicCost)
+			// EIP-8037: charge regular gas before state gas. The state charge
+			// is a no-op when dynamicCost.StateGas == 0 (e.g., pre-Amsterdam).
+			if !contract.chargeRegular(dynamicCost.RegularGas, nil, tracing.GasChangeIgnored) {
+				return nil, ErrOutOfGas
+			}
+			if !contract.chargeState(dynamicCost.StateGas, nil, tracing.GasChangeIgnored) {
+				return nil, ErrOutOfGas
 			}
 		}
 
