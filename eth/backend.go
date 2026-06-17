@@ -197,6 +197,13 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		networkID = chainConfig.ChainID.Uint64()
 	}
 
+	// snap/2 catch-up relies on block access lists, which only exist once the
+	// Amsterdam fork is active.
+	if config.SnapV2 && chainConfig.AmsterdamTime == nil {
+		log.Warn("Disabling snap/2, Amsterdam fork is not scheduled")
+		config.SnapV2 = false
+	}
+
 	// Assemble the Ethereum object.
 	eth := &Ethereum{
 		config:          config,
