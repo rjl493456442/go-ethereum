@@ -18,6 +18,7 @@ package pathdb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -533,7 +534,7 @@ func (dl *diskLayer) revert(h *stateHistory) (*diskLayer, error) {
 	// Apply the reverse state changes upon the current state. This must
 	// be done before holding the lock in order to access state in "this"
 	// layer.
-	nodes, err := apply(dl.db, h.meta.parent, h.meta.root, h.meta.version != stateHistoryV0, h.accounts, h.storages)
+	nodes, err := apply(dl.db, h.meta.parent, h.meta.root, h.meta.version != stateHistoryV0, h.accounts, h.storages, false)
 	if err != nil {
 		return nil, err
 	}
@@ -613,6 +614,131 @@ func (dl *diskLayer) revert(h *stateHistory) (*diskLayer, error) {
 		ndl.generator.run(h.meta.parent)
 	}
 	log.Debug("Reverted data in persistent state", "oldroot", h.meta.root, "newroot", h.meta.parent, "elapsed", common.PrettyDuration(time.Since(start)))
+	return ndl, nil
+}
+
+// revertRange rolls back the disk layer by reverting a batch of contiguous state
+// histories at once, returning a new disk layer sitting at the bottom of the batch.
+//
+// The supplied histories must be sorted from the highest state id to the lowest,
+// share the same encoding version, and all reside below the persistent state (the
+// live buffer must therefore be empty). The highest history must correspond to the
+// state of the current disk layer.
+//
+// Reverting a batch in one shot, instead of one history at a time, dramatically
+// reduces the trie hashing cost during a deep rollback: trie nodes shared by
+// multiple histories are loaded and re-hashed only once, rather than once per
+// history. The trade-off is the memory spent on the merged diff, which the caller
+// is responsible for bounding.
+func (dl *diskLayer) revertRange(histories []*stateHistory) (*diskLayer, error) {
+	start := time.Now()
+	if len(histories) == 0 {
+		return dl, nil
+	}
+	var (
+		top    = histories[0]
+		bottom = histories[len(histories)-1]
+		count  = uint64(len(histories))
+	)
+	if top.meta.root != dl.rootHash() {
+		return nil, errUnexpectedHistory
+	}
+	if dl.id < count {
+		return nil, fmt.Errorf("%w: insufficient state id", errStateUnrecoverable)
+	}
+	// Merge the reverse state diffs of the whole batch. The histories are ordered
+	// from the highest state id to the lowest, and for every key the value carried
+	// by the lowest id (i.e. the value in the target state) must take precedence.
+	// Iterating in the given order and overwriting unconditionally yields exactly
+	// that, because the lowest id is visited last.
+	//
+	// This is correct even across account creation/deletion: the lowest-id history
+	// touching any account or storage slot always records that key's value in the
+	// target state, since the key is, by definition, not modified again below it.
+	var (
+		accounts = make(map[common.Address][]byte)
+		storages = make(map[common.Address]map[common.Hash][]byte)
+	)
+	for _, h := range histories {
+		if h.meta.version != top.meta.version {
+			return nil, errors.New("mixed state history version within a batch")
+		}
+		for addr, blob := range h.accounts {
+			accounts[addr] = blob
+		}
+		for addr, slots := range h.storages {
+			set := storages[addr]
+			if set == nil {
+				set = make(map[common.Hash][]byte, len(slots))
+				storages[addr] = set
+			}
+			for key, val := range slots {
+				set[key] = val
+			}
+		}
+	}
+	// Replay the merged reverse diff against the current state to reconstruct the
+	// trie nodes leading back to the bottom state. The root consistency is verified
+	// inside apply, which guards against any merge mistake.
+	nodes, err := apply(dl.db, bottom.meta.parent, dl.rootHash(), top.meta.version != stateHistoryV0, accounts, storages, true)
+	if err != nil {
+		return nil, err
+	}
+	// Derive the hash-keyed flat state mutations from the merged diff.
+	flatAccounts, flatStorages := convertStateSet(accounts, storages, top.meta.version)
+
+	// Mark the diskLayer as stale before applying any mutations on top.
+	dl.lock.Lock()
+	defer dl.lock.Unlock()
+
+	dl.stale = true
+
+	// Unindex the reverted histories, one id at a time, to mirror the sequential
+	// rollback semantics. This is lightweight metadata maintenance, off the trie
+	// hashing hot path.
+	for id := dl.id; id > dl.id-count; id-- {
+		if dl.db.stateIndexer != nil {
+			if err := dl.db.stateIndexer.shorten(id); err != nil {
+				return nil, err
+			}
+		}
+		if dl.db.trienodeIndexer != nil {
+			if err := dl.db.trienodeIndexer.shorten(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// The batched rollback only runs in the persistent regime, so the live buffer
+	// is empty by construction. Block until the frozen buffer is fully flushed and
+	// unset it, otherwise the "reverted" states would still be accessible.
+	if dl.frozen != nil {
+		if err := dl.frozen.waitFlush(); err != nil {
+			return nil, err
+		}
+		dl.frozen = nil
+	}
+	// Terminate the generator before writing any data to the database.
+	var progress []byte
+	if dl.generator != nil {
+		dl.generator.stop()
+		progress = dl.generator.progressMarker()
+	}
+	batch := dl.db.diskdb.NewBatch()
+	writeNodes(batch, nodes, dl.nodes)
+	writeStates(batch, progress, flatAccounts, flatStorages, dl.states)
+	rawdb.WritePersistentStateID(batch, dl.id-count)
+	rawdb.WriteSnapshotRoot(batch, bottom.meta.parent)
+	if err := batch.Write(); err != nil {
+		log.Crit("Failed to write states", "err", err)
+	}
+	// Link the generator and resume generation if the snapshot is not yet
+	// fully completed.
+	ndl := newDiskLayer(bottom.meta.parent, dl.id-count, dl.db, dl.nodes, dl.states, dl.buffer, dl.frozen)
+	if dl.generator != nil && !dl.generator.completed() {
+		ndl.generator = dl.generator
+		ndl.generator.run(bottom.meta.parent)
+	}
+	log.Debug("Reverted data in persistent state", "oldroot", top.meta.root, "newroot", bottom.meta.parent, "histories", count, "elapsed", common.PrettyDuration(time.Since(start)))
 	return ndl, nil
 }
 

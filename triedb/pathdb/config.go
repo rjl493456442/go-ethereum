@@ -44,6 +44,14 @@ const (
 	// pause time will increase when the database writes happen.
 	defaultBufferSize = 64 * 1024 * 1024
 
+	// recoverBatchSizeLimit is the memory budget for the merged reverse state
+	// diff accumulated while reverting a contiguous batch of state histories in
+	// a single shot during recovery. A larger budget amortizes the trie hashing
+	// cost over more histories, at the expense of a higher transient memory and
+	// write-batch footprint (the merged diff is held in two representations and
+	// the resulting batch must stay below pebble's 4GB limit).
+	recoverBatchSizeLimit = 256 * 1024 * 1024
+
 	// maxFullValueCheckpoint defines the maximum allowed encoding frequency (1/16)
 	// for storing nodes in full format. With this setting, a node may be written
 	// to the trienode history as a full value at the specified frequency.

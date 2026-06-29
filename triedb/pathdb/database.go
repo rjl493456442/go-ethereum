@@ -485,17 +485,55 @@ func (db *Database) Recover(root common.Hash) error {
 		dl    = db.tree.bottom()
 	)
 	for dl.rootHash() != root {
-		h, err := readStateHistory(db.stateFreezer, dl.stateID())
+		// While the live write buffer is not empty, the topmost states are still
+		// held in memory and must be reverted one at a time. This path is short as
+		// the buffer only retains the most recent, unflushed states.
+		if !dl.buffer.empty() {
+			h, err := readStateHistory(db.stateFreezer, dl.stateID())
+			if err != nil {
+				return err
+			}
+			dl, err = dl.revert(h)
+			if err != nil {
+				return err
+			}
+			// reset layer with newly created disk layer. It must be
+			// done after each revert operation, otherwise the new
+			// disk layer won't be accessible from outside.
+			db.tree.init(dl)
+			continue
+		}
+		// In the persistent regime, aggregate a batch of contiguous histories and
+		// revert them in a single shot to amortize the trie hashing cost. The batch
+		// is bounded by a memory budget so the merged diff stays in check, even when
+		// rewinding a very large number of blocks.
+		var (
+			batch []*stateHistory
+			size  int
+		)
+		for id := dl.stateID(); id > 0; id-- {
+			h, err := readStateHistory(db.stateFreezer, id)
+			if err != nil {
+				return err
+			}
+			// Never mix encoding versions within a batch; the merge operates on the
+			// raw, version-specific storage keys.
+			if len(batch) > 0 && h.meta.version != batch[0].meta.version {
+				break
+			}
+			batch = append(batch, h)
+			size += h.size()
+
+			// Stop once the target is reached or the memory budget is exhausted.
+			if h.meta.parent == root || size >= recoverBatchSizeLimit {
+				break
+			}
+		}
+		var err error
+		dl, err = dl.revertRange(batch)
 		if err != nil {
 			return err
 		}
-		dl, err = dl.revert(h)
-		if err != nil {
-			return err
-		}
-		// reset layer with newly created disk layer. It must be
-		// done after each revert operation, otherwise the new
-		// disk layer won't be accessible from outside.
 		db.tree.init(dl)
 	}
 	// Explicitly sync the key-value store to ensure all recent writes are

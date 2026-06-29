@@ -309,22 +309,48 @@ func (h *stateHistory) forEach() iter.Seq[indexElem] {
 // stateSet returns the state set, keyed by the hash of the account address
 // and the hash of the storage slot key.
 func (h *stateHistory) stateSet() (map[common.Hash][]byte, map[common.Hash]map[common.Hash][]byte) {
+	return convertStateSet(h.accounts, h.storages, h.meta.version)
+}
+
+// size returns a rough estimate of the in-memory footprint of the reverse state
+// diff held by the history. It's used to bound the amount of histories merged
+// together during recovery.
+func (h *stateHistory) size() int {
+	size := 0
+	for _, blob := range h.accounts {
+		size += common.AddressLength + len(blob)
+	}
+	for _, slots := range h.storages {
+		for _, blob := range slots {
+			size += common.HashLength + len(blob)
+		}
+	}
+	return size
+}
+
+// convertStateSet converts a reverse state diff keyed by the account address and
+// the raw storage key into one keyed by the hash of the account address and the
+// hash of the storage slot key, which is the form expected by the flat state.
+//
+// For legacy (v0) histories the storage is already keyed by the slot hash, so the
+// storage map is reused as is.
+func convertStateSet(rawAccounts map[common.Address][]byte, rawStorages map[common.Address]map[common.Hash][]byte, version uint8) (map[common.Hash][]byte, map[common.Hash]map[common.Hash][]byte) {
 	var (
-		accounts = make(map[common.Hash][]byte)
-		storages = make(map[common.Hash]map[common.Hash][]byte)
+		accounts = make(map[common.Hash][]byte, len(rawAccounts))
+		storages = make(map[common.Hash]map[common.Hash][]byte, len(rawStorages))
 	)
-	for addr, blob := range h.accounts {
+	for addr, blob := range rawAccounts {
 		addrHash := crypto.Keccak256Hash(addr.Bytes())
 		accounts[addrHash] = blob
 
-		storage, exist := h.storages[addr]
+		storage, exist := rawStorages[addr]
 		if !exist {
 			continue
 		}
-		if h.meta.version == stateHistoryV0 {
+		if version == stateHistoryV0 {
 			storages[addrHash] = storage
 		} else {
-			subset := make(map[common.Hash][]byte)
+			subset := make(map[common.Hash][]byte, len(storage))
 			for key, slot := range storage {
 				subset[crypto.Keccak256Hash(key.Bytes())] = slot
 			}

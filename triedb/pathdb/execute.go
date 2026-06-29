@@ -45,7 +45,13 @@ type context struct {
 
 // apply processes the given state diffs, updates the corresponding post-state
 // and returns the trie nodes that have been modified.
-func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash, rawStorageKey bool, accounts map[common.Address][]byte, storages map[common.Address]map[common.Hash][]byte) (map[common.Hash]map[string]*trienode.Node, error) {
+//
+// The merged flag indicates that the supplied diffs are the aggregation of
+// multiple consecutive state histories. In that mode an account carrying an
+// empty value may already be absent in the post-state (created and deleted
+// again within the merged range), in which case reverting it is a no-op rather
+// than an inconsistency.
+func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash, rawStorageKey bool, accounts map[common.Address][]byte, storages map[common.Address]map[common.Hash][]byte, merged bool) (map[common.Hash]map[string]*trienode.Node, error) {
 	tr, err := trie.New(trie.TrieID(postRoot), db)
 	if err != nil {
 		return nil, err
@@ -71,7 +77,7 @@ func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash,
 		}
 	}
 	for _, addr := range deletes {
-		err := deleteAccount(ctx, db, addr)
+		err := deleteAccount(ctx, db, addr, merged)
 		if err != nil {
 			return nil, fmt.Errorf("failed to revert state, err: %w", err)
 		}
@@ -157,7 +163,7 @@ func updateAccount(ctx *context, db database.NodeDatabase, addr common.Address) 
 // deleteAccount the account was not present in prev-state, and is expected
 // to be existent in post-state. Apply the reverse diff and verify if the
 // account and storage is wiped out correctly.
-func deleteAccount(ctx *context, db database.NodeDatabase, addr common.Address) error {
+func deleteAccount(ctx *context, db database.NodeDatabase, addr common.Address, merged bool) error {
 	// The account must be existent in post-state, load the account.
 	addrHash := crypto.Keccak256Hash(addr.Bytes())
 	blob, err := ctx.accountTrie.Get(addrHash.Bytes())
@@ -165,6 +171,13 @@ func deleteAccount(ctx *context, db database.NodeDatabase, addr common.Address) 
 		return err
 	}
 	if len(blob) == 0 {
+		// In a merged revert the account may have been created and deleted again
+		// within the aggregated range, leaving it absent in the post-state. Such
+		// an account nets to no change, so reverting it (and its storage, which is
+		// likewise absent) is a no-op.
+		if merged {
+			return nil
+		}
 		return fmt.Errorf("account is non-existent %#x", addrHash)
 	}
 	var post types.StateAccount

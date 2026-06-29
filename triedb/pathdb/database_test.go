@@ -612,6 +612,40 @@ func TestDatabaseRollback(t *testing.T) {
 	}
 }
 
+// TestDatabaseRecoverBatch reverts the database deep down to an early state in a
+// single Recover call, which forces the persistent histories to be reverted in
+// aggregated batches (rather than one history at a time). The chosen target also
+// sits below the v0/v1 history version boundary, exercising the batch split.
+func TestDatabaseRecoverBatch(t *testing.T) {
+	// Redefine the diff layer depth allowance for faster testing.
+	maxDiffLayers = 4
+	defer func() {
+		maxDiffLayers = 128
+	}()
+
+	tester := newTester(t, &testerConfig{layers: 32})
+	defer tester.release()
+
+	if err := tester.verifyHistory(); err != nil {
+		t.Fatalf("Invalid state history, err: %v", err)
+	}
+	// Recover in one shot to an early state, well below the disk layer and across
+	// the v0/v1 history boundary (layers <= 6 are v0, the rest v1).
+	target := tester.roots[1]
+	if err := tester.db.Recover(target); err != nil {
+		t.Fatalf("Failed to revert db, err: %v", err)
+	}
+	if tester.db.tree.bottom().rootHash() != target {
+		t.Fatalf("Unexpected disk layer root, want %#x, got %#x", target, tester.db.tree.bottom().rootHash())
+	}
+	if err := tester.verifyState(target); err != nil {
+		t.Fatalf("Failed to verify state, err: %v", err)
+	}
+	if tester.db.tree.len() != 1 {
+		t.Fatal("Only disk layer is expected")
+	}
+}
+
 func TestDatabaseRecoverable(t *testing.T) {
 	// Redefine the diff layer depth allowance for faster testing.
 	maxDiffLayers = 4
@@ -674,7 +708,7 @@ func TestExecuteRollback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to read history, err: %v", err)
 		}
-		nodes, err := apply(tester.db, h.meta.parent, h.meta.root, h.meta.version == stateHistoryV1, h.accounts, h.storages)
+		nodes, err := apply(tester.db, h.meta.parent, h.meta.root, h.meta.version == stateHistoryV1, h.accounts, h.storages, false)
 		if err != nil {
 			t.Fatalf("Failed to apply history, err: %v", err)
 		}
