@@ -19,6 +19,7 @@ package pathdb
 import (
 	"errors"
 	"fmt"
+	"runtime"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -27,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb/database"
+	"golang.org/x/sync/errgroup"
 )
 
 // context wraps all fields for executing state diffs.
@@ -41,6 +43,23 @@ type context struct {
 	// TODO (rjl493456442) abstract out the state hasher
 	// for supporting verkle tree.
 	accountTrie *trie.Trie
+}
+
+// storageJob captures the work required to revert a single account: replaying
+// the reverse diff against its post-state storage trie and writing the account
+// back into (or removing it from) the account trie.
+//
+// The storage-trie part of the job is self-contained: every account owns a
+// distinct storage trie and reads only the immutable node database, so jobs can
+// be executed concurrently. The account-trie part (recorded here as fields) is
+// applied serially afterwards, since the account trie is a single shared object.
+type storageJob struct {
+	addr        common.Address
+	addrHash    common.Hash
+	isDelete    bool                // whether the account is being removed in prev-state
+	storageRoot common.Hash         // storage root in post-state, where the replay starts
+	wantRoot    common.Hash         // storage root expected after the replay (prev.Root, or empty for deletes)
+	prev        *types.StateAccount // prev-state account to write back; nil for deletes
 }
 
 // apply processes the given state diffs, updates the corresponding post-state
@@ -65,21 +84,60 @@ func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash,
 		rawStorageKey: rawStorageKey,
 		nodes:         trienode.NewMergedNodeSet(),
 	}
-	var deletes []common.Address
-	for addr, account := range accounts {
-		if len(account) == 0 {
-			deletes = append(deletes, addr)
-		} else {
-			err := updateAccount(ctx, db, addr)
+	// Phase 1: resolve every account against the post-state account trie and
+	// build the per-account jobs. The account trie is a single shared object,
+	// so these reads must happen serially before the parallel phase.
+	jobs, err := buildStorageJobs(ctx, merged)
+	if err != nil {
+		return nil, fmt.Errorf("failed to revert state, err: %w", err)
+	}
+	// Phase 2: replay each account's storage trie independently and in parallel.
+	// Storage tries have disjoint owners and touch only the read-only node
+	// database, so the commits never interfere with one another.
+	results := make([]*trienode.NodeSet, len(jobs))
+	g := new(errgroup.Group)
+	g.SetLimit(runtime.NumCPU())
+	for i := range jobs {
+		g.Go(func() error {
+			set, err := jobs[i].commitStorage(db, ctx)
 			if err != nil {
+				return err
+			}
+			results[i] = set
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("failed to revert state, err: %w", err)
+	}
+	// Phase 3: merge the storage node sets and apply the account-trie mutations.
+	// Both operate on shared state (the merged node set and the account trie),
+	// so they run serially.
+	for _, set := range results {
+		// The returned set can be nil if the storage trie is not changed at all.
+		if set == nil {
+			continue
+		}
+		if err := ctx.nodes.Merge(set); err != nil {
+			return nil, err
+		}
+	}
+	// Apply the account updates before the deletions, mirroring the original
+	// sequential order. Deleting an account can collapse a branch node in the
+	// account trie, and the set of nodes that collapse (hence the tracked node
+	// set) depends on this ordering.
+	for _, job := range jobs {
+		if !job.isDelete {
+			if err := job.commitAccount(ctx); err != nil {
 				return nil, fmt.Errorf("failed to revert state, err: %w", err)
 			}
 		}
 	}
-	for _, addr := range deletes {
-		err := deleteAccount(ctx, db, addr, merged)
-		if err != nil {
-			return nil, fmt.Errorf("failed to revert state, err: %w", err)
+	for _, job := range jobs {
+		if job.isDelete {
+			if err := job.commitAccount(ctx); err != nil {
+				return nil, fmt.Errorf("failed to revert state, err: %w", err)
+			}
 		}
 	}
 	root, result := tr.Commit(false)
@@ -92,125 +150,121 @@ func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash,
 	return ctx.nodes.Nodes(), nil
 }
 
-// updateAccount the account was present in prev-state, and may or may not
-// existent in post-state. Apply the reverse diff and verify if the storage
-// root matches the one in prev-state account.
-func updateAccount(ctx *context, db database.NodeDatabase, addr common.Address) error {
-	// The account was present in prev-state, decode it from the
-	// 'slim-rlp' format bytes.
-	addrHash := crypto.Keccak256Hash(addr.Bytes())
-	prev, err := types.FullAccount(ctx.accounts[addr])
-	if err != nil {
-		return err
-	}
-	// The account may or may not existent in post-state, try to
-	// load it and decode if it's found.
-	blob, err := ctx.accountTrie.Get(addrHash.Bytes())
-	if err != nil {
-		return err
-	}
-	post := types.NewEmptyStateAccount()
-	if len(blob) != 0 {
-		if err := rlp.DecodeBytes(blob, &post); err != nil {
-			return err
+// buildStorageJobs reads every account from the post-state account trie and
+// derives the work needed to revert it. This is the only place the shared
+// account trie is read, hence it runs serially.
+func buildStorageJobs(ctx *context, merged bool) ([]*storageJob, error) {
+	jobs := make([]*storageJob, 0, len(ctx.accounts))
+	for addr, account := range ctx.accounts {
+		addrHash := crypto.Keccak256Hash(addr.Bytes())
+
+		// The account may or may not be existent in post-state, try to load it
+		// and decode if it's found.
+		blob, err := ctx.accountTrie.Get(addrHash.Bytes())
+		if err != nil {
+			return nil, err
 		}
+		if len(account) == 0 {
+			// The account is not present in prev-state and is expected to be
+			// existent in post-state; the reverse diff wipes it out.
+			if len(blob) == 0 {
+				// In a merged revert the account may have been created and deleted
+				// again within the aggregated range, leaving it absent in the
+				// post-state. Such an account nets to no change, so reverting it
+				// (and its storage, which is likewise absent) is a no-op.
+				if merged {
+					continue
+				}
+				return nil, fmt.Errorf("account is non-existent %#x", addrHash)
+			}
+			var post types.StateAccount
+			if err := rlp.DecodeBytes(blob, &post); err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, &storageJob{
+				addr:        addr,
+				addrHash:    addrHash,
+				isDelete:    true,
+				storageRoot: post.Root,
+				wantRoot:    types.EmptyRootHash,
+			})
+			continue
+		}
+		// The account was present in prev-state, decode it from the 'slim-rlp'
+		// format bytes.
+		prev, err := types.FullAccount(account)
+		if err != nil {
+			return nil, err
+		}
+		post := types.NewEmptyStateAccount()
+		if len(blob) != 0 {
+			if err := rlp.DecodeBytes(blob, &post); err != nil {
+				return nil, err
+			}
+		}
+		jobs = append(jobs, &storageJob{
+			addr:        addr,
+			addrHash:    addrHash,
+			isDelete:    false,
+			storageRoot: post.Root,
+			wantRoot:    prev.Root,
+			prev:        prev,
+		})
 	}
-	// Apply all storage changes into the post-state storage trie.
-	st, err := trie.New(trie.StorageTrieID(ctx.postRoot, addrHash, post.Root), db)
+	return jobs, nil
+}
+
+// commitStorage replays the reverse storage diff against the post-state storage
+// trie and verifies the resulting root matches the prev-state. It only reads the
+// immutable node database and operates on a private storage trie, so it is safe
+// to run concurrently with other jobs. The returned node set may be nil if the
+// storage trie is not changed at all.
+func (job *storageJob) commitStorage(db database.NodeDatabase, ctx *context) (*trienode.NodeSet, error) {
+	st, err := trie.New(trie.StorageTrieID(ctx.postRoot, job.addrHash, job.storageRoot), db)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var deletes []common.Hash
-	for key, val := range ctx.storages[addr] {
+	var deletes [][]byte
+	for key, val := range ctx.storages[job.addr] {
 		tkey := key
 		if ctx.rawStorageKey {
 			tkey = crypto.Keccak256Hash(key.Bytes())
 		}
 		if len(val) == 0 {
-			deletes = append(deletes, tkey)
-		} else {
-			err := st.Update(tkey.Bytes(), val)
-			if err != nil {
-				return err
-			}
+			deletes = append(deletes, tkey.Bytes())
+			continue
+		}
+		if job.isDelete {
+			return nil, errors.New("expect storage deletion")
+		}
+		if err := st.Update(tkey.Bytes(), val); err != nil {
+			return nil, err
 		}
 	}
 	for _, tkey := range deletes {
-		err := st.Delete(tkey.Bytes())
-		if err != nil {
-			return err
+		if err := st.Delete(tkey); err != nil {
+			return nil, err
 		}
 	}
 	root, result := st.Commit(false)
-	if root != prev.Root {
-		return errors.New("failed to reset storage trie")
-	}
-	// The returned set can be nil if storage trie is not changed
-	// at all.
-	if result != nil {
-		if err := ctx.nodes.Merge(result); err != nil {
-			return err
+	if root != job.wantRoot {
+		if job.isDelete {
+			return nil, errors.New("failed to clear storage trie")
 		}
+		return nil, errors.New("failed to reset storage trie")
 	}
-	// Write the prev-state account into the main trie
-	full, err := rlp.EncodeToBytes(prev)
-	if err != nil {
-		return err
-	}
-	return ctx.accountTrie.Update(addrHash.Bytes(), full)
+	return result, nil
 }
 
-// deleteAccount the account was not present in prev-state, and is expected
-// to be existent in post-state. Apply the reverse diff and verify if the
-// account and storage is wiped out correctly.
-func deleteAccount(ctx *context, db database.NodeDatabase, addr common.Address, merged bool) error {
-	// The account must be existent in post-state, load the account.
-	addrHash := crypto.Keccak256Hash(addr.Bytes())
-	blob, err := ctx.accountTrie.Get(addrHash.Bytes())
+// commitAccount writes the prev-state account back into the shared account trie
+// (or removes it for deletions). It must be called serially.
+func (job *storageJob) commitAccount(ctx *context) error {
+	if job.isDelete {
+		return ctx.accountTrie.Delete(job.addrHash.Bytes())
+	}
+	full, err := rlp.EncodeToBytes(job.prev)
 	if err != nil {
 		return err
 	}
-	if len(blob) == 0 {
-		// In a merged revert the account may have been created and deleted again
-		// within the aggregated range, leaving it absent in the post-state. Such
-		// an account nets to no change, so reverting it (and its storage, which is
-		// likewise absent) is a no-op.
-		if merged {
-			return nil
-		}
-		return fmt.Errorf("account is non-existent %#x", addrHash)
-	}
-	var post types.StateAccount
-	if err := rlp.DecodeBytes(blob, &post); err != nil {
-		return err
-	}
-	st, err := trie.New(trie.StorageTrieID(ctx.postRoot, addrHash, post.Root), db)
-	if err != nil {
-		return err
-	}
-	for key, val := range ctx.storages[addr] {
-		if len(val) != 0 {
-			return errors.New("expect storage deletion")
-		}
-		tkey := key
-		if ctx.rawStorageKey {
-			tkey = crypto.Keccak256Hash(key.Bytes())
-		}
-		if err := st.Delete(tkey.Bytes()); err != nil {
-			return err
-		}
-	}
-	root, result := st.Commit(false)
-	if root != types.EmptyRootHash {
-		return errors.New("failed to clear storage trie")
-	}
-	// The returned set can be nil if storage trie is not changed
-	// at all.
-	if result != nil {
-		if err := ctx.nodes.Merge(result); err != nil {
-			return err
-		}
-	}
-	// Delete the post-state account from the main trie.
-	return ctx.accountTrie.Delete(addrHash.Bytes())
+	return ctx.accountTrie.Update(job.addrHash.Bytes(), full)
 }

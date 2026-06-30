@@ -50,7 +50,7 @@ const (
 	// cost over more histories, at the expense of a higher transient memory and
 	// write-batch footprint (the merged diff is held in two representations and
 	// the resulting batch must stay below pebble's 4GB limit).
-	recoverBatchSizeLimit = 256 * 1024 * 1024
+	recoverBatchSizeLimit = 3 * 1024 * 1024 * 1024
 
 	// maxFullValueCheckpoint defines the maximum allowed encoding frequency (1/16)
 	// for storing nodes in full format. With this setting, a node may be written
