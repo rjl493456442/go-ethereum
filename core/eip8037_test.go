@@ -107,7 +107,18 @@ func applyMsg(t *testing.T, sdb *state.StateDB, tx *types.Transaction) (*Executi
 	if err == nil && res != nil {
 		assertPoolSane(t, res, gp)
 		limit := min(msg.GasLimit, params.MaxTxGas)
-		assertBudgetSane(t, vm.NewGasBudget(limit, msg.GasLimit-limit), st.gasRemaining)
+		initial := vm.NewGasBudget(limit, msg.GasLimit-limit)
+		if msg.To == nil {
+			// EIP-8037: seeding the create component of the intrinsic state
+			// gas turns the portion that spilled out of the initial reservoir
+			// into reservoir capital, moving it from the regular to the state
+			// dimension of the conservation baseline.
+			if moved := newAccountState - min(newAccountState, initial.StateGas); moved > 0 {
+				initial.RegularGas -= moved
+				initial.StateGas += moved
+			}
+		}
+		assertBudgetSane(t, initial, st.gasRemaining)
 	}
 	return res, gp, err
 }
@@ -189,24 +200,38 @@ var (
 
 // ===================== Top-level create transaction ======================
 
-// A creation tx's intrinsic gas is state-independent: the new-account state
-// charge depends on whether the deployment target exists and is charged at
-// runtime (EIP-2780), not intrinsically.
-func TestCreateTxIntrinsicNoStateGas(t *testing.T) {
+// A creation tx's intrinsic state gas carries the worst-case account-creation
+// cost: it participates in transaction validation, but is seeded into the
+// reservoir and charged conditionally at runtime rather than pre-consumed.
+func TestCreateTxIntrinsicWorstCaseStateGas(t *testing.T) {
 	cost, err := IntrinsicGas(nil, nil, nil, common.Address{}, nil, nil, rules8037, params.CostPerStateByte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cost.StateGas != 0 {
-		t.Fatalf("intrinsic state gas = %d, want 0", cost.StateGas)
+	if cost.StateGas != newAccountState {
+		t.Fatalf("intrinsic state gas = %d, want %d", cost.StateGas, newAccountState)
 	}
 	if want := params.TxBaseCost2780 + params.CreateAccessAmsterdam; cost.RegularGas != want {
 		t.Fatalf("intrinsic regular gas = %d, want %d", cost.RegularGas, want)
 	}
 }
 
+// A creation tx must afford the worst-case account creation without any state
+// access: a gas limit below intrinsic_regular + create_state_gas is invalid,
+// even though the create charge itself is applied conditionally at runtime.
+func TestCreateTxIntrinsicValidation(t *testing.T) {
+	intrinsic := params.TxBaseCost2780 + params.CreateAccessAmsterdam + newAccountState
+	if _, _, err := applyMsg(t, mkState(senderAlloc(nil)), createTx(0, intrinsic-1, nil)); err == nil {
+		t.Fatal("expected intrinsic gas rejection below worst-case create cost")
+	}
+	if _, _, err := applyMsg(t, mkState(senderAlloc(nil)), createTx(0, intrinsic, nil)); err != nil {
+		t.Fatalf("tx at exact intrinsic cost rejected: %v", err)
+	}
+}
+
 // Creating onto a pre-existing (balance-only) address incurs no new-account
-// runtime charge; only the code deposit is charged as state gas.
+// runtime charge; only the code deposit is charged as state gas, and the
+// seeded reservoir is returned to the sender at settlement.
 func TestCreateTxPreexistingDestRefill(t *testing.T) {
 	derived := crypto.CreateAddress(senderAddr, 0)
 	sdb := mkState(senderAlloc(types.GenesisAlloc{derived: {Balance: big.NewInt(1)}}))
@@ -236,7 +261,9 @@ func TestCreateTxRevertRefill(t *testing.T) {
 }
 
 // An address collision burns gas_left. The colliding target exists, so no
-// new-account state gas is charged at runtime in the first place.
+// new-account state gas is charged at runtime in the first place, and the
+// seeded state-gas reservoir is returned to the sender by the normal
+// end-of-transaction settlement.
 func TestCreateTxCollisionConsumesGasLeft(t *testing.T) {
 	const gas = 1_000_000
 	derived := crypto.CreateAddress(senderAddr, 0)
@@ -251,9 +278,9 @@ func TestCreateTxCollisionConsumesGasLeft(t *testing.T) {
 	if gp.cumulativeState != 0 {
 		t.Fatalf("state gas = %d, want 0 (never charged)", gp.cumulativeState)
 	}
-	// All forwarded gas_left is burned: the whole gas limit is consumed as
-	// regular gas.
-	if want := uint64(gas); gp.cumulativeRegular != want {
+	// All forwarded gas_left is burned as regular gas; only the seeded
+	// reservoir (the unconsumed create component) survives for the sender.
+	if want := uint64(gas) - newAccountState; gp.cumulativeRegular != want {
 		t.Fatalf("regular gas = %d, want %d", gp.cumulativeRegular, want)
 	}
 }

@@ -136,8 +136,13 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 	if err != nil {
 		return err
 	}
-	if tx.Gas() < intrGas.RegularGas {
-		return fmt.Errorf("%w: gas %v, minimum needed %v", core.ErrIntrinsicGas, tx.Gas(), intrGas.RegularGas)
+	// The gas limit must cover both intrinsic dimensions: under EIP-8037 the
+	// state component (the worst-case account creation of a contract-creation
+	// transaction) participates in validation even though it is charged
+	// conditionally at execution time. Pre-Amsterdam the state component is
+	// zero and this degrades to the legacy regular-gas check.
+	if tx.Gas() < intrGas.Sum() {
+		return fmt.Errorf("%w: gas %v, minimum needed %v", core.ErrIntrinsicGas, tx.Gas(), intrGas.Sum())
 	}
 	// Ensure the transaction can cover floor data gas.
 	if rules.IsPrague {

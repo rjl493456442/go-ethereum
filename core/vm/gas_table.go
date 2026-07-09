@@ -560,12 +560,10 @@ func gasCreateEip8037(evm *EVM, contract *Contract, stack *Stack, mem *Memory, m
 	words := (size + 31) / 32
 	wordGas := params.InitCodeWordGas * words
 
-	// Unconditionally pre-charge the account creation and refunds if the creation
-	// doesn't happen after the create-frame.
-	return GasCosts{
-		RegularGas: gas + wordGas,
-		StateGas:   params.AccountCreationSize * evm.Context.CostPerStateByte,
-	}, nil
+	// The account-creation state gas is not part of the opcode cost: it is
+	// charged conditionally at the destination access, in the creating frame,
+	// right before the 63/64ths split (see opCreate).
+	return GasCosts{RegularGas: gas + wordGas}, nil
 }
 
 func gasCreate2Eip8037(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (GasCosts, error) {
@@ -590,12 +588,10 @@ func gasCreate2Eip8037(evm *EVM, contract *Contract, stack *Stack, mem *Memory, 
 	// (for address hashing).
 	wordGas := (params.InitCodeWordGas + params.Keccak256WordGas) * words
 
-	// Unconditionally pre-charge the account creation and refunds if the creation
-	// doesn't happen after the create-frame.
-	return GasCosts{
-		RegularGas: gas + wordGas,
-		StateGas:   params.AccountCreationSize * evm.Context.CostPerStateByte,
-	}, nil
+	// The account-creation state gas is not part of the opcode cost: it is
+	// charged conditionally at the destination access, in the creating frame,
+	// right before the 63/64ths split (see opCreate2).
+	return GasCosts{RegularGas: gas + wordGas}, nil
 }
 
 // regularGasCall8038 is the intrinsic regular-gas calculator for CALL in

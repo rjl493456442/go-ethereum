@@ -362,8 +362,8 @@ func TestCreateNewAccount(t *testing.T) {
 	}
 }
 
-// CREATE onto a pre-existing (balance-only) leaf refills the account portion;
-// only the code deposit is charged.
+// CREATE onto a pre-existing (balance-only) leaf is never charged the account
+// portion; only the code deposit is charged.
 func TestCreatePreexistingTarget(t *testing.T) {
 	setup := func(db *state.StateDB, self common.Address) {
 		derived := crypto.CreateAddress(self, db.GetNonce(self))
@@ -400,8 +400,9 @@ func TestCreateInitOOGRefill(t *testing.T) {
 	}
 }
 
-// CREATE onto an address collision (existing nonce) refills the account charge.
-func TestCreateAddressCollisionRefill(t *testing.T) {
+// CREATE onto an address collision (existing nonce) never charges the account
+// portion: the colliding destination is existent.
+func TestCreateAddressCollisionNoCharge(t *testing.T) {
 	setup := func(db *state.StateDB, self common.Address) {
 		derived := crypto.CreateAddress(self, db.GetNonce(self))
 		db.SetNonce(derived, 1, tracing.NonceChangeUnspecified)
@@ -415,8 +416,9 @@ func TestCreateAddressCollisionRefill(t *testing.T) {
 	}
 }
 
-// CREATE with value exceeding balance fails before the frame and is refilled.
-func TestCreateInsufficientBalanceRefill(t *testing.T) {
+// CREATE with value exceeding balance fails the pre-access checks: the
+// destination is never read and no account-creation gas is charged.
+func TestCreateInsufficientBalanceNoCharge(t *testing.T) {
 	// self has no balance; CREATE forwards value 1.
 	_, res, err := run8037(t, deployCode(deploy3Init, false, 1), hugeBudget(), new(uint256.Int), nil)
 	if err != nil {
@@ -424,6 +426,37 @@ func TestCreateInsufficientBalanceRefill(t *testing.T) {
 	}
 	if res.UsedStateGas != 0 {
 		t.Fatalf("state gas = %d, want 0 (refilled)", res.UsedStateGas)
+	}
+}
+
+// The conditional CREATE charge is drawn in the creating frame before the
+// 63/64ths split: with a reservoir smaller than the charge, the excess spills
+// out of the frame's regular gas (reducing the gas forwarded to the child).
+func TestCreateChargeSpillsInCreatingFrame(t *testing.T) {
+	_, res, err := run8037(t, deployCode(deploy0Init, false, 0), NewGasBudget(1_000_000, 100), new(uint256.Int), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := uint64(stateGasNewAccount) - 100; res.Spilled != want {
+		t.Fatalf("spilled = %d, want %d", res.Spilled, want)
+	}
+}
+
+// A creating frame that cannot cover the account-creation charge halts
+// exceptionally itself (the out-of-gas locus is the creating frame, as for
+// the CALL* family), before any gas is forwarded to a create frame.
+func TestCreateChargeOOGHaltsCreatingFrame(t *testing.T) {
+	// Enough regular gas for the opcode costs but far below the 183,600
+	// account-creation charge, with an empty reservoir.
+	_, res, err := run8037(t, deployCode(deploy0Init, false, 0), NewGasBudget(30_000, 0), new(uint256.Int), nil)
+	if err == nil || err == ErrExecutionReverted {
+		t.Fatalf("err = %v, want exceptional halt of the creating frame", err)
+	}
+	if res.RegularGas != 0 {
+		t.Fatalf("regular gas = %d, want 0 (creating frame consumed)", res.RegularGas)
+	}
+	if res.UsedStateGas != 0 {
+		t.Fatalf("state gas = %d, want 0 (charge not applied)", res.UsedStateGas)
 	}
 }
 

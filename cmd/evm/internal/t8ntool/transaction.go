@@ -146,9 +146,9 @@ func Transaction(ctx *cli.Context) error {
 			results = append(results, r)
 			continue
 		}
-		r.IntrinsicGas = cost.RegularGas
-		if tx.Gas() < cost.RegularGas {
-			r.Error = fmt.Errorf("%w: have %d, want %d", core.ErrIntrinsicGas, tx.Gas(), cost.RegularGas)
+		r.IntrinsicGas = cost.Sum()
+		if tx.Gas() < cost.Sum() {
+			r.Error = fmt.Errorf("%w: have %d, want %d", core.ErrIntrinsicGas, tx.Gas(), cost.Sum())
 			results = append(results, r)
 			continue
 		}

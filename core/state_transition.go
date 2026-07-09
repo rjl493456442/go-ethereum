@@ -794,6 +794,9 @@ func (st *stateTransition) executeCreate(rules params.Rules, value *uint256.Int)
 	}
 	// The first frame is entered with the gas remaining after the runtime
 	// charges.
+	//
+	// Note, the evm.createFramePreCheck is unnecessary, as all the checks
+	// have been performed before.
 	ret, _, result, creation, vmerr := st.evm.Create(msg.From, msg.Data, st.gasRemaining.ForwardAll(), value)
 	st.gasRemaining.Absorb(result)
 

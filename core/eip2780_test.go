@@ -17,6 +17,7 @@
 package core
 
 import (
+	"errors"
 	"math/big"
 	"testing"
 
@@ -72,11 +73,13 @@ func TestEIP2780Intrinsic(t *testing.T) {
 			name:  "contract creation, value = 0",
 			to:    nil,
 			value: uint256.NewInt(0),
-			// TxBaseCost + CreateAccess = 23,000 regular. The new-account state
-			// charge depends on whether the deployment target exists and is
-			// charged at runtime, not intrinsically.
+			// TxBaseCost + CreateAccess = 23,000 regular. EIP-8037: the
+			// worst-case new-account cost participates in validation as
+			// intrinsic state gas; it is seeded into the reservoir and only
+			// charged at runtime if the deployment target does not exist.
 			want: vm.GasCosts{
 				RegularGas: params.TxBaseCost2780 + params.CreateAccessAmsterdam,
+				StateGas:   params.AccountCreationSize * params.CostPerStateByte,
 			},
 		},
 		{
@@ -86,6 +89,7 @@ func TestEIP2780Intrinsic(t *testing.T) {
 			// TxBaseCost + CreateAccess + TransferLogCost = 24,756 regular.
 			want: vm.GasCosts{
 				RegularGas: params.TxBaseCost2780 + params.CreateAccessAmsterdam + params.TransferLogCost2780,
+				StateGas:   params.AccountCreationSize * params.CostPerStateByte,
 			},
 		},
 		{
@@ -356,23 +360,19 @@ func TestEIP2780SelfTransferDelegated(t *testing.T) {
 }
 
 // TestEIP2780CreateInsufficientStateGas verifies that a contract-creation
-// transaction funded for its intrinsic gas but not the runtime new-account
-// state charge is included, halts out of gas and consumes the nonce.
+// transaction funded for its regular intrinsic gas but not the worst-case
+// account-creation state gas is invalid: EIP-8037 counts the create component
+// in the intrinsic state gas, so validity is decidable without state access
+// and the seeded reservoir always covers the conditional runtime charge.
 func TestEIP2780CreateInsufficientStateGas(t *testing.T) {
 	sdb := mkState(senderAlloc(nil))
-	intrinsic := params.TxBaseCost2780 + params.CreateAccessAmsterdam // 23,000
-	res, _, err := applyMsg(t, sdb, createTx(0, intrinsic, nil))
-	if err != nil {
-		t.Fatalf("transaction should remain valid: %v", err)
+	intrinsic := params.TxBaseCost2780 + params.CreateAccessAmsterdam // 23,000 regular
+	_, _, err := applyMsg(t, sdb, createTx(0, intrinsic, nil))
+	if !errors.Is(err, ErrIntrinsicGas) {
+		t.Fatalf("expected intrinsic gas error, got %v", err)
 	}
-	if res.Err != vm.ErrOutOfGas {
-		t.Fatalf("expected out of gas, got %v", res.Err)
-	}
-	if res.UsedGas != intrinsic {
-		t.Fatalf("used gas = %d, want %d", res.UsedGas, intrinsic)
-	}
-	if sdb.GetNonce(senderAddr) != 1 {
-		t.Fatal("sender nonce not consumed")
+	if sdb.GetNonce(senderAddr) != 0 {
+		t.Fatal("invalid transaction must not consume the nonce")
 	}
 }
 
