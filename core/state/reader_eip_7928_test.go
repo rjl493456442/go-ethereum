@@ -143,3 +143,34 @@ func TestPrefetchReader(t *testing.T) {
 		}
 	}
 }
+
+func TestPrefetchReaderStats(t *testing.T) {
+	var (
+		addrA = testrand.Address()
+		addrB = testrand.Address()
+		tasks = []*fetchTask{
+			{addr: addrA, slots: []common.Hash{testrand.Hash(), testrand.Hash()}},
+			{addr: addrB, slots: []common.Hash{testrand.Hash()}},
+		}
+		cache = newStateReaderWithCache(newRefStateReader())
+	)
+	check := func(pr *prefetchStateReader, wantAccountHits, wantAccountMisses, wantStorageHits, wantStorageMisses int64) {
+		t.Helper()
+
+		accountReads, accountHits, accountMisses, accountErrors, _, _, _, _ := pr.accountStats.values()
+		if accountReads != 2 || accountHits != wantAccountHits || accountMisses != wantAccountMisses || accountErrors != 0 {
+			t.Fatalf("unexpected account stats: reads=%d hits=%d misses=%d errors=%d", accountReads, accountHits, accountMisses, accountErrors)
+		}
+		storageReads, storageHits, storageMisses, storageErrors, _, _, _, _ := pr.storageStats.values()
+		if storageReads != 3 || storageHits != wantStorageHits || storageMisses != wantStorageMisses || storageErrors != 0 {
+			t.Fatalf("unexpected storage stats: reads=%d hits=%d misses=%d errors=%d", storageReads, storageHits, storageMisses, storageErrors)
+		}
+	}
+	pr := newPrefetchStateReaderInternal(cache, tasks, 1)
+	pr.Wait()
+	check(pr, 0, 2, 0, 3)
+
+	pr = newPrefetchStateReaderInternal(cache, tasks, 1)
+	pr.Wait()
+	check(pr, 2, 0, 3, 0)
+}

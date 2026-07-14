@@ -18,6 +18,7 @@ package state
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -87,6 +88,42 @@ type prefetchStateReader struct {
 	done      chan struct{}
 	term      chan struct{}
 	closeOnce sync.Once
+
+	accountStats prefetchReadStats
+	storageStats prefetchReadStats
+}
+
+type prefetchReadStats struct {
+	reads         atomic.Int64
+	hits          atomic.Int64
+	misses        atomic.Int64
+	errors        atomic.Int64
+	elapsed       atomic.Int64
+	readLockWait  atomic.Int64
+	stateRead     atomic.Int64
+	writeLockWait atomic.Int64
+}
+
+func (s *prefetchReadStats) add(elapsed time.Duration, detail stateReaderCallStats, err error) {
+	s.reads.Add(1)
+	s.elapsed.Add(elapsed.Nanoseconds())
+	s.readLockWait.Add(detail.readLockWait.Nanoseconds())
+	s.stateRead.Add(detail.stateRead.Nanoseconds())
+	s.writeLockWait.Add(detail.writeLockWait.Nanoseconds())
+	if detail.cacheHit {
+		s.hits.Add(1)
+	} else {
+		s.misses.Add(1)
+	}
+	if err != nil {
+		s.errors.Add(1)
+	}
+}
+
+func (s *prefetchReadStats) values() (reads, hits, misses, errors int64, elapsed, readLockWait, stateRead, writeLockWait time.Duration) {
+	return s.reads.Load(), s.hits.Load(), s.misses.Load(), s.errors.Load(),
+		time.Duration(s.elapsed.Load()), time.Duration(s.readLockWait.Load()),
+		time.Duration(s.stateRead.Load()), time.Duration(s.writeLockWait.Load())
 }
 
 func newPrefetchStateReader(reader StateReader, accessList map[common.Address][]common.Hash, nThreads int) *prefetchStateReader {
@@ -163,7 +200,50 @@ func (r *prefetchStateReader) prefetch() {
 		}(i, start, limit)
 	}
 	wg.Wait()
-	log.Info("Prefetched accessList", "items", total, "elapsed", common.PrettyDuration(time.Since(start)))
+	accountReads, accountHits, accountMisses, accountErrors, accountElapsed, accountReadLockWait, accountStateRead, accountWriteLockWait := r.accountStats.values()
+	storageReads, storageHits, storageMisses, storageErrors, storageElapsed, storageReadLockWait, storageStateRead, storageWriteLockWait := r.storageStats.values()
+	log.Info("Prefetched accessList",
+		"items", total,
+		"elapsed", common.PrettyDuration(time.Since(start)),
+		"accountReads", accountReads,
+		"accountHits", accountHits,
+		"accountMisses", accountMisses,
+		"accountErrors", accountErrors,
+		"accountElapsed", common.PrettyDuration(accountElapsed),
+		"accountReadLockWait", common.PrettyDuration(accountReadLockWait),
+		"accountStateRead", common.PrettyDuration(accountStateRead),
+		"accountWriteLockWait", common.PrettyDuration(accountWriteLockWait),
+		"storageReads", storageReads,
+		"storageHits", storageHits,
+		"storageMisses", storageMisses,
+		"storageErrors", storageErrors,
+		"storageElapsed", common.PrettyDuration(storageElapsed),
+		"storageReadLockWait", common.PrettyDuration(storageReadLockWait),
+		"storageStateRead", common.PrettyDuration(storageStateRead),
+		"storageWriteLockWait", common.PrettyDuration(storageWriteLockWait),
+	)
+}
+
+func (r *prefetchStateReader) account(addr common.Address) {
+	start := time.Now()
+	if reader, ok := r.StateReader.(*stateReaderWithCache); ok {
+		_, err, stats := reader.accountWithStats(addr)
+		r.accountStats.add(time.Since(start), stats, err)
+		return
+	}
+	_, err := r.StateReader.Account(addr)
+	r.accountStats.add(time.Since(start), stateReaderCallStats{}, err)
+}
+
+func (r *prefetchStateReader) storage(addr common.Address, slot common.Hash) {
+	start := time.Now()
+	if reader, ok := r.StateReader.(*stateReaderWithCache); ok {
+		_, err, stats := reader.storageWithStats(addr, slot)
+		r.storageStats.add(time.Since(start), stats, err)
+		return
+	}
+	_, err := r.StateReader.Storage(addr, slot)
+	r.storageStats.add(time.Since(start), stateReaderCallStats{}, err)
 }
 
 func (r *prefetchStateReader) process(start, limit int) {
@@ -185,9 +265,9 @@ func (r *prefetchStateReader) process(start, limit int) {
 					return
 				default:
 					if j == 0 {
-						r.StateReader.Account(t.addr)
+						r.account(t.addr)
 					} else {
-						r.StateReader.Storage(t.addr, t.slots[j-1])
+						r.storage(t.addr, t.slots[j-1])
 					}
 				}
 			}

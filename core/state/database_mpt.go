@@ -77,6 +77,8 @@ func (db *MPTDatabase) StateReader(stateRoot common.Hash) (StateReader, error) {
 		reader, err := db.triedb.StateReader(stateRoot)
 		if err == nil {
 			readers = append(readers, newFlatReader(reader))
+		} else {
+			log.Error("triedb stateReader", "err", err)
 		}
 	}
 	// Configure the trie reader, which is expected to be available as the

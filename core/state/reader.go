@@ -20,6 +20,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/overlay"
@@ -405,6 +406,14 @@ type stateReaderWithCache struct {
 	}
 }
 
+// stateReaderCallStats captures where time is spent in a single cache lookup.
+type stateReaderCallStats struct {
+	cacheHit      bool
+	readLockWait  time.Duration
+	stateRead     time.Duration
+	writeLockWait time.Duration
+}
+
 // newStateReaderWithCache constructs the state reader with local cache.
 func newStateReaderWithCache(sr StateReader) *stateReaderWithCache {
 	r := &stateReaderWithCache{
@@ -425,24 +434,37 @@ func newStateReaderWithCache(sr StateReader) *stateReaderWithCache {
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithCache) account(addr common.Address) (*types.StateAccount, bool, error) {
+	acct, err, stats := r.accountWithStats(addr)
+	return acct, stats.cacheHit, err
+}
+
+func (r *stateReaderWithCache) accountWithStats(addr common.Address) (*types.StateAccount, error, stateReaderCallStats) {
+	var stats stateReaderCallStats
 	bucket := &r.accountBuckets[addr[0]&0x0f]
 
 	// Try to resolve the requested account in the local cache
+	start := time.Now()
 	bucket.lock.RLock()
+	stats.readLockWait = time.Since(start)
 	acct, ok := bucket.accounts[addr]
 	bucket.lock.RUnlock()
 	if ok {
-		return acct, true, nil
+		stats.cacheHit = true
+		return acct, nil, stats
 	}
 	// Try to resolve the requested account from the underlying reader
+	start = time.Now()
 	acct, err := r.StateReader.Account(addr)
+	stats.stateRead = time.Since(start)
 	if err != nil {
-		return nil, false, err
+		return nil, err, stats
 	}
+	start = time.Now()
 	bucket.lock.Lock()
+	stats.writeLockWait = time.Since(start)
 	bucket.accounts[addr] = acct
 	bucket.lock.Unlock()
-	return acct, false, nil
+	return acct, nil, stats
 }
 
 // Account implements StateReader, retrieving the account specified by the address.
@@ -458,27 +480,40 @@ func (r *stateReaderWithCache) Account(addr common.Address) (*types.StateAccount
 // with a flag indicating whether it's found in the cache or not. The returned
 // storage slot might be empty if it's not existent.
 func (r *stateReaderWithCache) storage(addr common.Address, slot common.Hash) (common.Hash, bool, error) {
+	value, err, stats := r.storageWithStats(addr, slot)
+	return value, stats.cacheHit, err
+}
+
+func (r *stateReaderWithCache) storageWithStats(addr common.Address, slot common.Hash) (common.Hash, error, stateReaderCallStats) {
 	var (
+		stats  stateReaderCallStats
 		value  common.Hash
 		ok     bool
 		bucket = &r.storageBuckets[addr[0]&0x0f]
 	)
 	// Try to resolve the requested storage slot in the local cache
+	start := time.Now()
 	bucket.lock.RLock()
+	stats.readLockWait = time.Since(start)
 	slots, ok := bucket.storages[addr]
 	if ok {
 		value, ok = slots[slot]
 	}
 	bucket.lock.RUnlock()
 	if ok {
-		return value, true, nil
+		stats.cacheHit = true
+		return value, nil, stats
 	}
 	// Try to resolve the requested storage slot from the underlying reader
+	start = time.Now()
 	value, err := r.StateReader.Storage(addr, slot)
+	stats.stateRead = time.Since(start)
 	if err != nil {
-		return common.Hash{}, false, err
+		return common.Hash{}, err, stats
 	}
+	start = time.Now()
 	bucket.lock.Lock()
+	stats.writeLockWait = time.Since(start)
 	slots, ok = bucket.storages[addr]
 	if !ok {
 		slots = make(map[common.Hash]common.Hash)
@@ -487,7 +522,7 @@ func (r *stateReaderWithCache) storage(addr common.Address, slot common.Hash) (c
 	slots[slot] = value
 	bucket.lock.Unlock()
 
-	return value, false, nil
+	return value, nil, stats
 }
 
 // Storage implements StateReader, retrieving the storage slot specified by the
