@@ -207,12 +207,29 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 	s.db.StorageLoaded++
 
 	start := time.Now()
-	value, err := s.db.reader.Storage(s.address, key)
+	var (
+		value common.Hash
+		err   error
+		stats stateReaderCallStats
+	)
+	if reader, ok := s.db.reader.(stateReaderWithCacheStater); ok {
+		value, err, stats = reader.storageWithCacheStats(s.address, key)
+	} else {
+		value, err = s.db.reader.Storage(s.address, key)
+	}
 	if err != nil {
 		s.db.setError(err)
 		return common.Hash{}
 	}
 	s.db.StorageReads += time.Since(start)
+	s.db.StorageCacheReadLockWait += stats.readLockWait
+	s.db.StorageStateRead += stats.stateRead
+	s.db.StorageCacheWriteLockWait += stats.writeLockWait
+	if stats.cacheHit {
+		s.db.StorageCacheHits++
+	} else {
+		s.db.StorageCacheMisses++
+	}
 
 	// Schedule the resolved storage slots for prefetching if it's enabled.
 	if s.db.prefetcher != nil && s.data.Root != types.EmptyRootHash {

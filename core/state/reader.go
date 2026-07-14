@@ -163,6 +163,11 @@ type mptTrieReader struct {
 	lock     sync.Mutex                     // Lock for protecting concurrent read
 }
 
+type mptAccountReadStats struct {
+	lockWait   time.Duration
+	getAccount time.Duration
+}
+
 // newMPTTrieReader constructs a Merkle-Patricia-tree reader of the specific state.
 // An error will be returned if the associated trie specified by root is not existent.
 func newMPTTrieReader(root common.Hash, db *triedb.Database) (*mptTrieReader, error) {
@@ -198,10 +203,21 @@ func (r *mptTrieReader) account(addr common.Address) (*types.StateAccount, error
 // An error will be returned if the trie state is corrupted. A nil account
 // will be returned if it's not existent in the trie.
 func (r *mptTrieReader) Account(addr common.Address) (*types.StateAccount, error) {
+	account, err, _ := r.accountWithStats(addr)
+	return account, err
+}
+
+func (r *mptTrieReader) accountWithStats(addr common.Address) (*types.StateAccount, error, mptAccountReadStats) {
+	var stats mptAccountReadStats
+	start := time.Now()
 	r.lock.Lock()
+	stats.lockWait = time.Since(start)
 	defer r.lock.Unlock()
 
-	return r.account(addr)
+	start = time.Now()
+	account, err := r.account(addr)
+	stats.getAccount = time.Since(start)
+	return account, err, stats
 }
 
 // Storage implements StateReader, retrieving the storage slot specified by the
@@ -335,6 +351,17 @@ type multiStateReader struct {
 	readers []StateReader // List of state readers, sorted by checking priority
 }
 
+type accountReadStats struct {
+	flatReads     int64
+	flatFallbacks int64
+	flatRead      time.Duration
+	mptReads      int64
+	mptLockWait   time.Duration
+	mptGetAccount time.Duration
+	otherReads    int64
+	otherRead     time.Duration
+}
+
 // newMultiStateReader constructs a multiStateReader instance with the given
 // readers. The priority among readers is assumed to be sorted. Note, it must
 // contain at least one reader for constructing a multiStateReader.
@@ -354,15 +381,47 @@ func newMultiStateReader(readers ...StateReader) (*multiStateReader, error) {
 // - Returns an error only if an unexpected issue occurs
 // - The returned account is safe to modify after the call
 func (r *multiStateReader) Account(addr common.Address) (*types.StateAccount, error) {
-	var errs []error
+	account, err, _ := r.accountWithStats(addr)
+	return account, err
+}
+
+func (r *multiStateReader) accountWithStats(addr common.Address) (*types.StateAccount, error, accountReadStats) {
+	var (
+		errs  []error
+		stats accountReadStats
+	)
 	for _, reader := range r.readers {
-		acct, err := reader.Account(addr)
+		var (
+			acct *types.StateAccount
+			err  error
+		)
+		switch reader := reader.(type) {
+		case *flatReader:
+			start := time.Now()
+			acct, err = reader.Account(addr)
+			stats.flatReads++
+			stats.flatRead += time.Since(start)
+			if err != nil {
+				stats.flatFallbacks++
+			}
+		case *mptTrieReader:
+			var mptStats mptAccountReadStats
+			acct, err, mptStats = reader.accountWithStats(addr)
+			stats.mptReads++
+			stats.mptLockWait += mptStats.lockWait
+			stats.mptGetAccount += mptStats.getAccount
+		default:
+			start := time.Now()
+			acct, err = reader.Account(addr)
+			stats.otherReads++
+			stats.otherRead += time.Since(start)
+		}
 		if err == nil {
-			return acct, nil
+			return acct, nil, stats
 		}
 		errs = append(errs, err)
 	}
-	return nil, errors.Join(errs...)
+	return nil, errors.Join(errs...), stats
 }
 
 // Storage implementing StateReader interface, retrieving the storage slot
@@ -391,7 +450,7 @@ type stateReaderWithCache struct {
 	// List of account buckets, each of which is thread-safe. This reader is
 	// typically used in scenarios requiring concurrent access to accounts.
 	// Using multiple buckets helps mitigate the overhead caused by locking.
-	accountBuckets [16]struct {
+	accountBuckets [accountCacheBuckets]struct {
 		lock     sync.RWMutex
 		accounts map[common.Address]*types.StateAccount
 	}
@@ -406,7 +465,10 @@ type stateReaderWithCache struct {
 	}
 }
 
-const storageCacheBuckets = 64
+const (
+	accountCacheBuckets = 64
+	storageCacheBuckets = 64
+)
 
 // stateReaderCallStats captures where time is spent in a single cache lookup.
 type stateReaderCallStats struct {
@@ -415,12 +477,26 @@ type stateReaderCallStats struct {
 	readLockWait  time.Duration
 	stateRead     time.Duration
 	writeLockWait time.Duration
+	accountRead   accountReadStats
+}
+
+type stateReaderWithCacheStater interface {
+	accountWithCacheStats(common.Address) (*types.StateAccount, error, stateReaderCallStats)
+	storageWithCacheStats(common.Address, common.Hash) (common.Hash, error, stateReaderCallStats)
+}
+
+type accountReadStater interface {
+	accountWithStats(common.Address) (*types.StateAccount, error, accountReadStats)
 }
 
 // storageBucketIndex shards storage entries by both address and slot. This
 // allows separate slots of a hot account to populate the cache concurrently.
 func storageBucketIndex(addr common.Address, slot common.Hash) byte {
 	return (addr[0] ^ addr[10] ^ addr[19] ^ slot[0] ^ slot[10] ^ slot[21] ^ slot[31]) & (storageCacheBuckets - 1)
+}
+
+func accountBucketIndex(addr common.Address) byte {
+	return (addr[0] ^ addr[10] ^ addr[19]) & (accountCacheBuckets - 1)
 }
 
 // newStateReaderWithCache constructs the state reader with local cache.
@@ -449,7 +525,7 @@ func (r *stateReaderWithCache) account(addr common.Address) (*types.StateAccount
 
 func (r *stateReaderWithCache) accountWithStats(addr common.Address) (*types.StateAccount, error, stateReaderCallStats) {
 	var stats stateReaderCallStats
-	bucket := &r.accountBuckets[addr[0]&0x0f]
+	bucket := &r.accountBuckets[accountBucketIndex(addr)]
 
 	// Try to resolve the requested account in the local cache
 	start := time.Now()
@@ -463,7 +539,12 @@ func (r *stateReaderWithCache) accountWithStats(addr common.Address) (*types.Sta
 	}
 	// Try to resolve the requested account from the underlying reader
 	start = time.Now()
-	acct, err := r.StateReader.Account(addr)
+	var err error
+	if reader, ok := r.StateReader.(accountReadStater); ok {
+		acct, err, stats.accountRead = reader.accountWithStats(addr)
+	} else {
+		acct, err = r.StateReader.Account(addr)
+	}
 	stats.stateRead = time.Since(start)
 	if err != nil {
 		return nil, err, stats
@@ -569,16 +650,21 @@ func newStateReaderWithStats(sr *stateReaderWithCache) *stateReaderWithStats {
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount, error) {
-	account, incache, err := r.stateReaderWithCache.account(addr)
+	account, err, _ := r.accountWithCacheStats(addr)
+	return account, err
+}
+
+func (r *stateReaderWithStats) accountWithCacheStats(addr common.Address) (*types.StateAccount, error, stateReaderCallStats) {
+	account, err, stats := r.stateReaderWithCache.accountWithStats(addr)
 	if err != nil {
-		return nil, err
+		return nil, err, stats
 	}
-	if incache {
+	if stats.cacheHit {
 		r.accountCacheHit.Add(1)
 	} else {
 		r.accountCacheMiss.Add(1)
 	}
-	return account, nil
+	return account, nil, stats
 }
 
 // Storage implements StateReader, retrieving the storage slot specified by the
@@ -587,16 +673,21 @@ func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithStats) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
-	value, incache, err := r.stateReaderWithCache.storage(addr, slot)
+	value, err, _ := r.storageWithCacheStats(addr, slot)
+	return value, err
+}
+
+func (r *stateReaderWithStats) storageWithCacheStats(addr common.Address, slot common.Hash) (common.Hash, error, stateReaderCallStats) {
+	value, err, stats := r.stateReaderWithCache.storageWithStats(addr, slot)
 	if err != nil {
-		return common.Hash{}, err
+		return common.Hash{}, err, stats
 	}
-	if incache {
+	if stats.cacheHit {
 		r.storageCacheHit.Add(1)
 	} else {
 		r.storageCacheMiss.Add(1)
 	}
-	return value, nil
+	return value, nil, stats
 }
 
 // GetStateStats implements StateReaderStater, returning the statistics of the
@@ -614,6 +705,34 @@ func (r *stateReaderWithStats) GetStateStats() StateReaderStats {
 type reader struct {
 	ContractCodeReader
 	StateReader
+}
+
+func (r *reader) accountWithStats(addr common.Address) (*types.StateAccount, error, accountReadStats) {
+	if reader, ok := r.StateReader.(accountReadStater); ok {
+		return reader.accountWithStats(addr)
+	}
+	start := time.Now()
+	account, err := r.StateReader.Account(addr)
+	return account, err, accountReadStats{
+		otherReads: 1,
+		otherRead:  time.Since(start),
+	}
+}
+
+func (r *reader) accountWithCacheStats(addr common.Address) (*types.StateAccount, error, stateReaderCallStats) {
+	if reader, ok := r.StateReader.(stateReaderWithCacheStater); ok {
+		return reader.accountWithCacheStats(addr)
+	}
+	account, err := r.StateReader.Account(addr)
+	return account, err, stateReaderCallStats{}
+}
+
+func (r *reader) storageWithCacheStats(addr common.Address, slot common.Hash) (common.Hash, error, stateReaderCallStats) {
+	if reader, ok := r.StateReader.(stateReaderWithCacheStater); ok {
+		return reader.storageWithCacheStats(addr, slot)
+	}
+	value, err := r.StateReader.Storage(addr, slot)
+	return value, err, stateReaderCallStats{}
 }
 
 // newReader constructs a reader with the supplied code reader and state reader.

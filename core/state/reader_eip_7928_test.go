@@ -187,3 +187,15 @@ func TestStorageBucketIndex(t *testing.T) {
 		t.Fatalf("storage slots are not distributed across buckets: %d", len(buckets))
 	}
 }
+
+func TestAccountBucketIndex(t *testing.T) {
+	addr := testrand.Address()
+	buckets := make(map[byte]struct{})
+	for i := range accountCacheBuckets {
+		addr[19] = byte(i)
+		buckets[accountBucketIndex(addr)] = struct{}{}
+	}
+	if len(buckets) != accountCacheBuckets {
+		t.Fatalf("accounts are not distributed across buckets: %d", len(buckets))
+	}
+}

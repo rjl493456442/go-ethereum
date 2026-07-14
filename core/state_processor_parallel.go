@@ -120,12 +120,13 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		txExec     time.Duration
 		stateApply time.Duration
 		stateHash  time.Duration
+		applyStats stateApplyStats
 	)
 	// Post-execution state root, computed concurrently with execution.
 	var wg errgroup.Group
 	wg.Go(func() error {
 		start := time.Now()
-		applyBlockAccessList(statedb, accessList)
+		applyStats = applyBlockAccessList(statedb, accessList)
 		stateApply = time.Since(start)
 
 		start = time.Now()
@@ -225,6 +226,20 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		"system", common.PrettyDuration(systemExec), "txexec", common.PrettyDuration(txExec),
 		"stateapply", common.PrettyDuration(stateApply), "statehash", common.PrettyDuration(stateHash),
 		"elapsed", common.PrettyDuration(time.Since(start)),
+		"apply-balance-n", applyStats.balance.count, "apply-balance", common.PrettyDuration(applyStats.balance.elapsed),
+		"apply-nonce-n", applyStats.nonce.count, "apply-nonce", common.PrettyDuration(applyStats.nonce.elapsed),
+		"apply-code-n", applyStats.code.count, "apply-code", common.PrettyDuration(applyStats.code.elapsed),
+		"apply-storage-n", applyStats.storage.count, "apply-storage", common.PrettyDuration(applyStats.storage.elapsed),
+		"apply-account-loads", applyStats.accountLoaded, "apply-account-hits", applyStats.accountCacheHits, "apply-account-misses", applyStats.accountCacheMisses,
+		"apply-account-read", common.PrettyDuration(applyStats.accountReads),
+		"apply-account-cache-rlock", common.PrettyDuration(applyStats.accountCacheReadLockWait),
+		"apply-account-state-read", common.PrettyDuration(applyStats.accountStateRead),
+		"apply-account-cache-wlock", common.PrettyDuration(applyStats.accountCacheWriteLockWait),
+		"apply-storage-loads", applyStats.storageLoaded, "apply-storage-hits", applyStats.storageCacheHits, "apply-storage-misses", applyStats.storageCacheMisses,
+		"apply-storage-read", common.PrettyDuration(applyStats.storageReads),
+		"apply-storage-cache-rlock", common.PrettyDuration(applyStats.storageCacheReadLockWait),
+		"apply-storage-state-read", common.PrettyDuration(applyStats.storageStateRead),
+		"apply-storage-cache-wlock", common.PrettyDuration(applyStats.storageCacheWriteLockWait),
 	)
 	stater, ok := base.(state.ReaderStater)
 	if ok {
@@ -349,29 +364,101 @@ func reportParallelReadStats(block *types.Block, reader state.Reader) {
 		"storage.hitrate", stats.StorageCacheHitRate())
 }
 
+type stateApplyOperationStats struct {
+	count   int
+	elapsed time.Duration
+}
+
+type stateApplyStats struct {
+	balance stateApplyOperationStats
+	nonce   stateApplyOperationStats
+	code    stateApplyOperationStats
+	storage stateApplyOperationStats
+
+	accountLoaded             int
+	accountCacheHits          int
+	accountCacheMisses        int
+	accountReads              time.Duration
+	accountCacheReadLockWait  time.Duration
+	accountStateRead          time.Duration
+	accountCacheWriteLockWait time.Duration
+
+	storageLoaded             int
+	storageCacheHits          int
+	storageCacheMisses        int
+	storageReads              time.Duration
+	storageCacheReadLockWait  time.Duration
+	storageStateRead          time.Duration
+	storageCacheWriteLockWait time.Duration
+}
+
 // applyBlockAccessList writes the final (highest block-access index) value of
 // every mutated account field and storage slot recorded in the access list into
 // the supplied state.
-func applyBlockAccessList(statedb *state.StateDB, list *bal.BlockAccessList) {
+func applyBlockAccessList(statedb *state.StateDB, list *bal.BlockAccessList) stateApplyStats {
+	var stats stateApplyStats
+	before := stateApplyStats{
+		accountLoaded:             statedb.AccountLoaded,
+		accountCacheHits:          statedb.AccountCacheHits,
+		accountCacheMisses:        statedb.AccountCacheMisses,
+		accountReads:              statedb.AccountReads,
+		accountCacheReadLockWait:  statedb.AccountCacheReadLockWait,
+		accountStateRead:          statedb.AccountStateRead,
+		accountCacheWriteLockWait: statedb.AccountCacheWriteLockWait,
+		storageLoaded:             statedb.StorageLoaded,
+		storageCacheHits:          statedb.StorageCacheHits,
+		storageCacheMisses:        statedb.StorageCacheMisses,
+		storageReads:              statedb.StorageReads,
+		storageCacheReadLockWait:  statedb.StorageCacheReadLockWait,
+		storageStateRead:          statedb.StorageStateRead,
+		storageCacheWriteLockWait: statedb.StorageCacheWriteLockWait,
+	}
 	for i := range *list {
 		acc := &(*list)[i]
 		addr := acc.Address
 		if n := len(acc.BalanceChanges); n > 0 {
+			start := time.Now()
 			statedb.SetBalance(addr, acc.BalanceChanges[n-1].PostBalance.Clone(), tracing.BalanceChangeUnspecified)
+			stats.balance.count++
+			stats.balance.elapsed += time.Since(start)
 		}
 		if n := len(acc.NonceChanges); n > 0 {
+			start := time.Now()
 			statedb.SetNonce(addr, acc.NonceChanges[n-1].PostNonce, tracing.NonceChangeUnspecified)
+			stats.nonce.count++
+			stats.nonce.elapsed += time.Since(start)
 		}
 		if n := len(acc.CodeChanges); n > 0 {
+			start := time.Now()
 			statedb.SetCode(addr, acc.CodeChanges[n-1].NewCode, tracing.CodeChangeUnspecified)
+			stats.code.count++
+			stats.code.elapsed += time.Since(start)
 		}
 		for j := range acc.StorageChanges {
 			sc := &acc.StorageChanges[j]
 			if n := len(sc.SlotChanges); n > 0 {
+				start := time.Now()
 				statedb.SetState(addr, sc.Slot.Bytes32(), sc.SlotChanges[n-1].PostValue.Bytes32())
+				stats.storage.count++
+				stats.storage.elapsed += time.Since(start)
 			}
 		}
 	}
+	stats.accountLoaded = statedb.AccountLoaded - before.accountLoaded
+	stats.accountCacheHits = statedb.AccountCacheHits - before.accountCacheHits
+	stats.accountCacheMisses = statedb.AccountCacheMisses - before.accountCacheMisses
+	stats.accountReads = statedb.AccountReads - before.accountReads
+	stats.accountCacheReadLockWait = statedb.AccountCacheReadLockWait - before.accountCacheReadLockWait
+	stats.accountStateRead = statedb.AccountStateRead - before.accountStateRead
+	stats.accountCacheWriteLockWait = statedb.AccountCacheWriteLockWait - before.accountCacheWriteLockWait
+	stats.storageLoaded = statedb.StorageLoaded - before.storageLoaded
+	stats.storageCacheHits = statedb.StorageCacheHits - before.storageCacheHits
+	stats.storageCacheMisses = statedb.StorageCacheMisses - before.storageCacheMisses
+	stats.storageReads = statedb.StorageReads - before.storageReads
+	stats.storageCacheReadLockWait = statedb.StorageCacheReadLockWait - before.storageCacheReadLockWait
+	stats.storageStateRead = statedb.StorageStateRead - before.storageStateRead
+	stats.storageCacheWriteLockWait = statedb.StorageCacheWriteLockWait - before.storageCacheWriteLockWait
+	return stats
 }
 
 // prefetchHint derives, for every account referenced by the block, the set of

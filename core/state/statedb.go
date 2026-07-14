@@ -145,16 +145,26 @@ type StateDB struct {
 	witness *stateless.Witness
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads   time.Duration
-	AccountHashes  time.Duration
-	AccountUpdates time.Duration
-	AccountCommits time.Duration
+	AccountReads              time.Duration
+	AccountCacheReadLockWait  time.Duration
+	AccountStateRead          time.Duration
+	AccountCacheWriteLockWait time.Duration
+	AccountCacheHits          int
+	AccountCacheMisses        int
+	AccountHashes             time.Duration
+	AccountUpdates            time.Duration
+	AccountCommits            time.Duration
 
-	StorageReads    time.Duration
-	StorageUpdates  time.Duration
-	StorageCommits  time.Duration
-	DatabaseCommits time.Duration
-	CodeReads       time.Duration
+	StorageReads              time.Duration
+	StorageCacheReadLockWait  time.Duration
+	StorageStateRead          time.Duration
+	StorageCacheWriteLockWait time.Duration
+	StorageCacheHits          int
+	StorageCacheMisses        int
+	StorageUpdates            time.Duration
+	StorageCommits            time.Duration
+	DatabaseCommits           time.Duration
+	CodeReads                 time.Duration
 
 	AccountLoaded  int          // Number of accounts retrieved from the database during the state transition
 	AccountUpdated int          // Number of accounts updated during the state transition
@@ -596,12 +606,29 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 	s.AccountLoaded++
 
 	start := time.Now()
-	acct, err := s.reader.Account(addr)
+	var (
+		acct  *types.StateAccount
+		err   error
+		stats stateReaderCallStats
+	)
+	if reader, ok := s.reader.(stateReaderWithCacheStater); ok {
+		acct, err, stats = reader.accountWithCacheStats(addr)
+	} else {
+		acct, err = s.reader.Account(addr)
+	}
 	if err != nil {
 		s.setError(fmt.Errorf("getStateObject (%x) error: %w", addr.Bytes(), err))
 		return nil
 	}
 	s.AccountReads += time.Since(start)
+	s.AccountCacheReadLockWait += stats.readLockWait
+	s.AccountStateRead += stats.stateRead
+	s.AccountCacheWriteLockWait += stats.writeLockWait
+	if stats.cacheHit {
+		s.AccountCacheHits++
+	} else {
+		s.AccountCacheMisses++
+	}
 
 	// Schedule the account path for prefetching if it's enabled. Even if the
 	// account is absent, the trie path proves its non-existence for witnesses.
