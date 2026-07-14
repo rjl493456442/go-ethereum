@@ -20,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/triedb/database"
 )
 
 // layerTree is a group of state layers identified by the state root.
@@ -315,11 +317,23 @@ func (tree *layerTree) bottom() *diskLayer {
 // lookupAccount returns the layer that is guaranteed to contain the account data
 // corresponding to the specified state root being queried.
 func (tree *layerTree) lookupAccount(accountHash common.Hash, state common.Hash) (layer, error) {
+	return tree.lookupAccountWithStats(accountHash, state, nil)
+}
+
+func (tree *layerTree) lookupAccountWithStats(accountHash common.Hash, state common.Hash, stats *database.AccountReadStats) (layer, error) {
 	// Hold the read lock to prevent the unexpected layer changes
+	start := time.Now()
 	tree.lock.RLock()
+	if stats != nil {
+		stats.TreeLockWait += time.Since(start)
+	}
 	defer tree.lock.RUnlock()
 
+	start = time.Now()
 	tip, ok := tree.lookup.accountTip(accountHash, state, tree.base.root)
+	if stats != nil {
+		stats.TreeLookup += time.Since(start)
+	}
 	if !ok {
 		return nil, fmt.Errorf("[%#x] %w", state, errSnapshotStale)
 	}

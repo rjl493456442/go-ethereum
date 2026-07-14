@@ -94,23 +94,34 @@ type prefetchStateReader struct {
 }
 
 type prefetchReadStats struct {
-	reads         atomic.Int64
-	hits          atomic.Int64
-	misses        atomic.Int64
-	lateHits      atomic.Int64
-	errors        atomic.Int64
-	elapsed       atomic.Int64
-	readLockWait  atomic.Int64
-	stateRead     atomic.Int64
-	writeLockWait atomic.Int64
-	flatReads     atomic.Int64
-	flatFallbacks atomic.Int64
-	flatRead      atomic.Int64
-	mptReads      atomic.Int64
-	mptLockWait   atomic.Int64
-	mptGetAccount atomic.Int64
-	otherReads    atomic.Int64
-	otherRead     atomic.Int64
+	reads                atomic.Int64
+	hits                 atomic.Int64
+	misses               atomic.Int64
+	lateHits             atomic.Int64
+	errors               atomic.Int64
+	elapsed              atomic.Int64
+	readLockWait         atomic.Int64
+	stateRead            atomic.Int64
+	writeLockWait        atomic.Int64
+	flatReads            atomic.Int64
+	flatFallbacks        atomic.Int64
+	flatRead             atomic.Int64
+	mptReads             atomic.Int64
+	mptLockWait          atomic.Int64
+	mptGetAccount        atomic.Int64
+	otherReads           atomic.Int64
+	otherRead            atomic.Int64
+	pathdbTreeLockWait   atomic.Int64
+	pathdbTreeLookup     atomic.Int64
+	pathdbDiffLockWait   atomic.Int64
+	pathdbDiffRead       atomic.Int64
+	pathdbDiskLockWait   atomic.Int64
+	pathdbDiskBufferRead atomic.Int64
+	pathdbDiskCacheRead  atomic.Int64
+	pathdbDiskRead       atomic.Int64
+	pathdbDiskCacheWrite atomic.Int64
+	pathdbDecode         atomic.Int64
+	pathdbFallbacks      atomic.Int64
 }
 
 func (s *prefetchReadStats) add(elapsed time.Duration, detail stateReaderCallStats, err error) {
@@ -127,6 +138,17 @@ func (s *prefetchReadStats) add(elapsed time.Duration, detail stateReaderCallSta
 	s.mptGetAccount.Add(detail.accountRead.mptGetAccount.Nanoseconds())
 	s.otherReads.Add(detail.accountRead.otherReads)
 	s.otherRead.Add(detail.accountRead.otherRead.Nanoseconds())
+	s.pathdbTreeLockWait.Add(detail.accountRead.pathdb.TreeLockWait.Nanoseconds())
+	s.pathdbTreeLookup.Add(detail.accountRead.pathdb.TreeLookup.Nanoseconds())
+	s.pathdbDiffLockWait.Add(detail.accountRead.pathdb.DiffLockWait.Nanoseconds())
+	s.pathdbDiffRead.Add(detail.accountRead.pathdb.DiffRead.Nanoseconds())
+	s.pathdbDiskLockWait.Add(detail.accountRead.pathdb.DiskLockWait.Nanoseconds())
+	s.pathdbDiskBufferRead.Add(detail.accountRead.pathdb.DiskBufferRead.Nanoseconds())
+	s.pathdbDiskCacheRead.Add(detail.accountRead.pathdb.DiskCacheRead.Nanoseconds())
+	s.pathdbDiskRead.Add(detail.accountRead.pathdb.DiskRead.Nanoseconds())
+	s.pathdbDiskCacheWrite.Add(detail.accountRead.pathdb.DiskCacheWrite.Nanoseconds())
+	s.pathdbDecode.Add(detail.accountRead.pathdb.Decode.Nanoseconds())
+	s.pathdbFallbacks.Add(int64(detail.accountRead.pathdb.Fallbacks))
 	if detail.cacheHit {
 		s.hits.Add(1)
 	} else {
@@ -150,6 +172,14 @@ func (s *prefetchReadStats) accountReadValues() (flatReads, flatFallbacks, mptRe
 	return s.flatReads.Load(), s.flatFallbacks.Load(), s.mptReads.Load(), s.otherReads.Load(),
 		time.Duration(s.flatRead.Load()), time.Duration(s.mptLockWait.Load()),
 		time.Duration(s.mptGetAccount.Load()), time.Duration(s.otherRead.Load())
+}
+
+func (s *prefetchReadStats) pathDBAccountReadValues() (fallbacks int64, treeLockWait, treeLookup, diffLockWait, diffRead, diskLockWait, diskBufferRead, diskCacheRead, diskRead, diskCacheWrite, decode time.Duration) {
+	return s.pathdbFallbacks.Load(),
+		time.Duration(s.pathdbTreeLockWait.Load()), time.Duration(s.pathdbTreeLookup.Load()),
+		time.Duration(s.pathdbDiffLockWait.Load()), time.Duration(s.pathdbDiffRead.Load()),
+		time.Duration(s.pathdbDiskLockWait.Load()), time.Duration(s.pathdbDiskBufferRead.Load()), time.Duration(s.pathdbDiskCacheRead.Load()),
+		time.Duration(s.pathdbDiskRead.Load()), time.Duration(s.pathdbDiskCacheWrite.Load()), time.Duration(s.pathdbDecode.Load())
 }
 
 func newPrefetchStateReader(reader StateReader, accessList map[common.Address][]common.Hash, nThreads int) *prefetchStateReader {
@@ -228,6 +258,7 @@ func (r *prefetchStateReader) prefetch() {
 	wg.Wait()
 	accountReads, accountHits, accountMisses, accountLateHits, accountErrors, accountElapsed, accountReadLockWait, accountStateRead, accountWriteLockWait := r.accountStats.values()
 	accountFlatReads, accountFlatFallbacks, accountMPTReads, accountOtherReads, accountFlatRead, accountMPTLockWait, accountMPTGetAccount, accountOtherRead := r.accountStats.accountReadValues()
+	accountPathDBFallbacks, accountPathDBTreeLockWait, accountPathDBTreeLookup, accountPathDBDiffLockWait, accountPathDBDiffRead, accountPathDBDiskLockWait, accountPathDBDiskBufferRead, accountPathDBDiskCacheRead, accountPathDBDiskRead, accountPathDBDiskCacheWrite, accountPathDBDecode := r.accountStats.pathDBAccountReadValues()
 	storageReads, storageHits, storageMisses, storageLateHits, storageErrors, storageElapsed, storageReadLockWait, storageStateRead, storageWriteLockWait := r.storageStats.values()
 	log.Info("Prefetched accessList",
 		"items", total,
@@ -249,6 +280,17 @@ func (r *prefetchStateReader) prefetch() {
 		"accountMPTGetAccount", common.PrettyDuration(accountMPTGetAccount),
 		"accountOtherReads", accountOtherReads,
 		"accountOtherRead", common.PrettyDuration(accountOtherRead),
+		"accountPathDBFallbacks", accountPathDBFallbacks,
+		"accountPathDBTreeLockWait", common.PrettyDuration(accountPathDBTreeLockWait),
+		"accountPathDBTreeLookup", common.PrettyDuration(accountPathDBTreeLookup),
+		"accountPathDBDiffLockWait", common.PrettyDuration(accountPathDBDiffLockWait),
+		"accountPathDBDiffRead", common.PrettyDuration(accountPathDBDiffRead),
+		"accountPathDBDiskLockWait", common.PrettyDuration(accountPathDBDiskLockWait),
+		"accountPathDBDiskBufferRead", common.PrettyDuration(accountPathDBDiskBufferRead),
+		"accountPathDBDiskCacheRead", common.PrettyDuration(accountPathDBDiskCacheRead),
+		"accountPathDBDiskRead", common.PrettyDuration(accountPathDBDiskRead),
+		"accountPathDBDiskCacheWrite", common.PrettyDuration(accountPathDBDiskCacheWrite),
+		"accountPathDBDecode", common.PrettyDuration(accountPathDBDecode),
 		"storageReads", storageReads,
 		"storageHits", storageHits,
 		"storageMisses", storageMisses,

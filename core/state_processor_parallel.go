@@ -235,6 +235,17 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		"apply-account-cache-rlock", common.PrettyDuration(applyStats.accountCacheReadLockWait),
 		"apply-account-state-read", common.PrettyDuration(applyStats.accountStateRead),
 		"apply-account-cache-wlock", common.PrettyDuration(applyStats.accountCacheWriteLockWait),
+		"apply-account-pathdb-fallbacks", applyStats.accountPathDBFallbacks,
+		"apply-account-pathdb-tree-rlock", common.PrettyDuration(applyStats.accountPathDBTreeLockWait),
+		"apply-account-pathdb-tree-lookup", common.PrettyDuration(applyStats.accountPathDBTreeLookup),
+		"apply-account-pathdb-diff-rlock", common.PrettyDuration(applyStats.accountPathDBDiffLockWait),
+		"apply-account-pathdb-diff-read", common.PrettyDuration(applyStats.accountPathDBDiffRead),
+		"apply-account-pathdb-disk-rlock", common.PrettyDuration(applyStats.accountPathDBDiskLockWait),
+		"apply-account-pathdb-disk-buffer", common.PrettyDuration(applyStats.accountPathDBDiskBufferRead),
+		"apply-account-pathdb-disk-cache", common.PrettyDuration(applyStats.accountPathDBDiskCacheRead),
+		"apply-account-pathdb-disk-read", common.PrettyDuration(applyStats.accountPathDBDiskRead),
+		"apply-account-pathdb-disk-cache-write", common.PrettyDuration(applyStats.accountPathDBDiskCacheWrite),
+		"apply-account-pathdb-decode", common.PrettyDuration(applyStats.accountPathDBDecode),
 		"apply-storage-loads", applyStats.storageLoaded, "apply-storage-hits", applyStats.storageCacheHits, "apply-storage-misses", applyStats.storageCacheMisses,
 		"apply-storage-read", common.PrettyDuration(applyStats.storageReads),
 		"apply-storage-cache-rlock", common.PrettyDuration(applyStats.storageCacheReadLockWait),
@@ -375,13 +386,24 @@ type stateApplyStats struct {
 	code    stateApplyOperationStats
 	storage stateApplyOperationStats
 
-	accountLoaded             int
-	accountCacheHits          int
-	accountCacheMisses        int
-	accountReads              time.Duration
-	accountCacheReadLockWait  time.Duration
-	accountStateRead          time.Duration
-	accountCacheWriteLockWait time.Duration
+	accountLoaded               int
+	accountCacheHits            int
+	accountCacheMisses          int
+	accountReads                time.Duration
+	accountCacheReadLockWait    time.Duration
+	accountStateRead            time.Duration
+	accountCacheWriteLockWait   time.Duration
+	accountPathDBTreeLockWait   time.Duration
+	accountPathDBTreeLookup     time.Duration
+	accountPathDBDiffLockWait   time.Duration
+	accountPathDBDiffRead       time.Duration
+	accountPathDBDiskLockWait   time.Duration
+	accountPathDBDiskBufferRead time.Duration
+	accountPathDBDiskCacheRead  time.Duration
+	accountPathDBDiskRead       time.Duration
+	accountPathDBDiskCacheWrite time.Duration
+	accountPathDBDecode         time.Duration
+	accountPathDBFallbacks      int
 
 	storageLoaded             int
 	storageCacheHits          int
@@ -398,20 +420,31 @@ type stateApplyStats struct {
 func applyBlockAccessList(statedb *state.StateDB, list *bal.BlockAccessList) stateApplyStats {
 	var stats stateApplyStats
 	before := stateApplyStats{
-		accountLoaded:             statedb.AccountLoaded,
-		accountCacheHits:          statedb.AccountCacheHits,
-		accountCacheMisses:        statedb.AccountCacheMisses,
-		accountReads:              statedb.AccountReads,
-		accountCacheReadLockWait:  statedb.AccountCacheReadLockWait,
-		accountStateRead:          statedb.AccountStateRead,
-		accountCacheWriteLockWait: statedb.AccountCacheWriteLockWait,
-		storageLoaded:             statedb.StorageLoaded,
-		storageCacheHits:          statedb.StorageCacheHits,
-		storageCacheMisses:        statedb.StorageCacheMisses,
-		storageReads:              statedb.StorageReads,
-		storageCacheReadLockWait:  statedb.StorageCacheReadLockWait,
-		storageStateRead:          statedb.StorageStateRead,
-		storageCacheWriteLockWait: statedb.StorageCacheWriteLockWait,
+		accountLoaded:               statedb.AccountLoaded,
+		accountCacheHits:            statedb.AccountCacheHits,
+		accountCacheMisses:          statedb.AccountCacheMisses,
+		accountReads:                statedb.AccountReads,
+		accountCacheReadLockWait:    statedb.AccountCacheReadLockWait,
+		accountStateRead:            statedb.AccountStateRead,
+		accountCacheWriteLockWait:   statedb.AccountCacheWriteLockWait,
+		accountPathDBTreeLockWait:   statedb.AccountPathDBTreeLockWait,
+		accountPathDBTreeLookup:     statedb.AccountPathDBTreeLookup,
+		accountPathDBDiffLockWait:   statedb.AccountPathDBDiffLockWait,
+		accountPathDBDiffRead:       statedb.AccountPathDBDiffRead,
+		accountPathDBDiskLockWait:   statedb.AccountPathDBDiskLockWait,
+		accountPathDBDiskBufferRead: statedb.AccountPathDBDiskBufferRead,
+		accountPathDBDiskCacheRead:  statedb.AccountPathDBDiskCacheRead,
+		accountPathDBDiskRead:       statedb.AccountPathDBDiskRead,
+		accountPathDBDiskCacheWrite: statedb.AccountPathDBDiskCacheWrite,
+		accountPathDBDecode:         statedb.AccountPathDBDecode,
+		accountPathDBFallbacks:      statedb.AccountPathDBFallbacks,
+		storageLoaded:               statedb.StorageLoaded,
+		storageCacheHits:            statedb.StorageCacheHits,
+		storageCacheMisses:          statedb.StorageCacheMisses,
+		storageReads:                statedb.StorageReads,
+		storageCacheReadLockWait:    statedb.StorageCacheReadLockWait,
+		storageStateRead:            statedb.StorageStateRead,
+		storageCacheWriteLockWait:   statedb.StorageCacheWriteLockWait,
 	}
 	for i := range *list {
 		acc := &(*list)[i]
@@ -451,6 +484,17 @@ func applyBlockAccessList(statedb *state.StateDB, list *bal.BlockAccessList) sta
 	stats.accountCacheReadLockWait = statedb.AccountCacheReadLockWait - before.accountCacheReadLockWait
 	stats.accountStateRead = statedb.AccountStateRead - before.accountStateRead
 	stats.accountCacheWriteLockWait = statedb.AccountCacheWriteLockWait - before.accountCacheWriteLockWait
+	stats.accountPathDBTreeLockWait = statedb.AccountPathDBTreeLockWait - before.accountPathDBTreeLockWait
+	stats.accountPathDBTreeLookup = statedb.AccountPathDBTreeLookup - before.accountPathDBTreeLookup
+	stats.accountPathDBDiffLockWait = statedb.AccountPathDBDiffLockWait - before.accountPathDBDiffLockWait
+	stats.accountPathDBDiffRead = statedb.AccountPathDBDiffRead - before.accountPathDBDiffRead
+	stats.accountPathDBDiskLockWait = statedb.AccountPathDBDiskLockWait - before.accountPathDBDiskLockWait
+	stats.accountPathDBDiskBufferRead = statedb.AccountPathDBDiskBufferRead - before.accountPathDBDiskBufferRead
+	stats.accountPathDBDiskCacheRead = statedb.AccountPathDBDiskCacheRead - before.accountPathDBDiskCacheRead
+	stats.accountPathDBDiskRead = statedb.AccountPathDBDiskRead - before.accountPathDBDiskRead
+	stats.accountPathDBDiskCacheWrite = statedb.AccountPathDBDiskCacheWrite - before.accountPathDBDiskCacheWrite
+	stats.accountPathDBDecode = statedb.AccountPathDBDecode - before.accountPathDBDecode
+	stats.accountPathDBFallbacks = statedb.AccountPathDBFallbacks - before.accountPathDBFallbacks
 	stats.storageLoaded = statedb.StorageLoaded - before.storageLoaded
 	stats.storageCacheHits = statedb.StorageCacheHits - before.storageCacheHits
 	stats.storageCacheMisses = statedb.StorageCacheMisses - before.storageCacheMisses

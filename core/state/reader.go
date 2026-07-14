@@ -99,12 +99,27 @@ func newFlatReader(reader database.StateReader) *flatReader {
 //
 // The returned account might be nil if it's not existent.
 func (r *flatReader) Account(addr common.Address) (*types.StateAccount, error) {
-	account, err := r.reader.Account(crypto.Keccak256Hash(addr[:]))
+	account, err, _ := r.accountWithStats(addr)
+	return account, err
+}
+
+func (r *flatReader) accountWithStats(addr common.Address) (*types.StateAccount, error, database.AccountReadStats) {
+	hash := crypto.Keccak256Hash(addr[:])
+	var (
+		account *types.SlimAccount
+		err     error
+		stats   database.AccountReadStats
+	)
+	if reader, ok := r.reader.(database.StateReaderAccountStater); ok {
+		account, err, stats = reader.AccountWithStats(hash)
+	} else {
+		account, err = r.reader.Account(hash)
+	}
 	if err != nil {
-		return nil, err
+		return nil, err, stats
 	}
 	if account == nil {
-		return nil, nil
+		return nil, nil, stats
 	}
 	acct := &types.StateAccount{
 		Nonce:    account.Nonce,
@@ -118,7 +133,7 @@ func (r *flatReader) Account(addr common.Address) (*types.StateAccount, error) {
 	if acct.Root == (common.Hash{}) {
 		acct.Root = types.EmptyRootHash
 	}
-	return acct, nil
+	return acct, nil, stats
 }
 
 // Storage implements StateReader, retrieving the storage slot specified by the
@@ -360,6 +375,21 @@ type accountReadStats struct {
 	mptGetAccount time.Duration
 	otherReads    int64
 	otherRead     time.Duration
+	pathdb        database.AccountReadStats
+}
+
+func (s *accountReadStats) addPathDB(stats database.AccountReadStats) {
+	s.pathdb.TreeLockWait += stats.TreeLockWait
+	s.pathdb.TreeLookup += stats.TreeLookup
+	s.pathdb.DiffLockWait += stats.DiffLockWait
+	s.pathdb.DiffRead += stats.DiffRead
+	s.pathdb.DiskLockWait += stats.DiskLockWait
+	s.pathdb.DiskBufferRead += stats.DiskBufferRead
+	s.pathdb.DiskCacheRead += stats.DiskCacheRead
+	s.pathdb.DiskRead += stats.DiskRead
+	s.pathdb.DiskCacheWrite += stats.DiskCacheWrite
+	s.pathdb.Decode += stats.Decode
+	s.pathdb.Fallbacks += stats.Fallbacks
 }
 
 // newMultiStateReader constructs a multiStateReader instance with the given
@@ -398,9 +428,11 @@ func (r *multiStateReader) accountWithStats(addr common.Address) (*types.StateAc
 		switch reader := reader.(type) {
 		case *flatReader:
 			start := time.Now()
-			acct, err = reader.Account(addr)
+			var pathStats database.AccountReadStats
+			acct, err, pathStats = reader.accountWithStats(addr)
 			stats.flatReads++
 			stats.flatRead += time.Since(start)
+			stats.addPathDB(pathStats)
 			if err != nil {
 				stats.flatFallbacks++
 			}

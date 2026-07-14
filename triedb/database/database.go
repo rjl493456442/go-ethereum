@@ -17,6 +17,8 @@
 package database
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
@@ -60,6 +62,28 @@ type StateReader interface {
 	// - the returned storage data is not a copy, please don't modify it
 	// - no error will be returned if the requested slot is not found in database
 	Storage(accountHash, storageHash common.Hash) ([]byte, error)
+}
+
+// AccountReadStats reports the time spent in the path-based state reader while
+// resolving a single account.
+type AccountReadStats struct {
+	TreeLockWait   time.Duration
+	TreeLookup     time.Duration
+	DiffLockWait   time.Duration
+	DiffRead       time.Duration
+	DiskLockWait   time.Duration
+	DiskBufferRead time.Duration
+	DiskCacheRead  time.Duration
+	DiskRead       time.Duration
+	DiskCacheWrite time.Duration
+	Decode         time.Duration
+	Fallbacks      int
+}
+
+// StateReaderAccountStater is implemented by state readers that can report a
+// per-account access breakdown.
+type StateReaderAccountStater interface {
+	AccountWithStats(hash common.Hash) (*types.SlimAccount, error, AccountReadStats)
 }
 
 // StateDatabase wraps the methods of a backing state store.

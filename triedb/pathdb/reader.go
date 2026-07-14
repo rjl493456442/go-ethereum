@@ -60,6 +60,10 @@ type reader struct {
 	layer       layer
 }
 
+type accountReadStater interface {
+	accountWithStats(common.Hash, int, *database.AccountReadStats) ([]byte, error)
+}
+
 // Node implements database.NodeReader interface, retrieving the node with specified
 // node info. Don't modify the returned byte slice since it's not deep-copied
 // and still be referenced by database.
@@ -100,7 +104,11 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 // - the returned account data is not a copy, please don't modify it
 // - no error will be returned if the requested account is not found in database
 func (r *reader) AccountRLP(hash common.Hash) ([]byte, error) {
-	l, err := r.db.tree.lookupAccount(hash, r.state)
+	return r.accountRLP(hash, nil)
+}
+
+func (r *reader) accountRLP(hash common.Hash, stats *database.AccountReadStats) ([]byte, error) {
+	l, err := r.db.tree.lookupAccountWithStats(hash, r.state, stats)
 	if err != nil {
 		return nil, err
 	}
@@ -112,8 +120,19 @@ func (r *reader) AccountRLP(hash common.Hash) ([]byte, error) {
 	// This fallback mechanism is essential, because the traversal starts from
 	// the entry point layer and goes down, the staleness of the disk layer does
 	// not affect the result unless the entry point layer is also stale.
-	blob, err := l.account(hash, 0)
+	var blob []byte
+	if reader, ok := l.(accountReadStater); ok {
+		blob, err = reader.accountWithStats(hash, 0, stats)
+	} else {
+		blob, err = l.account(hash, 0)
+	}
 	if errors.Is(err, errSnapshotStale) {
+		if stats != nil {
+			stats.Fallbacks++
+		}
+		if reader, ok := r.layer.(accountReadStater); ok {
+			return reader.accountWithStats(hash, 0, stats)
+		}
 		return r.layer.account(hash, 0)
 	}
 	return blob, err
@@ -127,18 +146,28 @@ func (r *reader) AccountRLP(hash common.Hash) ([]byte, error) {
 // - the returned account object is safe to modify
 // - no error will be returned if the requested account is not found in database
 func (r *reader) Account(hash common.Hash) (*types.SlimAccount, error) {
-	blob, err := r.AccountRLP(hash)
+	account, err, _ := r.AccountWithStats(hash)
+	return account, err
+}
+
+// AccountWithStats retrieves an account and reports where the path database
+// reader spent time resolving it.
+func (r *reader) AccountWithStats(hash common.Hash) (*types.SlimAccount, error, database.AccountReadStats) {
+	var stats database.AccountReadStats
+	blob, err := r.accountRLP(hash, &stats)
 	if err != nil {
-		return nil, err
+		return nil, err, stats
 	}
 	if len(blob) == 0 {
-		return nil, nil
+		return nil, nil, stats
 	}
+	start := time.Now()
 	account := new(types.SlimAccount)
 	if err := rlp.DecodeBytes(blob, account); err != nil {
 		panic(err)
 	}
-	return account, nil
+	stats.Decode += time.Since(start)
+	return account, nil, stats
 }
 
 // Storage directly retrieves the storage data associated with a particular hash,

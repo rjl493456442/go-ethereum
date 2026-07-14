@@ -145,15 +145,26 @@ type StateDB struct {
 	witness *stateless.Witness
 
 	// Measurements gathered during execution for debugging purposes
-	AccountReads              time.Duration
-	AccountCacheReadLockWait  time.Duration
-	AccountStateRead          time.Duration
-	AccountCacheWriteLockWait time.Duration
-	AccountCacheHits          int
-	AccountCacheMisses        int
-	AccountHashes             time.Duration
-	AccountUpdates            time.Duration
-	AccountCommits            time.Duration
+	AccountReads                time.Duration
+	AccountCacheReadLockWait    time.Duration
+	AccountStateRead            time.Duration
+	AccountCacheWriteLockWait   time.Duration
+	AccountCacheHits            int
+	AccountCacheMisses          int
+	AccountPathDBTreeLockWait   time.Duration
+	AccountPathDBTreeLookup     time.Duration
+	AccountPathDBDiffLockWait   time.Duration
+	AccountPathDBDiffRead       time.Duration
+	AccountPathDBDiskLockWait   time.Duration
+	AccountPathDBDiskBufferRead time.Duration
+	AccountPathDBDiskCacheRead  time.Duration
+	AccountPathDBDiskRead       time.Duration
+	AccountPathDBDiskCacheWrite time.Duration
+	AccountPathDBDecode         time.Duration
+	AccountPathDBFallbacks      int
+	AccountHashes               time.Duration
+	AccountUpdates              time.Duration
+	AccountCommits              time.Duration
 
 	StorageReads              time.Duration
 	StorageCacheReadLockWait  time.Duration
@@ -629,6 +640,17 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 	} else {
 		s.AccountCacheMisses++
 	}
+	s.AccountPathDBTreeLockWait += stats.accountRead.pathdb.TreeLockWait
+	s.AccountPathDBTreeLookup += stats.accountRead.pathdb.TreeLookup
+	s.AccountPathDBDiffLockWait += stats.accountRead.pathdb.DiffLockWait
+	s.AccountPathDBDiffRead += stats.accountRead.pathdb.DiffRead
+	s.AccountPathDBDiskLockWait += stats.accountRead.pathdb.DiskLockWait
+	s.AccountPathDBDiskBufferRead += stats.accountRead.pathdb.DiskBufferRead
+	s.AccountPathDBDiskCacheRead += stats.accountRead.pathdb.DiskCacheRead
+	s.AccountPathDBDiskRead += stats.accountRead.pathdb.DiskRead
+	s.AccountPathDBDiskCacheWrite += stats.accountRead.pathdb.DiskCacheWrite
+	s.AccountPathDBDecode += stats.accountRead.pathdb.Decode
+	s.AccountPathDBFallbacks += stats.accountRead.pathdb.Fallbacks
 
 	// Schedule the account path for prefetching if it's enabled. Even if the
 	// account is absent, the trie path proves its non-existence for witnesses.

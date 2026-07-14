@@ -19,9 +19,11 @@ package pathdb
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/triedb/database"
 )
 
 // diffLayer represents a collection of modifications made to the in-memory tries
@@ -102,12 +104,24 @@ func (dl *diffLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diffLayer) account(hash common.Hash, depth int) ([]byte, error) {
+	return dl.accountWithStats(hash, depth, nil)
+}
+
+func (dl *diffLayer) accountWithStats(hash common.Hash, depth int, stats *database.AccountReadStats) ([]byte, error) {
 	// Hold the lock, ensure the parent won't be changed during the
 	// state accessing.
+	start := time.Now()
 	dl.lock.RLock()
+	if stats != nil {
+		stats.DiffLockWait += time.Since(start)
+	}
 	defer dl.lock.RUnlock()
 
+	start = time.Now()
 	if blob, found := dl.states.account(hash); found {
+		if stats != nil {
+			stats.DiffRead += time.Since(start)
+		}
 		dirtyStateHitMeter.Mark(1)
 		dirtyStateHitDepthHist.Update(int64(depth))
 		dirtyStateReadMeter.Mark(int64(len(blob)))
@@ -119,7 +133,13 @@ func (dl *diffLayer) account(hash common.Hash, depth int) ([]byte, error) {
 		}
 		return blob, nil
 	}
+	if stats != nil {
+		stats.DiffRead += time.Since(start)
+	}
 	// Account is unknown to this layer, resolve from parent
+	if reader, ok := dl.parent.(accountReadStater); ok {
+		return reader.accountWithStats(hash, depth+1, stats)
+	}
 	return dl.parent.account(hash, depth+1)
 }
 
