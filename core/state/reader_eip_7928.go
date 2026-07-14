@@ -97,6 +97,7 @@ type prefetchReadStats struct {
 	reads         atomic.Int64
 	hits          atomic.Int64
 	misses        atomic.Int64
+	lateHits      atomic.Int64
 	errors        atomic.Int64
 	elapsed       atomic.Int64
 	readLockWait  atomic.Int64
@@ -115,13 +116,16 @@ func (s *prefetchReadStats) add(elapsed time.Duration, detail stateReaderCallSta
 	} else {
 		s.misses.Add(1)
 	}
+	if detail.lateHit {
+		s.lateHits.Add(1)
+	}
 	if err != nil {
 		s.errors.Add(1)
 	}
 }
 
-func (s *prefetchReadStats) values() (reads, hits, misses, errors int64, elapsed, readLockWait, stateRead, writeLockWait time.Duration) {
-	return s.reads.Load(), s.hits.Load(), s.misses.Load(), s.errors.Load(),
+func (s *prefetchReadStats) values() (reads, hits, misses, lateHits, errors int64, elapsed, readLockWait, stateRead, writeLockWait time.Duration) {
+	return s.reads.Load(), s.hits.Load(), s.misses.Load(), s.lateHits.Load(), s.errors.Load(),
 		time.Duration(s.elapsed.Load()), time.Duration(s.readLockWait.Load()),
 		time.Duration(s.stateRead.Load()), time.Duration(s.writeLockWait.Load())
 }
@@ -200,14 +204,15 @@ func (r *prefetchStateReader) prefetch() {
 		}(i, start, limit)
 	}
 	wg.Wait()
-	accountReads, accountHits, accountMisses, accountErrors, accountElapsed, accountReadLockWait, accountStateRead, accountWriteLockWait := r.accountStats.values()
-	storageReads, storageHits, storageMisses, storageErrors, storageElapsed, storageReadLockWait, storageStateRead, storageWriteLockWait := r.storageStats.values()
+	accountReads, accountHits, accountMisses, accountLateHits, accountErrors, accountElapsed, accountReadLockWait, accountStateRead, accountWriteLockWait := r.accountStats.values()
+	storageReads, storageHits, storageMisses, storageLateHits, storageErrors, storageElapsed, storageReadLockWait, storageStateRead, storageWriteLockWait := r.storageStats.values()
 	log.Info("Prefetched accessList",
 		"items", total,
 		"elapsed", common.PrettyDuration(time.Since(start)),
 		"accountReads", accountReads,
 		"accountHits", accountHits,
 		"accountMisses", accountMisses,
+		"accountLateHits", accountLateHits,
 		"accountErrors", accountErrors,
 		"accountElapsed", common.PrettyDuration(accountElapsed),
 		"accountReadLockWait", common.PrettyDuration(accountReadLockWait),
@@ -216,6 +221,7 @@ func (r *prefetchStateReader) prefetch() {
 		"storageReads", storageReads,
 		"storageHits", storageHits,
 		"storageMisses", storageMisses,
+		"storageLateHits", storageLateHits,
 		"storageErrors", storageErrors,
 		"storageElapsed", common.PrettyDuration(storageElapsed),
 		"storageReadLockWait", common.PrettyDuration(storageReadLockWait),

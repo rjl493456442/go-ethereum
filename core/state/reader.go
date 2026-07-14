@@ -400,15 +400,18 @@ type stateReaderWithCache struct {
 	// This reader is typically used in scenarios requiring concurrent
 	// access to storage. Using multiple buckets helps mitigate
 	// the overhead caused by locking.
-	storageBuckets [16]struct {
+	storageBuckets [storageCacheBuckets]struct {
 		lock     sync.RWMutex
 		storages map[common.Address]map[common.Hash]common.Hash
 	}
 }
 
+const storageCacheBuckets = 64
+
 // stateReaderCallStats captures where time is spent in a single cache lookup.
 type stateReaderCallStats struct {
 	cacheHit      bool
+	lateHit       bool
 	readLockWait  time.Duration
 	stateRead     time.Duration
 	writeLockWait time.Duration
@@ -417,7 +420,7 @@ type stateReaderCallStats struct {
 // storageBucketIndex shards storage entries by both address and slot. This
 // allows separate slots of a hot account to populate the cache concurrently.
 func storageBucketIndex(addr common.Address, slot common.Hash) byte {
-	return (addr[0] ^ addr[10] ^ addr[19] ^ slot[0] ^ slot[10] ^ slot[21] ^ slot[31]) & 0x0f
+	return (addr[0] ^ addr[10] ^ addr[19] ^ slot[0] ^ slot[10] ^ slot[21] ^ slot[31]) & (storageCacheBuckets - 1)
 }
 
 // newStateReaderWithCache constructs the state reader with local cache.
@@ -468,6 +471,7 @@ func (r *stateReaderWithCache) accountWithStats(addr common.Address) (*types.Sta
 	start = time.Now()
 	bucket.lock.Lock()
 	stats.writeLockWait = time.Since(start)
+	_, stats.lateHit = bucket.accounts[addr]
 	bucket.accounts[addr] = acct
 	bucket.lock.Unlock()
 	return acct, nil, stats
@@ -525,6 +529,7 @@ func (r *stateReaderWithCache) storageWithStats(addr common.Address, slot common
 		slots = make(map[common.Hash]common.Hash)
 		bucket.storages[addr] = slots
 	}
+	_, stats.lateHit = slots[slot]
 	slots[slot] = value
 	bucket.lock.Unlock()
 

@@ -157,13 +157,13 @@ func TestPrefetchReaderStats(t *testing.T) {
 	check := func(pr *prefetchStateReader, wantAccountHits, wantAccountMisses, wantStorageHits, wantStorageMisses int64) {
 		t.Helper()
 
-		accountReads, accountHits, accountMisses, accountErrors, _, _, _, _ := pr.accountStats.values()
-		if accountReads != 2 || accountHits != wantAccountHits || accountMisses != wantAccountMisses || accountErrors != 0 {
-			t.Fatalf("unexpected account stats: reads=%d hits=%d misses=%d errors=%d", accountReads, accountHits, accountMisses, accountErrors)
+		accountReads, accountHits, accountMisses, accountLateHits, accountErrors, _, _, _, _ := pr.accountStats.values()
+		if accountReads != 2 || accountHits != wantAccountHits || accountMisses != wantAccountMisses || accountLateHits != 0 || accountErrors != 0 {
+			t.Fatalf("unexpected account stats: reads=%d hits=%d misses=%d lateHits=%d errors=%d", accountReads, accountHits, accountMisses, accountLateHits, accountErrors)
 		}
-		storageReads, storageHits, storageMisses, storageErrors, _, _, _, _ := pr.storageStats.values()
-		if storageReads != 3 || storageHits != wantStorageHits || storageMisses != wantStorageMisses || storageErrors != 0 {
-			t.Fatalf("unexpected storage stats: reads=%d hits=%d misses=%d errors=%d", storageReads, storageHits, storageMisses, storageErrors)
+		storageReads, storageHits, storageMisses, storageLateHits, storageErrors, _, _, _, _ := pr.storageStats.values()
+		if storageReads != 3 || storageHits != wantStorageHits || storageMisses != wantStorageMisses || storageLateHits != 0 || storageErrors != 0 {
+			t.Fatalf("unexpected storage stats: reads=%d hits=%d misses=%d lateHits=%d errors=%d", storageReads, storageHits, storageMisses, storageLateHits, storageErrors)
 		}
 	}
 	pr := newPrefetchStateReaderInternal(cache, tasks, 1)
@@ -178,12 +178,12 @@ func TestPrefetchReaderStats(t *testing.T) {
 func TestStorageBucketIndex(t *testing.T) {
 	addr := testrand.Address()
 	buckets := make(map[byte]struct{})
-	for i := range 16 {
+	for i := range storageCacheBuckets {
 		var slot common.Hash
 		slot[31] = byte(i)
 		buckets[storageBucketIndex(addr, slot)] = struct{}{}
 	}
-	if len(buckets) != 16 {
+	if len(buckets) != storageCacheBuckets {
 		t.Fatalf("storage slots are not distributed across buckets: %d", len(buckets))
 	}
 }
