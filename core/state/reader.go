@@ -414,6 +414,12 @@ type stateReaderCallStats struct {
 	writeLockWait time.Duration
 }
 
+// storageBucketIndex shards storage entries by both address and slot. This
+// allows separate slots of a hot account to populate the cache concurrently.
+func storageBucketIndex(addr common.Address, slot common.Hash) byte {
+	return (addr[0] ^ addr[10] ^ addr[19] ^ slot[0] ^ slot[10] ^ slot[21] ^ slot[31]) & 0x0f
+}
+
 // newStateReaderWithCache constructs the state reader with local cache.
 func newStateReaderWithCache(sr StateReader) *stateReaderWithCache {
 	r := &stateReaderWithCache{
@@ -489,7 +495,7 @@ func (r *stateReaderWithCache) storageWithStats(addr common.Address, slot common
 		stats  stateReaderCallStats
 		value  common.Hash
 		ok     bool
-		bucket = &r.storageBuckets[addr[0]&0x0f]
+		bucket = &r.storageBuckets[storageBucketIndex(addr, slot)]
 	)
 	// Try to resolve the requested storage slot in the local cache
 	start := time.Now()

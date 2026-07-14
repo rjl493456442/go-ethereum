@@ -174,3 +174,16 @@ func TestPrefetchReaderStats(t *testing.T) {
 	pr.Wait()
 	check(pr, 2, 0, 3, 0)
 }
+
+func TestStorageBucketIndex(t *testing.T) {
+	addr := testrand.Address()
+	buckets := make(map[byte]struct{})
+	for i := range 16 {
+		var slot common.Hash
+		slot[31] = byte(i)
+		buckets[storageBucketIndex(addr, slot)] = struct{}{}
+	}
+	if len(buckets) != 16 {
+		t.Fatalf("storage slots are not distributed across buckets: %d", len(buckets))
+	}
+}
