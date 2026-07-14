@@ -387,9 +387,13 @@ func (r *multiStateReader) Storage(addr common.Address, slot common.Hash) (commo
 type stateReaderWithCache struct {
 	StateReader
 
-	// Previously resolved state entries.
-	accounts    map[common.Address]*types.StateAccount
-	accountLock sync.RWMutex
+	// List of account buckets, each of which is thread-safe. This reader is
+	// typically used in scenarios requiring concurrent access to accounts.
+	// Using multiple buckets helps mitigate the overhead caused by locking.
+	accountBuckets [16]struct {
+		lock     sync.RWMutex
+		accounts map[common.Address]*types.StateAccount
+	}
 
 	// List of storage buckets, each of which is thread-safe.
 	// This reader is typically used in scenarios requiring concurrent
@@ -405,7 +409,9 @@ type stateReaderWithCache struct {
 func newStateReaderWithCache(sr StateReader) *stateReaderWithCache {
 	r := &stateReaderWithCache{
 		StateReader: sr,
-		accounts:    make(map[common.Address]*types.StateAccount),
+	}
+	for i := range r.accountBuckets {
+		r.accountBuckets[i].accounts = make(map[common.Address]*types.StateAccount)
 	}
 	for i := range r.storageBuckets {
 		r.storageBuckets[i].storages = make(map[common.Address]map[common.Hash]common.Hash)
@@ -419,10 +425,12 @@ func newStateReaderWithCache(sr StateReader) *stateReaderWithCache {
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithCache) account(addr common.Address) (*types.StateAccount, bool, error) {
+	bucket := &r.accountBuckets[addr[0]&0x0f]
+
 	// Try to resolve the requested account in the local cache
-	r.accountLock.RLock()
-	acct, ok := r.accounts[addr]
-	r.accountLock.RUnlock()
+	bucket.lock.RLock()
+	acct, ok := bucket.accounts[addr]
+	bucket.lock.RUnlock()
 	if ok {
 		return acct, true, nil
 	}
@@ -431,9 +439,9 @@ func (r *stateReaderWithCache) account(addr common.Address) (*types.StateAccount
 	if err != nil {
 		return nil, false, err
 	}
-	r.accountLock.Lock()
-	r.accounts[addr] = acct
-	r.accountLock.Unlock()
+	bucket.lock.Lock()
+	bucket.accounts[addr] = acct
+	bucket.lock.Unlock()
 	return acct, false, nil
 }
 
