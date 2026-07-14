@@ -18,11 +18,13 @@ package state
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 // The EIP27928 reader utilizes a hierarchical architecture to optimize state
@@ -132,7 +134,10 @@ func (r *prefetchStateReader) prefetch() {
 	if len(r.tasks) == 0 {
 		return
 	}
-	var total int
+	var (
+		total int
+		start = time.Now()
+	)
 	for _, t := range r.tasks {
 		total += t.weight()
 	}
@@ -158,6 +163,7 @@ func (r *prefetchStateReader) prefetch() {
 		}(i, start, limit)
 	}
 	wg.Wait()
+	log.Info("Prefetched accessList", "items", total, "elapsed", common.PrettyDuration(time.Since(start)))
 }
 
 func (r *prefetchStateReader) process(start, limit int) {

@@ -118,6 +118,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		// Stats
 		systemExec time.Duration
 		txExec     time.Duration
+		stateApply time.Duration
 		stateHash  time.Duration
 	)
 	// Post-execution state root, computed concurrently with execution.
@@ -125,6 +126,9 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	wg.Go(func() error {
 		start := time.Now()
 		applyBlockAccessList(statedb, accessList)
+		stateApply = time.Since(start)
+
+		start = time.Now()
 		statedb.IntermediateRoot(config.IsEIP158(header.Number))
 		stateHash = time.Since(start)
 		return statedb.Error()
@@ -214,7 +218,23 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	parallelTxExecTimer.Update(txExec)
 	parallelStateHashTimer.Update(stateHash)
 	parallelTotalTimer.UpdateSince(start)
-	log.Info("Parallel block execution", "number", header.Number, "txs", len(txs), "system", common.PrettyDuration(systemExec), "txexec", common.PrettyDuration(txExec), "statehash", common.PrettyDuration(stateHash), "elapsed", common.PrettyDuration(time.Since(start)))
+
+	var msg []any
+	msg = append(msg,
+		"number", header.Number, "txs", len(txs),
+		"system", common.PrettyDuration(systemExec), "txexec", common.PrettyDuration(txExec),
+		"stateapply", common.PrettyDuration(stateApply), "statehash", common.PrettyDuration(stateHash),
+		"elapsed", common.PrettyDuration(time.Since(start)),
+	)
+	stater, ok := base.(state.ReaderStater)
+	if ok {
+		stats := stater.GetStats()
+		msg = append(msg,
+			"account-hits", stats.StateStats.AccountCacheHit, "account-misses", stats.StateStats.AccountCacheMiss, "account-hitrate", stats.StateStats.AccountCacheHitRate(),
+			"storage-hits", stats.StateStats.StorageCacheHit, "storage-misses", stats.StateStats.StorageCacheMiss, "storage-hitrate", stats.StateStats.StorageCacheHitRate(),
+		)
+	}
+	log.Info("Parallel block execution", msg...)
 
 	return &ProcessResult{
 		Receipts: receipts,
