@@ -423,6 +423,44 @@ func (api *BeaconLightApi) GetBeaconBlock(blockRoot common.Hash) (*types.BeaconB
 	if err != nil {
 		return nil, err
 	}
+	if strings.EqualFold(beaconBlockMessage.Version, "gloas") {
+		resp, err := api.httpGet(fmt.Sprintf("/eth/v1/beacon/headers/0x%x", blockRoot), nil)
+		if err != nil {
+			return nil, err
+		}
+		var header struct {
+			Data struct {
+				Root   common.Hash `json:"root"`
+				Header struct {
+					Message types.Header `json:"message"`
+				} `json:"header"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(resp, &header); err != nil {
+			return nil, fmt.Errorf("invalid Gloas beacon header: %v", err)
+		}
+		if header.Data.Root != blockRoot {
+			return nil, fmt.Errorf("Gloas beacon header root mismatch (expected: %x, got: %x)", blockRoot, header.Data.Root)
+		}
+		if err := block.SetGloasHeader(blockRoot, header.Data.Header.Message); err != nil {
+			return nil, err
+		}
+		resp, err = api.httpGet(fmt.Sprintf("/eth/v1/beacon/execution_payload_envelopes/0x%x", blockRoot), nil)
+		if err != nil {
+			return nil, err
+		}
+		var envelope struct {
+			Data struct {
+				Message json.RawMessage `json:"message"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(resp, &envelope); err != nil {
+			return nil, fmt.Errorf("invalid Gloas execution payload envelope: %v", err)
+		}
+		if err := block.SetGloasPayloadEnvelope(blockRoot, envelope.Data.Message); err != nil {
+			return nil, err
+		}
+	}
 	computedRoot := block.Root()
 	if computedRoot != blockRoot {
 		return nil, fmt.Errorf("Beacon block root hash mismatch (expected: %x, got: %x)", blockRoot, computedRoot)

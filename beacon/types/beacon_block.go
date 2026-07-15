@@ -42,6 +42,7 @@ type blockObject interface {
 // BeaconBlock represents a full block in the beacon chain.
 type BeaconBlock struct {
 	blockObj blockObject
+	gloas    *gloasBeaconBlock
 }
 
 // BlockFromJSON decodes a beacon block from JSON.
@@ -54,24 +55,26 @@ func BlockFromJSON(forkName string, data []byte) (*BeaconBlock, error) {
 		obj = new(deneb.BeaconBlock)
 	case "electra", "fulu":
 		obj = new(electra.BeaconBlock)
+	case "gloas":
+		return decodeGloasBeaconBlock(data)
 	default:
 		return nil, fmt.Errorf("unsupported fork: %s", forkName)
 	}
 	if err := json.Unmarshal(data, obj); err != nil {
 		return nil, err
 	}
-	return &BeaconBlock{obj}, nil
+	return &BeaconBlock{blockObj: obj}, nil
 }
 
 // NewBeaconBlock wraps a ZRNT block.
 func NewBeaconBlock(obj blockObject) *BeaconBlock {
 	switch obj := obj.(type) {
 	case *capella.BeaconBlock:
-		return &BeaconBlock{obj}
+		return &BeaconBlock{blockObj: obj}
 	case *deneb.BeaconBlock:
-		return &BeaconBlock{obj}
+		return &BeaconBlock{blockObj: obj}
 	case *electra.BeaconBlock:
-		return &BeaconBlock{obj}
+		return &BeaconBlock{blockObj: obj}
 	default:
 		panic(fmt.Errorf("unsupported block type %T", obj))
 	}
@@ -79,6 +82,9 @@ func NewBeaconBlock(obj blockObject) *BeaconBlock {
 
 // Slot returns the slot number of the block.
 func (b *BeaconBlock) Slot() uint64 {
+	if b.gloas != nil {
+		return b.gloas.header.Slot
+	}
 	switch obj := b.blockObj.(type) {
 	case *capella.BeaconBlock:
 		return uint64(obj.Slot)
@@ -93,6 +99,12 @@ func (b *BeaconBlock) Slot() uint64 {
 
 // ExecutionPayload parses and returns the execution payload of the block.
 func (b *BeaconBlock) ExecutionPayload() (*types.Block, error) {
+	if b.gloas != nil {
+		if b.gloas.block == nil {
+			return nil, fmt.Errorf("Gloas execution payload envelope is missing")
+		}
+		return b.gloas.block, nil
+	}
 	switch obj := b.blockObj.(type) {
 	case *capella.BeaconBlock:
 		return convertPayload(&obj.Body.ExecutionPayload, &obj.ParentRoot, nil)
@@ -108,6 +120,9 @@ func (b *BeaconBlock) ExecutionPayload() (*types.Block, error) {
 
 // Header returns the block's header data.
 func (b *BeaconBlock) Header() Header {
+	if b.gloas != nil {
+		return b.gloas.header
+	}
 	switch obj := b.blockObj.(type) {
 	case *capella.BeaconBlock:
 		return headerFromZRNT(obj.Header(configs.Mainnet))
@@ -122,11 +137,17 @@ func (b *BeaconBlock) Header() Header {
 
 // Root computes the SSZ root hash of the block.
 func (b *BeaconBlock) Root() common.Hash {
+	if b.gloas != nil {
+		return b.gloas.root
+	}
 	return common.Hash(b.blockObj.HashTreeRoot(configs.Mainnet, tree.GetHashFn()))
 }
 
 // ExecutionRequestsList returns the execution layer requests of the block.
 func (b *BeaconBlock) ExecutionRequestsList() [][]byte {
+	if b.gloas != nil {
+		return b.gloas.requests
+	}
 	switch obj := b.blockObj.(type) {
 	case *capella.BeaconBlock, *deneb.BeaconBlock:
 		return nil
