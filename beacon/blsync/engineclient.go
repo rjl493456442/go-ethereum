@@ -114,7 +114,16 @@ func (ec *engineClient) callNewPayload(fork string, event types.ChainHeadEvent) 
 		parentBeaconRoot := event.BeaconHead.ParentRoot
 		blobHashes := collectBlobHashes(event.Block)
 		params = append(params, blobHashes, parentBeaconRoot)
-	default: // electra, fulu and above
+	case "gloas":
+		method = "engine_newPayloadV5"
+		parentBeaconRoot := event.BeaconHead.ParentRoot
+		blobHashes := collectBlobHashes(event.Block)
+		hexRequests := make([]hexutil.Bytes, len(event.ExecRequests))
+		for i := range event.ExecRequests {
+			hexRequests[i] = hexutil.Bytes(event.ExecRequests[i])
+		}
+		params = append(params, blobHashes, parentBeaconRoot, hexRequests)
+	default: // electra, fulu and BPO forks
 		method = "engine_newPayloadV4"
 		parentBeaconRoot := event.BeaconHead.ParentRoot
 		blobHashes := collectBlobHashes(event.Block)
