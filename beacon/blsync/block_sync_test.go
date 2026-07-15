@@ -182,8 +182,10 @@ func (h *testHeadTracker) ValidatedFinality() (types.FinalityUpdate, bool) {
 		return types.FinalityUpdate{}, false
 	}
 	return types.FinalityUpdate{
-		Attested:      types.HeaderWithExecProof{Header: h.finalized},
-		Finalized:     types.HeaderWithExecProof{Header: h.finalized, PayloadHeader: h.finalizedPayload},
+		Attested: types.HeaderWithExecProof{Header: h.finalized},
+		Finalized: types.HeaderWithExecProof{Header: h.finalized, Proof: &types.PayloadHeaderProof{
+			PayloadHeader: h.finalizedPayload,
+		}},
 		Signature:     h.validated.Signature,
 		SignatureSlot: h.validated.SignatureSlot,
 	}, true

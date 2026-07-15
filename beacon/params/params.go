@@ -46,6 +46,11 @@ const (
 	StateIndexExecHead                 = 908
 
 	BodyIndexExecPayload = 25
+
+	// BodyIndexExecBlockHashGloas is the generalized index of
+	// signed_execution_payload_bid.message.parent_block_hash
+	// in a Gloas block.
+	BodyIndexExecBlockHashGloas = 832
 )
 
 func StateIndexFinalBlock(forkName string) uint64 {
