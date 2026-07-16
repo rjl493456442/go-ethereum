@@ -347,11 +347,23 @@ func (tree *layerTree) lookupAccountWithStats(accountHash common.Hash, state com
 // lookupStorage returns the layer that is guaranteed to contain the storage slot
 // data corresponding to the specified state root being queried.
 func (tree *layerTree) lookupStorage(accountHash common.Hash, slotHash common.Hash, state common.Hash) (layer, error) {
+	return tree.lookupStorageWithStats(accountHash, slotHash, state, nil)
+}
+
+func (tree *layerTree) lookupStorageWithStats(accountHash common.Hash, slotHash common.Hash, state common.Hash, stats *database.StorageReadStats) (layer, error) {
 	// Hold the read lock to prevent the unexpected layer changes
+	start := time.Now()
 	tree.lock.RLock()
+	if stats != nil {
+		stats.TreeLockWait += time.Since(start)
+	}
 	defer tree.lock.RUnlock()
 
+	start = time.Now()
 	tip, ok := tree.lookup.storageTip(accountHash, slotHash, state, tree.base.root)
+	if stats != nil {
+		stats.TreeLookup += time.Since(start)
+	}
 	if !ok {
 		return nil, fmt.Errorf("[%#x] %w", state, errSnapshotStale)
 	}

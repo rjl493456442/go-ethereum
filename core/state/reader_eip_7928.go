@@ -149,6 +149,17 @@ func (s *prefetchReadStats) add(elapsed time.Duration, detail stateReaderCallSta
 	s.pathdbDiskCacheWrite.Add(detail.accountRead.pathdb.DiskCacheWrite.Nanoseconds())
 	s.pathdbDecode.Add(detail.accountRead.pathdb.Decode.Nanoseconds())
 	s.pathdbFallbacks.Add(int64(detail.accountRead.pathdb.Fallbacks))
+	s.pathdbTreeLockWait.Add(detail.storageRead.pathdb.TreeLockWait.Nanoseconds())
+	s.pathdbTreeLookup.Add(detail.storageRead.pathdb.TreeLookup.Nanoseconds())
+	s.pathdbDiffLockWait.Add(detail.storageRead.pathdb.DiffLockWait.Nanoseconds())
+	s.pathdbDiffRead.Add(detail.storageRead.pathdb.DiffRead.Nanoseconds())
+	s.pathdbDiskLockWait.Add(detail.storageRead.pathdb.DiskLockWait.Nanoseconds())
+	s.pathdbDiskBufferRead.Add(detail.storageRead.pathdb.DiskBufferRead.Nanoseconds())
+	s.pathdbDiskCacheRead.Add(detail.storageRead.pathdb.DiskCacheRead.Nanoseconds())
+	s.pathdbDiskRead.Add(detail.storageRead.pathdb.DiskRead.Nanoseconds())
+	s.pathdbDiskCacheWrite.Add(detail.storageRead.pathdb.DiskCacheWrite.Nanoseconds())
+	s.pathdbDecode.Add(detail.storageRead.pathdb.Decode.Nanoseconds())
+	s.pathdbFallbacks.Add(int64(detail.storageRead.pathdb.Fallbacks))
 	if detail.cacheHit {
 		s.hits.Add(1)
 	} else {
@@ -174,7 +185,7 @@ func (s *prefetchReadStats) accountReadValues() (flatReads, flatFallbacks, mptRe
 		time.Duration(s.mptGetAccount.Load()), time.Duration(s.otherRead.Load())
 }
 
-func (s *prefetchReadStats) pathDBAccountReadValues() (fallbacks int64, treeLockWait, treeLookup, diffLockWait, diffRead, diskLockWait, diskBufferRead, diskCacheRead, diskRead, diskCacheWrite, decode time.Duration) {
+func (s *prefetchReadStats) pathDBReadValues() (fallbacks int64, treeLockWait, treeLookup, diffLockWait, diffRead, diskLockWait, diskBufferRead, diskCacheRead, diskRead, diskCacheWrite, decode time.Duration) {
 	return s.pathdbFallbacks.Load(),
 		time.Duration(s.pathdbTreeLockWait.Load()), time.Duration(s.pathdbTreeLookup.Load()),
 		time.Duration(s.pathdbDiffLockWait.Load()), time.Duration(s.pathdbDiffRead.Load()),
@@ -258,8 +269,9 @@ func (r *prefetchStateReader) prefetch() {
 	wg.Wait()
 	accountReads, accountHits, accountMisses, accountLateHits, accountErrors, accountElapsed, accountReadLockWait, accountStateRead, accountWriteLockWait := r.accountStats.values()
 	accountFlatReads, accountFlatFallbacks, accountMPTReads, accountOtherReads, accountFlatRead, accountMPTLockWait, accountMPTGetAccount, accountOtherRead := r.accountStats.accountReadValues()
-	accountPathDBFallbacks, accountPathDBTreeLockWait, accountPathDBTreeLookup, accountPathDBDiffLockWait, accountPathDBDiffRead, accountPathDBDiskLockWait, accountPathDBDiskBufferRead, accountPathDBDiskCacheRead, accountPathDBDiskRead, accountPathDBDiskCacheWrite, accountPathDBDecode := r.accountStats.pathDBAccountReadValues()
+	accountPathDBFallbacks, accountPathDBTreeLockWait, accountPathDBTreeLookup, accountPathDBDiffLockWait, accountPathDBDiffRead, accountPathDBDiskLockWait, accountPathDBDiskBufferRead, accountPathDBDiskCacheRead, accountPathDBDiskRead, accountPathDBDiskCacheWrite, accountPathDBDecode := r.accountStats.pathDBReadValues()
 	storageReads, storageHits, storageMisses, storageLateHits, storageErrors, storageElapsed, storageReadLockWait, storageStateRead, storageWriteLockWait := r.storageStats.values()
+	storagePathDBFallbacks, storagePathDBTreeLockWait, storagePathDBTreeLookup, storagePathDBDiffLockWait, storagePathDBDiffRead, storagePathDBDiskLockWait, storagePathDBDiskBufferRead, storagePathDBDiskCacheRead, storagePathDBDiskRead, storagePathDBDiskCacheWrite, storagePathDBDecode := r.storageStats.pathDBReadValues()
 	log.Info("Prefetched accessList",
 		"items", total,
 		"elapsed", common.PrettyDuration(time.Since(start)),
@@ -300,6 +312,17 @@ func (r *prefetchStateReader) prefetch() {
 		"storageReadLockWait", common.PrettyDuration(storageReadLockWait),
 		"storageStateRead", common.PrettyDuration(storageStateRead),
 		"storageWriteLockWait", common.PrettyDuration(storageWriteLockWait),
+		"storagePathDBFallbacks", storagePathDBFallbacks,
+		"storagePathDBTreeLockWait", common.PrettyDuration(storagePathDBTreeLockWait),
+		"storagePathDBTreeLookup", common.PrettyDuration(storagePathDBTreeLookup),
+		"storagePathDBDiffLockWait", common.PrettyDuration(storagePathDBDiffLockWait),
+		"storagePathDBDiffRead", common.PrettyDuration(storagePathDBDiffRead),
+		"storagePathDBDiskLockWait", common.PrettyDuration(storagePathDBDiskLockWait),
+		"storagePathDBDiskBufferRead", common.PrettyDuration(storagePathDBDiskBufferRead),
+		"storagePathDBDiskCacheRead", common.PrettyDuration(storagePathDBDiskCacheRead),
+		"storagePathDBDiskRead", common.PrettyDuration(storagePathDBDiskRead),
+		"storagePathDBDiskCacheWrite", common.PrettyDuration(storagePathDBDiskCacheWrite),
+		"storagePathDBDecode", common.PrettyDuration(storagePathDBDecode),
 	)
 }
 

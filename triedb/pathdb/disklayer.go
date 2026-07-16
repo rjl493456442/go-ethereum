@@ -273,9 +273,17 @@ func (dl *diskLayer) accountWithStats(hash common.Hash, depth int, stats *databa
 //
 // Note the returned account is not a copy, please don't modify it.
 func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([]byte, error) {
+	return dl.storageWithStats(accountHash, storageHash, depth, nil)
+}
+
+func (dl *diskLayer) storageWithStats(accountHash, storageHash common.Hash, depth int, stats *database.StorageReadStats) ([]byte, error) {
 	// Hold the lock, ensure the parent won't be changed during the
 	// state accessing.
+	start := time.Now()
 	dl.lock.RLock()
+	if stats != nil {
+		stats.DiskLockWait += time.Since(start)
+	}
 	defer dl.lock.RUnlock()
 
 	if dl.stale {
@@ -286,7 +294,11 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 	// it's impossible to mutate the buffer before tagging the layer as stale.
 	for _, buffer := range []*buffer{dl.buffer, dl.frozen} {
 		if buffer != nil {
+			start := time.Now()
 			if blob, found := buffer.storage(accountHash, storageHash); found {
+				if stats != nil {
+					stats.DiskBufferRead += time.Since(start)
+				}
 				dirtyStateHitMeter.Mark(1)
 				dirtyStateReadMeter.Mark(int64(len(blob)))
 				dirtyStateHitDepthHist.Update(int64(depth))
@@ -297,6 +309,9 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 					stateStorageExistMeter.Mark(1)
 				}
 				return blob, nil
+			}
+			if stats != nil {
+				stats.DiskBufferRead += time.Since(start)
 			}
 		}
 	}
@@ -311,7 +326,11 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 	}
 	// Try to retrieve the storage slot from the memory cache
 	if dl.states != nil {
+		start := time.Now()
 		if blob, found := dl.states.HasGet(nil, key); found {
+			if stats != nil {
+				stats.DiskCacheRead += time.Since(start)
+			}
 			cleanStateHitMeter.Mark(1)
 			cleanStateReadMeter.Mark(int64(len(blob)))
 
@@ -322,10 +341,17 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 			}
 			return blob, nil
 		}
+		if stats != nil {
+			stats.DiskCacheRead += time.Since(start)
+		}
 		cleanStateMissMeter.Mark(1)
 	}
 	// Try to retrieve the account from the disk
+	start = time.Now()
 	blob := rawdb.ReadStorageSnapshot(dl.db.diskdb, accountHash, storageHash)
+	if stats != nil {
+		stats.DiskRead += time.Since(start)
+	}
 
 	// Store the resolved data in the clean cache. The background buffer flusher
 	// may also write to the clean cache concurrently, but two writers cannot
@@ -333,7 +359,11 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 	// it will be found in the frozen buffer, eliminating the need to check the
 	// database.
 	if dl.states != nil {
+		start := time.Now()
 		dl.states.Set(key, blob)
+		if stats != nil {
+			stats.DiskCacheWrite += time.Since(start)
+		}
 		cleanStateWriteMeter.Mark(int64(len(blob)))
 	}
 	if len(blob) == 0 {

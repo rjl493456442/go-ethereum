@@ -21,11 +21,29 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/testrand"
+	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/triedb/database"
 )
+
+type storageStatsReader struct{}
+
+func (*storageStatsReader) Account(common.Hash) (*types.SlimAccount, error) {
+	return nil, nil
+}
+
+func (*storageStatsReader) Storage(common.Hash, common.Hash) ([]byte, error) {
+	return rlp.EncodeToBytes([]byte{0x42})
+}
+
+func (*storageStatsReader) StorageWithStats(common.Hash, common.Hash) ([]byte, error, database.StorageReadStats) {
+	value, err := rlp.EncodeToBytes([]byte{0x42})
+	return value, err, database.StorageReadStats{DiskRead: time.Nanosecond}
+}
 
 type countingStateReader struct {
 	accounts map[common.Address]int
@@ -141,6 +159,22 @@ func TestPrefetchReader(t *testing.T) {
 		if err := r.validate(s.total); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestPrefetchStoragePathDBStats(t *testing.T) {
+	flat := newFlatReader(&storageStatsReader{})
+	multi, err := newMultiStateReader(flat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := newStateReaderWithCache(newReader(nil, multi))
+	_, err, stats := cache.storageWithStats(common.Address{}, common.Hash{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.storageRead.pathdb.DiskRead != time.Nanosecond {
+		t.Fatalf("storage disk read = %v, want %v", stats.storageRead.pathdb.DiskRead, time.Nanosecond)
 	}
 }
 

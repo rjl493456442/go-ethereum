@@ -144,24 +144,40 @@ func (r *flatReader) accountWithStats(addr common.Address) (*types.StateAccount,
 //
 // The returned storage slot might be empty if it's not existent.
 func (r *flatReader) Storage(addr common.Address, key common.Hash) (common.Hash, error) {
+	value, err, _ := r.storageWithStats(addr, key)
+	return value, err
+}
+
+func (r *flatReader) storageWithStats(addr common.Address, key common.Hash) (common.Hash, error, database.StorageReadStats) {
 	addrHash := crypto.Keccak256Hash(addr[:])
 	slotHash := crypto.Keccak256Hash(key[:])
-	ret, err := r.reader.Storage(addrHash, slotHash)
+	var (
+		ret   []byte
+		err   error
+		stats database.StorageReadStats
+	)
+	if reader, ok := r.reader.(database.StateReaderStorageStater); ok {
+		ret, err, stats = reader.StorageWithStats(addrHash, slotHash)
+	} else {
+		ret, err = r.reader.Storage(addrHash, slotHash)
+	}
 	if err != nil {
-		return common.Hash{}, err
+		return common.Hash{}, err, stats
 	}
 	if len(ret) == 0 {
-		return common.Hash{}, nil
+		return common.Hash{}, nil, stats
 	}
 	// Perform the rlp-decode as the slot value is RLP-encoded in the state
 	// snapshot.
+	start := time.Now()
 	_, content, _, err := rlp.Split(ret)
+	stats.Decode += time.Since(start)
 	if err != nil {
-		return common.Hash{}, err
+		return common.Hash{}, err, stats
 	}
 	var value common.Hash
 	value.SetBytes(content)
-	return value, nil
+	return value, nil, stats
 }
 
 // mptTrieReader implements the StateReader interface, providing functions to
@@ -378,6 +394,24 @@ type accountReadStats struct {
 	pathdb        database.AccountReadStats
 }
 
+type storageReadStats struct {
+	pathdb database.StorageReadStats
+}
+
+func (s *storageReadStats) addPathDB(stats database.StorageReadStats) {
+	s.pathdb.TreeLockWait += stats.TreeLockWait
+	s.pathdb.TreeLookup += stats.TreeLookup
+	s.pathdb.DiffLockWait += stats.DiffLockWait
+	s.pathdb.DiffRead += stats.DiffRead
+	s.pathdb.DiskLockWait += stats.DiskLockWait
+	s.pathdb.DiskBufferRead += stats.DiskBufferRead
+	s.pathdb.DiskCacheRead += stats.DiskCacheRead
+	s.pathdb.DiskRead += stats.DiskRead
+	s.pathdb.DiskCacheWrite += stats.DiskCacheWrite
+	s.pathdb.Decode += stats.Decode
+	s.pathdb.Fallbacks += stats.Fallbacks
+}
+
 func (s *accountReadStats) addPathDB(stats database.AccountReadStats) {
 	s.pathdb.TreeLockWait += stats.TreeLockWait
 	s.pathdb.TreeLookup += stats.TreeLookup
@@ -463,15 +497,32 @@ func (r *multiStateReader) accountWithStats(addr common.Address) (*types.StateAc
 // - Returns an error only if an unexpected issue occurs
 // - The returned storage slot is safe to modify after the call
 func (r *multiStateReader) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
+	value, err, _ := r.storageWithStats(addr, slot)
+	return value, err
+}
+
+func (r *multiStateReader) storageWithStats(addr common.Address, slot common.Hash) (common.Hash, error, storageReadStats) {
 	var errs []error
+	var stats storageReadStats
 	for _, reader := range r.readers {
-		slot, err := reader.Storage(addr, slot)
+		var (
+			value common.Hash
+			err   error
+		)
+		switch reader := reader.(type) {
+		case *flatReader:
+			var pathStats database.StorageReadStats
+			value, err, pathStats = reader.storageWithStats(addr, slot)
+			stats.addPathDB(pathStats)
+		default:
+			value, err = reader.Storage(addr, slot)
+		}
 		if err == nil {
-			return slot, nil
+			return value, nil, stats
 		}
 		errs = append(errs, err)
 	}
-	return common.Hash{}, errors.Join(errs...)
+	return common.Hash{}, errors.Join(errs...), stats
 }
 
 // stateReaderWithCache is a wrapper around StateReader that maintains additional
@@ -510,6 +561,7 @@ type stateReaderCallStats struct {
 	stateRead     time.Duration
 	writeLockWait time.Duration
 	accountRead   accountReadStats
+	storageRead   storageReadStats
 }
 
 type stateReaderWithCacheStater interface {
@@ -519,6 +571,10 @@ type stateReaderWithCacheStater interface {
 
 type accountReadStater interface {
 	accountWithStats(common.Address) (*types.StateAccount, error, accountReadStats)
+}
+
+type storageReadStater interface {
+	storageWithStats(common.Address, common.Hash) (common.Hash, error, storageReadStats)
 }
 
 // storageBucketIndex shards storage entries by both address and slot. This
@@ -629,7 +685,12 @@ func (r *stateReaderWithCache) storageWithStats(addr common.Address, slot common
 	}
 	// Try to resolve the requested storage slot from the underlying reader
 	start = time.Now()
-	value, err := r.StateReader.Storage(addr, slot)
+	var err error
+	if reader, ok := r.StateReader.(storageReadStater); ok {
+		value, err, stats.storageRead = reader.storageWithStats(addr, slot)
+	} else {
+		value, err = r.StateReader.Storage(addr, slot)
+	}
 	stats.stateRead = time.Since(start)
 	if err != nil {
 		return common.Hash{}, err, stats
@@ -749,6 +810,14 @@ func (r *reader) accountWithStats(addr common.Address) (*types.StateAccount, err
 		otherReads: 1,
 		otherRead:  time.Since(start),
 	}
+}
+
+func (r *reader) storageWithStats(addr common.Address, slot common.Hash) (common.Hash, error, storageReadStats) {
+	if reader, ok := r.StateReader.(storageReadStater); ok {
+		return reader.storageWithStats(addr, slot)
+	}
+	value, err := r.StateReader.Storage(addr, slot)
+	return value, err, storageReadStats{}
 }
 
 func (r *reader) accountWithCacheStats(addr common.Address) (*types.StateAccount, error, stateReaderCallStats) {

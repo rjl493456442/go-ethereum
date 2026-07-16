@@ -80,10 +80,32 @@ type AccountReadStats struct {
 	Fallbacks      int
 }
 
+// StorageReadStats reports the time spent in the path-based state reader while
+// resolving a single storage slot.
+type StorageReadStats struct {
+	TreeLockWait   time.Duration
+	TreeLookup     time.Duration
+	DiffLockWait   time.Duration
+	DiffRead       time.Duration
+	DiskLockWait   time.Duration
+	DiskBufferRead time.Duration
+	DiskCacheRead  time.Duration
+	DiskRead       time.Duration
+	DiskCacheWrite time.Duration
+	Decode         time.Duration
+	Fallbacks      int
+}
+
 // StateReaderAccountStater is implemented by state readers that can report a
 // per-account access breakdown.
 type StateReaderAccountStater interface {
 	AccountWithStats(hash common.Hash) (*types.SlimAccount, error, AccountReadStats)
+}
+
+// StateReaderStorageStater is implemented by state readers that can report a
+// per-storage access breakdown.
+type StateReaderStorageStater interface {
+	StorageWithStats(accountHash, storageHash common.Hash) ([]byte, error, StorageReadStats)
 }
 
 // StateDatabase wraps the methods of a backing state store.

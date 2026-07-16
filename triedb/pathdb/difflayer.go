@@ -148,12 +148,24 @@ func (dl *diffLayer) accountWithStats(hash common.Hash, depth int, stats *databa
 //
 // Note the returned storage slot is not a copy, please don't modify it.
 func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([]byte, error) {
+	return dl.storageWithStats(accountHash, storageHash, depth, nil)
+}
+
+func (dl *diffLayer) storageWithStats(accountHash, storageHash common.Hash, depth int, stats *database.StorageReadStats) ([]byte, error) {
 	// Hold the lock, ensure the parent won't be changed during the
 	// state accessing.
+	start := time.Now()
 	dl.lock.RLock()
+	if stats != nil {
+		stats.DiffLockWait += time.Since(start)
+	}
 	defer dl.lock.RUnlock()
 
+	start = time.Now()
 	if blob, found := dl.states.storage(accountHash, storageHash); found {
+		if stats != nil {
+			stats.DiffRead += time.Since(start)
+		}
 		dirtyStateHitMeter.Mark(1)
 		dirtyStateHitDepthHist.Update(int64(depth))
 		dirtyStateReadMeter.Mark(int64(len(blob)))
@@ -165,7 +177,13 @@ func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 		}
 		return blob, nil
 	}
+	if stats != nil {
+		stats.DiffRead += time.Since(start)
+	}
 	// storage slot is unknown to this layer, resolve from parent
+	if reader, ok := dl.parent.(storageReadStater); ok {
+		return reader.storageWithStats(accountHash, storageHash, depth+1, stats)
+	}
 	return dl.parent.storage(accountHash, storageHash, depth+1)
 }
 

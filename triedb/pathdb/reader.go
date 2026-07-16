@@ -64,6 +64,10 @@ type accountReadStater interface {
 	accountWithStats(common.Hash, int, *database.AccountReadStats) ([]byte, error)
 }
 
+type storageReadStater interface {
+	storageWithStats(common.Hash, common.Hash, int, *database.StorageReadStats) ([]byte, error)
+}
+
 // Node implements database.NodeReader interface, retrieving the node with specified
 // node info. Don't modify the returned byte slice since it's not deep-copied
 // and still be referenced by database.
@@ -178,7 +182,11 @@ func (r *reader) AccountWithStats(hash common.Hash) (*types.SlimAccount, error, 
 // - the returned storage data is not a copy, please don't modify it
 // - no error will be returned if the requested slot is not found in database
 func (r *reader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
-	l, err := r.db.tree.lookupStorage(accountHash, storageHash, r.state)
+	return r.storage(accountHash, storageHash, nil)
+}
+
+func (r *reader) storage(accountHash, storageHash common.Hash, stats *database.StorageReadStats) ([]byte, error) {
+	l, err := r.db.tree.lookupStorageWithStats(accountHash, storageHash, r.state, stats)
 	if err != nil {
 		return nil, err
 	}
@@ -190,11 +198,30 @@ func (r *reader) Storage(accountHash, storageHash common.Hash) ([]byte, error) {
 	// This fallback mechanism is essential, because the traversal starts from
 	// the entry point layer and goes down, the staleness of the disk layer does
 	// not affect the result unless the entry point layer is also stale.
-	blob, err := l.storage(accountHash, storageHash, 0)
+	var blob []byte
+	if reader, ok := l.(storageReadStater); ok {
+		blob, err = reader.storageWithStats(accountHash, storageHash, 0, stats)
+	} else {
+		blob, err = l.storage(accountHash, storageHash, 0)
+	}
 	if errors.Is(err, errSnapshotStale) {
+		if stats != nil {
+			stats.Fallbacks++
+		}
+		if reader, ok := r.layer.(storageReadStater); ok {
+			return reader.storageWithStats(accountHash, storageHash, 0, stats)
+		}
 		return r.layer.storage(accountHash, storageHash, 0)
 	}
 	return blob, err
+}
+
+// StorageWithStats retrieves storage and reports where the path-based state
+// reader spent time resolving it.
+func (r *reader) StorageWithStats(accountHash, storageHash common.Hash) ([]byte, error, database.StorageReadStats) {
+	var stats database.StorageReadStats
+	blob, err := r.storage(accountHash, storageHash, &stats)
+	return blob, err, stats
 }
 
 // NodeReader retrieves a layer belonging to the given state root.
