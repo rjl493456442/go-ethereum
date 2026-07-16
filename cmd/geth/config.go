@@ -313,6 +313,7 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 		srv := rpc.NewServer()
 		srv.RegisterName("engine", catalyst.NewConsensusAPI(eth))
 		blsyncer := blsync.NewClient(utils.MakeBeaconLightConfig(ctx))
+		blsyncer.SetAmsterdamTime(eth.BlockChain().Config().AmsterdamTime)
 		blsyncer.SetEngineRPC(rpc.DialInProc(srv))
 		stack.RegisterLifecycle(blsyncer)
 	} else {

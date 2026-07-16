@@ -43,10 +43,11 @@ var knownForks = []string{"GENESIS", "ALTAIR", "BELLATRIX", "CAPELLA", "DENEB", 
 // ClientConfig contains beacon light client configuration.
 type ClientConfig struct {
 	ChainConfig
-	Apis         []string
-	CustomHeader map[string]string
-	Threshold    int
-	NoFilter     bool
+	Apis          []string
+	CustomHeader  map[string]string
+	Threshold     int
+	NoFilter      bool
+	AmsterdamTime *uint64 // Execution-layer Amsterdam activation time, nil if not scheduled
 }
 
 // ChainConfig contains the beacon chain configuration.

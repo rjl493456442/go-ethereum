@@ -101,30 +101,17 @@ func (ec *engineClient) callNewPayload(fork string, event types.ChainHeadEvent) 
 	execData := engine.BlockToExecutableData(event.Block, nil, nil, nil).ExecutionPayload
 
 	var (
-		method string
+		method = ec.newPayloadMethod(fork, event.Block.Time())
 		params = []any{execData}
 	)
-	switch fork {
-	case "altair", "bellatrix":
-		method = "engine_newPayloadV1"
-	case "capella":
-		method = "engine_newPayloadV2"
-	case "deneb":
-		method = "engine_newPayloadV3"
+	switch method {
+	case "engine_newPayloadV1":
+	case "engine_newPayloadV2":
+	case "engine_newPayloadV3":
 		parentBeaconRoot := event.BeaconHead.ParentRoot
 		blobHashes := collectBlobHashes(event.Block)
 		params = append(params, blobHashes, parentBeaconRoot)
-	case "gloas":
-		method = "engine_newPayloadV5"
-		parentBeaconRoot := event.BeaconHead.ParentRoot
-		blobHashes := collectBlobHashes(event.Block)
-		hexRequests := make([]hexutil.Bytes, len(event.ExecRequests))
-		for i := range event.ExecRequests {
-			hexRequests[i] = hexutil.Bytes(event.ExecRequests[i])
-		}
-		params = append(params, blobHashes, parentBeaconRoot, hexRequests)
-	default: // electra, fulu and BPO forks
-		method = "engine_newPayloadV4"
+	case "engine_newPayloadV4", "engine_newPayloadV5":
 		parentBeaconRoot := event.BeaconHead.ParentRoot
 		blobHashes := collectBlobHashes(event.Block)
 		hexRequests := make([]hexutil.Bytes, len(event.ExecRequests))
@@ -139,6 +126,22 @@ func (ec *engineClient) callNewPayload(fork string, event types.ChainHeadEvent) 
 	var resp engine.PayloadStatusV1
 	err := ec.rpc.CallContext(ctx, &resp, method, params...)
 	return resp.Status, err
+}
+
+func (ec *engineClient) newPayloadMethod(fork string, timestamp uint64) string {
+	if ec.config.AmsterdamTime != nil && timestamp >= *ec.config.AmsterdamTime {
+		return "engine_newPayloadV5"
+	}
+	switch fork {
+	case "altair", "bellatrix":
+		return "engine_newPayloadV1"
+	case "capella":
+		return "engine_newPayloadV2"
+	case "deneb":
+		return "engine_newPayloadV3"
+	default: // electra, fulu and BPO forks
+		return "engine_newPayloadV4"
+	}
 }
 
 func collectBlobHashes(b *ctypes.Block) []common.Hash {

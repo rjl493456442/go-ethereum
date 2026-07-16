@@ -83,6 +83,12 @@ func (c *Client) SetEngineRPC(engine *rpc.Client) {
 	c.engineRPC = engine
 }
 
+// SetAmsterdamTime sets the execution-layer Amsterdam activation time used to
+// select the Engine API payload version.
+func (c *Client) SetAmsterdamTime(timestamp *uint64) {
+	c.config.AmsterdamTime = timestamp
+}
+
 func (c *Client) Start() error {
 	headCh := make(chan types.ChainHeadEvent, 16)
 	c.chainHeadSub = c.blockSync.SubscribeChainHead(headCh)

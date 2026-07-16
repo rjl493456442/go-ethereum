@@ -419,6 +419,11 @@ var (
 		Usage:    "Path to a JWT secret to use for target engine API endpoint",
 		Category: flags.BeaconCategory,
 	}
+	BlsyncAmsterdamFlag = &cli.Uint64Flag{
+		Name:     "blsync.amsterdam",
+		Usage:    "Execution-layer Amsterdam fork timestamp for Engine API version selection",
+		Category: flags.BeaconCategory,
+	}
 	// Transaction pool settings
 	TxPoolLocalsFlag = &cli.StringFlag{
 		Name:     "txpool.locals",
@@ -2172,6 +2177,10 @@ func MakeBeaconLightConfig(ctx *cli.Context) bparams.ClientConfig {
 	}
 	config.Threshold = ctx.Int(BeaconThresholdFlag.Name)
 	config.NoFilter = ctx.Bool(BeaconNoFilterFlag.Name)
+	if ctx.IsSet(BlsyncAmsterdamFlag.Name) {
+		timestamp := ctx.Uint64(BlsyncAmsterdamFlag.Name)
+		config.AmsterdamTime = &timestamp
+	}
 	return config
 }
 
