@@ -260,7 +260,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 			"storage-hits", stats.StateStats.StorageCacheHit, "storage-misses", stats.StateStats.StorageCacheMiss, "storage-hitrate", stats.StateStats.StorageCacheHitRate(),
 		)
 	}
-	log.Info("Parallel block execution", msg...)
+	log.Debug("Parallel block execution", msg...)
 
 	return &ProcessResult{
 		Receipts: receipts,

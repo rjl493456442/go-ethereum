@@ -272,7 +272,7 @@ func (r *prefetchStateReader) prefetch() {
 	accountPathDBFallbacks, accountPathDBTreeLockWait, accountPathDBTreeLookup, accountPathDBDiffLockWait, accountPathDBDiffRead, accountPathDBDiskLockWait, accountPathDBDiskBufferRead, accountPathDBDiskCacheRead, accountPathDBDiskRead, accountPathDBDiskCacheWrite, accountPathDBDecode := r.accountStats.pathDBReadValues()
 	storageReads, storageHits, storageMisses, storageLateHits, storageErrors, storageElapsed, storageReadLockWait, storageStateRead, storageWriteLockWait := r.storageStats.values()
 	storagePathDBFallbacks, storagePathDBTreeLockWait, storagePathDBTreeLookup, storagePathDBDiffLockWait, storagePathDBDiffRead, storagePathDBDiskLockWait, storagePathDBDiskBufferRead, storagePathDBDiskCacheRead, storagePathDBDiskRead, storagePathDBDiskCacheWrite, storagePathDBDecode := r.storageStats.pathDBReadValues()
-	log.Info("Prefetched accessList",
+	log.Debug("Prefetched accessList",
 		"items", total,
 		"elapsed", common.PrettyDuration(time.Since(start)),
 		"accountReads", accountReads,
