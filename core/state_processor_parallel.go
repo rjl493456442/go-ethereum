@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"os"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +37,13 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"golang.org/x/sync/errgroup"
 )
+
+const disableParallelExecutionEnv = "GETH_DISABLE_PARALLEL_EXECUTION"
+
+func parallelExecutionDisabled() bool {
+	disabled, _ := strconv.ParseBool(os.Getenv(disableParallelExecutionEnv))
+	return disabled
+}
 
 // Per-phase timers for BAL-driven parallel block execution.
 var (
@@ -51,6 +60,9 @@ var (
 // supportsParallelExecution reports whether the block can be executed using the
 // BAL-driven parallel processor.
 func supportsParallelExecution(accessList *bal.BlockAccessList, config *params.ChainConfig, number *big.Int, time uint64, wantWitness bool, wantTrace bool) bool {
+	if parallelExecutionDisabled() {
+		return false
+	}
 	// Disable the parallel execution if either the Amsterdam hasn't been
 	// activated, or the accessList is not accessible.
 	if accessList == nil || !config.IsAmsterdam(number, time) {
