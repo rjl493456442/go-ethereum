@@ -2243,8 +2243,10 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 			}
 			defer witness.ReportMetrics(block.NumberU64())
 		}
-		// In BAL-driven parallel execution, state hashing is performed independently
-		// with the transaction execution, disable the trie prefetcher explicitly.
+		// In BAL-driven parallel execution, state hashing runs independently of
+		// transaction execution and warms its own trie nodes directly from the
+		// block access list (see StateDB.ApplyBlockAccessList), so the
+		// execution-driven prefetcher is not used.
 		if !bc.useBALExecution(block, witness != nil) {
 			statedb.StartPrefetcher("chain", witness)
 			defer statedb.StopPrefetcher()
