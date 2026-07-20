@@ -18,7 +18,6 @@ package state
 
 import (
 	"fmt"
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -33,7 +32,9 @@ import (
 // ApplyBlockAccessList installs the post-state recorded in a block access list
 // directly into the state, without executing any transactions.
 func (s *StateDB) ApplyBlockAccessList(list *bal.BlockAccessList) error {
-	return s.applyBlockAccessList(list, runtime.GOMAXPROCS(0))
+	// DIAGNOSTIC: forced single-threaded to isolate a concurrency-exposed BAL
+	// mismatch. Restore runtime.GOMAXPROCS(0) once diagnosed.
+	return s.applyBlockAccessList(list, 1)
 }
 
 type balSlot struct {

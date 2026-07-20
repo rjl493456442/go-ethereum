@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -193,6 +194,13 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 		enc := res.Bal.ToEncodingObj()
 		local, remote := enc.Hash(), *block.Header().BlockAccessListHash
 		if local != remote {
+			// DIAGNOSTIC: dump both access lists so the divergent account/field is
+			// visible. The exported block carries the committed BAL, so we can diff
+			// the reconstructed one against it rather than only comparing hashes.
+			log.Error(fmt.Sprintf("BAL mismatch at block %d — reconstructed (local):\n%s", block.NumberU64(), enc.PrettyPrint()))
+			if committed := block.AccessList(); committed != nil {
+				log.Error(fmt.Sprintf("BAL mismatch at block %d — committed (remote):\n%s", block.NumberU64(), committed.PrettyPrint()))
+			}
 			return fmt.Errorf("access list hash mismatch, local: %x, remote: %x", local, remote)
 		}
 		if err := enc.Validate(block.GasLimit(), len(block.Transactions())); err != nil {
