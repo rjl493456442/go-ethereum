@@ -2318,6 +2318,11 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 	}
 	vtime := time.Since(vstart)
 
+	// Fold the surrounding ProcessBlock phases (state/reader setup before Process,
+	// and ValidateState after it) into the parallel-execution summary, so the
+	// serial per-block overhead beyond Process itself is visible.
+	parallelStats.addProcessBlock(pstart.Sub(startTime), vtime)
+
 	// If witnesses was generated and stateless self-validation requested, do
 	// that now. Self validation should *never* run in production, it's more of
 	// a tight integration to enable running *all* consensus tests through the
