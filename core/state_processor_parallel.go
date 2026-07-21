@@ -37,14 +37,23 @@ import (
 
 // Per-phase timers for BAL-driven parallel block execution.
 var (
-	parallelSystemExecTimer       = metrics.NewRegisteredResettingTimer("chain/execution/parallel/system", nil)
-	parallelTxExecTimer           = metrics.NewRegisteredResettingTimer("chain/execution/parallel/transactions", nil)
-	parallelStateHashTimer        = metrics.NewRegisteredResettingTimer("chain/execution/parallel/statehash", nil)
-	parallelTotalTimer            = metrics.NewRegisteredResettingTimer("chain/execution/parallel/total", nil)
+	parallelSystemExecTimer = metrics.NewRegisteredResettingTimer("chain/execution/parallel/system", nil)
+	parallelTxExecTimer     = metrics.NewRegisteredResettingTimer("chain/execution/parallel/transactions", nil)
+	parallelStateApplyTimer = metrics.NewRegisteredResettingTimer("chain/execution/parallel/stateapply", nil)
+	parallelStateHashTimer  = metrics.NewRegisteredResettingTimer("chain/execution/parallel/statehash", nil)
+	parallelGatherTimer     = metrics.NewRegisteredResettingTimer("chain/execution/parallel/gather", nil)
+	parallelTotalTimer      = metrics.NewRegisteredResettingTimer("chain/execution/parallel/total", nil)
+
+	parallelTxWorkTimer = metrics.NewRegisteredResettingTimer("chain/execution/parallel/execution/sum", nil)
+	parallelTxMaxTimer  = metrics.NewRegisteredResettingTimer("chain/execution/parallel/execution/max", nil)
+	parallelEfficiency  = metrics.NewRegisteredGaugeFloat64("chain/execution/parallel/execution/efficiency", nil)
+
 	parallelAccountCacheHitMeter  = metrics.NewRegisteredMeter("chain/execution/parallel/reads/account/cache/hit", nil)
 	parallelAccountCacheMissMeter = metrics.NewRegisteredMeter("chain/execution/parallel/reads/account/cache/miss", nil)
 	parallelStorageCacheHitMeter  = metrics.NewRegisteredMeter("chain/execution/parallel/reads/storage/cache/hit", nil)
 	parallelStorageCacheMissMeter = metrics.NewRegisteredMeter("chain/execution/parallel/reads/storage/cache/miss", nil)
+	parallelAccountMissTimeTimer  = metrics.NewRegisteredResettingTimer("chain/execution/parallel/reads/account/miss/time", nil)
+	parallelStorageMissTimeTimer  = metrics.NewRegisteredResettingTimer("chain/execution/parallel/reads/storage/miss/time", nil)
 )
 
 // supportsParallelExecution reports whether the block can be executed using the
@@ -167,19 +176,18 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	// own ephemeral state instance, whose reads are served from the block-level
 	// access list overlaid on the parent state.
 	txStart := time.Now()
-	results, err := p.executeTransactionsParallel(block, parentRoot, db, base, lookup, context, signer, jumpDestCache, cfg)
+	results, profile, err := p.executeTransactionsParallel(block, parentRoot, db, base, lookup, context, signer, jumpDestCache, cfg)
 	if err != nil {
 		return nil, err
 	}
 	txExec = time.Since(txStart)
 
-	// Gather the per-transaction results in block order and charge their gas into
-	// a single block-level gas pool, exactly as sequential execution does.
 	var (
-		receipts = make(types.Receipts, 0, len(txs))
-		allLogs  []*types.Log
-		gp       = NewGasPool(block.GasLimit())
-		logIndex uint
+		gatherStart = time.Now()
+		receipts    = make(types.Receipts, 0, len(txs))
+		allLogs     []*types.Log
+		gp          = NewGasPool(block.GasLimit())
+		logIndex    uint
 	)
 	for i := range txs {
 		receipt := results[i].receipt
@@ -200,6 +208,8 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		allLogs = append(allLogs, receipt.Logs...)
 		blockAccessList.Merge(results[i].accessList)
 	}
+	gather := time.Since(gatherStart)
+
 	// Post-execution system calls against an ephemeral access-list state at
 	// index n+1.
 	postStart := time.Now()
@@ -224,13 +234,31 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	if err := wg.Wait(); err != nil {
 		return nil, err
 	}
+
+	// Publish the execution statistics
 	parallelSystemExecTimer.Update(systemExec)
 	parallelTxExecTimer.Update(txExec)
+	parallelStateApplyTimer.Update(stateApply)
 	parallelStateHashTimer.Update(stateHash)
+	parallelGatherTimer.Update(gather)
 	parallelTotalTimer.UpdateSince(start)
+	parallelTxWorkTimer.Update(profile.totalTime)
+	parallelTxMaxTimer.Update(profile.maxTime)
+
+	var efficiency float64
+	if txExec > 0 {
+		efficiency = float64(profile.totalTime) / float64(txExec)
+	}
+	if efficiency > 0 {
+		parallelEfficiency.Update(efficiency)
+	}
+	reportParallelReadStats(header.Number, profile.reads)
 
 	log.Debug("Parallel block execution", "number", header.Number, "txs", len(txs),
 		"system", common.PrettyDuration(systemExec), "txexec", common.PrettyDuration(txExec),
+		"txsum", common.PrettyDuration(profile.totalTime), "txmax", common.PrettyDuration(profile.maxTime),
+		"parallelism", fmt.Sprintf("%.2fx/%d", efficiency, profile.workers),
+		"gather", common.PrettyDuration(gather),
 		"stateapply", common.PrettyDuration(stateApply), "statehash", common.PrettyDuration(stateHash),
 		"elapsed", common.PrettyDuration(time.Since(start)),
 	)
@@ -250,10 +278,19 @@ func newAccessListState(db state.Database, parentRoot common.Hash, base state.Re
 	return state.NewWithReader(parentRoot, db, state.NewReaderWithBlockLevelAccessList(base, lookup, index))
 }
 
+// parallelProfile captures per-block instrumentation for BAL-driven parallel
+// execution.
+type parallelProfile struct {
+	workers   int                    // number of worker goroutines used
+	totalTime time.Duration          // summed per-tx execution time (serial-equivalent work)
+	maxTime   time.Duration          // slowest single transaction
+	reads     state.StateReaderStats // shared-cache read statistics (hits/misses/miss-time)
+}
+
 // executeTransactionsParallel applies all transactions to independent,
 // access-list-backed state instances using a pool of workers, and returns
 // the per-transaction results in block order.
-func (p *StateProcessor) executeTransactionsParallel(block *types.Block, parentRoot common.Hash, db state.Database, base state.Reader, lookup *bal.Lookup, context vm.BlockContext, signer types.Signer, jumpDestCache vm.JumpDestCache, cfg vm.Config) ([]txExecResult, error) {
+func (p *StateProcessor) executeTransactionsParallel(block *types.Block, parentRoot common.Hash, db state.Database, base state.Reader, lookup *bal.Lookup, context vm.BlockContext, signer types.Signer, jumpDestCache vm.JumpDestCache, cfg vm.Config) ([]txExecResult, parallelProfile, error) {
 	var (
 		config      = p.chainConfig()
 		header      = block.Header()
@@ -267,8 +304,10 @@ func (p *StateProcessor) executeTransactionsParallel(block *types.Block, parentR
 		workers = len(txs)
 	}
 	var (
-		cursor atomic.Int64
-		group  errgroup.Group
+		cursor    atomic.Int64
+		group     errgroup.Group
+		totalTime atomic.Int64
+		maxTime   atomic.Int64
 	)
 	for w := 0; w < workers; w++ {
 		group.Go(func() error {
@@ -301,9 +340,19 @@ func (p *StateProcessor) executeTransactionsParallel(block *types.Block, parentR
 				// A transaction-local gas pool, sized to the transaction's own gas
 				// limit: enough to let the state transition run to completion.
 				gp := NewGasPool(msg.GasLimit)
+				txStart := time.Now()
 				receipt, accessList, err := ApplyTransactionWithEVM(msg, gp, sdb, blockNumber, blockHash, context.Time, tx, evm)
 				if err != nil {
 					return fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+				}
+				elapsed := int64(time.Since(txStart))
+				totalTime.Add(elapsed)
+
+				for { // lock-free max
+					cur := maxTime.Load()
+					if elapsed <= cur || maxTime.CompareAndSwap(cur, elapsed) {
+						break
+					}
 				}
 				results[i] = txExecResult{
 					receipt:    receipt,
@@ -315,36 +364,43 @@ func (p *StateProcessor) executeTransactionsParallel(block *types.Block, parentR
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return nil, err
+		return nil, parallelProfile{}, err
 	}
-	reportParallelReadStats(block, base)
-	return results, nil
+	profile := parallelProfile{
+		workers:   workers,
+		totalTime: time.Duration(totalTime.Load()),
+		maxTime:   time.Duration(maxTime.Load()),
+		reads:     stateReadStats(base),
+	}
+	return results, profile, nil
 }
 
-// reportParallelReadStats reports the state read statistics. TODO(rjl) integrate
-// it into blockchain stats.
-func reportParallelReadStats(block *types.Block, reader state.Reader) {
+// stateReadStats extracts the shared-cache read statistics from the base reader,
+// returning the zero value if the reader does not track them.
+func stateReadStats(reader state.Reader) state.StateReaderStats {
 	stater, ok := reader.(state.ReaderStater)
 	if !ok {
-		return
+		return state.StateReaderStats{}
 	}
-	var (
-		stats       = stater.GetStats().StateStats
-		accountHit  = stats.AccountCacheHit
-		accountMiss = stats.AccountCacheMiss
-		storageHit  = stats.StorageCacheHit
-		storageMiss = stats.StorageCacheMiss
-	)
-	parallelAccountCacheHitMeter.Mark(accountHit)
-	parallelAccountCacheMissMeter.Mark(accountMiss)
-	parallelStorageCacheHitMeter.Mark(storageHit)
-	parallelStorageCacheMissMeter.Mark(storageMiss)
+	return stater.GetStats().StateStats
+}
 
-	log.Debug("Parallel execution read statistics", "number", block.Number(),
-		"account.hit", accountHit, "account.miss", accountMiss,
-		"account.hitrate", stats.AccountCacheHitRate(),
-		"storage.hit", storageHit, "storage.miss", storageMiss,
-		"storage.hitrate", stats.StorageCacheHitRate())
+// reportParallelReadStats publishes the shared-cache read statistics to the
+// metrics registry and logs a summary. TODO(rjl) integrate it into blockchain
+// stats.
+func reportParallelReadStats(number *big.Int, stats state.StateReaderStats) {
+	parallelAccountCacheHitMeter.Mark(stats.AccountCacheHit)
+	parallelAccountCacheMissMeter.Mark(stats.AccountCacheMiss)
+	parallelStorageCacheHitMeter.Mark(stats.StorageCacheHit)
+	parallelStorageCacheMissMeter.Mark(stats.StorageCacheMiss)
+	parallelAccountMissTimeTimer.Update(stats.AccountMissTime)
+	parallelStorageMissTimeTimer.Update(stats.StorageMissTime)
+
+	log.Debug("Parallel execution read statistics", "number", number,
+		"account.hit", stats.AccountCacheHit, "account.miss", stats.AccountCacheMiss,
+		"account.hitrate", stats.AccountCacheHitRate(), "account.misstime", common.PrettyDuration(stats.AccountMissTime),
+		"storage.hit", stats.StorageCacheHit, "storage.miss", stats.StorageCacheMiss,
+		"storage.hitrate", stats.StorageCacheHitRate(), "storage.misstime", common.PrettyDuration(stats.StorageMissTime))
 }
 
 // prefetchHint returns a set of storage slots alongside their account address

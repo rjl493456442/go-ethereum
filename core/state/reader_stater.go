@@ -16,6 +16,8 @@
 
 package state
 
+import "time"
+
 // ContractCodeReaderStats aggregates statistics for the contract code reader.
 type ContractCodeReaderStats struct {
 	CacheHit       int64 // Number of cache hits
@@ -41,10 +43,12 @@ type ContractCodeReaderStater interface {
 
 // StateReaderStats aggregates statistics for the state reader.
 type StateReaderStats struct {
-	AccountCacheHit  int64 // Number of account cache hits
-	AccountCacheMiss int64 // Number of account cache misses
-	StorageCacheHit  int64 // Number of storage cache hits
-	StorageCacheMiss int64 // Number of storage cache misses
+	AccountCacheHit  int64         // Number of account cache hits
+	AccountCacheMiss int64         // Number of account cache misses
+	StorageCacheHit  int64         // Number of storage cache hits
+	StorageCacheMiss int64         // Number of storage cache misses
+	AccountMissTime  time.Duration // Accumulated wall-clock time spent resolving accounts
+	StorageMissTime  time.Duration // Accumulated wall-clock time spent resolving storages
 }
 
 // AccountCacheHitRate returns the cache hit rate of account requests in percentage.

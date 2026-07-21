@@ -20,6 +20,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/overlay"
@@ -517,6 +518,9 @@ type stateReaderWithStats struct {
 	accountCacheMiss atomic.Int64
 	storageCacheHit  atomic.Int64
 	storageCacheMiss atomic.Int64
+
+	accountMissTime atomic.Int64 // Accumulated wall-clock time spent on the miss accounts
+	storageMissTime atomic.Int64 // Accumulated wall-clock time spent on the miss storages
 }
 
 // newReaderWithStats constructs the state reader with additional statistics tracked.
@@ -531,6 +535,7 @@ func newStateReaderWithStats(sr *stateReaderWithCache) *stateReaderWithStats {
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount, error) {
+	start := time.Now()
 	account, incache, err := r.stateReaderWithCache.account(addr)
 	if err != nil {
 		return nil, err
@@ -539,6 +544,7 @@ func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount
 		r.accountCacheHit.Add(1)
 	} else {
 		r.accountCacheMiss.Add(1)
+		r.accountMissTime.Add(int64(time.Since(start)))
 	}
 	return account, nil
 }
@@ -549,6 +555,7 @@ func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithStats) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
+	start := time.Now()
 	value, incache, err := r.stateReaderWithCache.storage(addr, slot)
 	if err != nil {
 		return common.Hash{}, err
@@ -557,6 +564,7 @@ func (r *stateReaderWithStats) Storage(addr common.Address, slot common.Hash) (c
 		r.storageCacheHit.Add(1)
 	} else {
 		r.storageCacheMiss.Add(1)
+		r.storageMissTime.Add(int64(time.Since(start)))
 	}
 	return value, nil
 }
@@ -569,6 +577,8 @@ func (r *stateReaderWithStats) GetStateStats() StateReaderStats {
 		AccountCacheMiss: r.accountCacheMiss.Load(),
 		StorageCacheHit:  r.storageCacheHit.Load(),
 		StorageCacheMiss: r.storageCacheMiss.Load(),
+		AccountMissTime:  time.Duration(r.accountMissTime.Load()),
+		StorageMissTime:  time.Duration(r.storageMissTime.Load()),
 	}
 }
 
