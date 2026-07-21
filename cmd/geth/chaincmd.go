@@ -412,6 +412,13 @@ func importChain(ctx *cli.Context) error {
 	chain.Stop()
 	fmt.Printf("Import done in %v.\n\n", time.Since(start))
 
+	// Print the BAL parallel-execution performance summary, if any block was
+	// executed through the parallel processor during this import.
+	if summary := core.ParallelExecutionSummary(); summary != "" {
+		fmt.Println(summary)
+		fmt.Println()
+	}
+
 	// Output pre-compaction stats mostly to see the import trashing
 	showDBStats(db)
 

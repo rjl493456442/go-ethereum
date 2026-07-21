@@ -253,6 +253,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		parallelEfficiency.Update(efficiency)
 	}
 	reportParallelReadStats(header.Number, profile.reads)
+	parallelStats.add(len(txs), txExec, systemExec, gather, stateApply, stateHash, time.Since(start), profile)
 
 	log.Debug("Parallel block execution", "number", header.Number, "txs", len(txs),
 		"system", common.PrettyDuration(systemExec), "txexec", common.PrettyDuration(txExec),
