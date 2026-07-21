@@ -53,20 +53,30 @@ type parallelAccumulator struct {
 	// Out-of-Process phases, recorded by the insertion/import pipeline. These are
 	// the serial per-block costs that run between Process calls and dominate the
 	// wall-clock when execution is already parallel.
-	setupNs      atomic.Int64 // summed setupExecutionState + prefetcher start time
-	validateNs   atomic.Int64 // summed ValidateState time (receipt root, BAL hash, state root)
-	commits      atomic.Int64 // number of blocks committed (also gates the summary)
-	commitNs     atomic.Int64 // summed statedb.Commit time (trie node collection + triedb insert)
-	blockWriteNs atomic.Int64 // summed block/receipt/preimage batch write time
-	trieFlushNs  atomic.Int64 // summed triedb Cap/Commit (dirty-node flush to disk) time
-	decodeNs     atomic.Int64 // summed RLP decode time (geth import only)
+	setupNs        atomic.Int64 // summed setupExecutionState + prefetcher start time
+	validateNs     atomic.Int64 // summed ValidateState time (receipt root, BAL hash, state root)
+	persistNs      atomic.Int64 // summed writeBlockAndSetHead time (superset of the three below)
+	prefetchStopNs atomic.Int64 // summed StopPrefetcher time (trie-prefetch join + subtrie merge)
+	commits        atomic.Int64 // number of blocks committed (also gates the summary)
+	commitNs       atomic.Int64 // summed statedb.Commit time (trie node collection + triedb insert)
+	blockWriteNs   atomic.Int64 // summed block/receipt/preimage batch write time
+	trieFlushNs    atomic.Int64 // summed triedb Cap/Commit (dirty-node flush to disk) time
+	decodeNs       atomic.Int64 // summed RLP decode time (geth import only)
 }
 
 // addProcessBlock records the per-block ProcessBlock phases that surround the
-// core Process call: state/reader setup and post-execution ValidateState.
-func (a *parallelAccumulator) addProcessBlock(setup, validate time.Duration) {
+// core Process call: state/reader setup, post-execution ValidateState and block
+// persistence (writeBlockAndSetHead, a superset of commit/write/flush).
+func (a *parallelAccumulator) addProcessBlock(setup, validate, persist time.Duration) {
 	a.setupNs.Add(int64(setup))
 	a.validateNs.Add(int64(validate))
+	a.persistNs.Add(int64(persist))
+}
+
+// addPrefetchStop records the trie-prefetcher shutdown time, which runs in a
+// deferred call at the end of ProcessBlock.
+func (a *parallelAccumulator) addPrefetchStop(d time.Duration) {
+	a.prefetchStopNs.Add(int64(d))
 }
 
 // addCommit records one block's out-of-Process persistence costs.
@@ -132,6 +142,23 @@ func ParallelExecutionSummary() string {
 		txExec     = time.Duration(a.txExecNs.Load())
 		txWork     = time.Duration(a.txWorkNs.Load())
 		efficiency float64
+
+		process      = time.Duration(a.totalNs.Load())
+		setup        = time.Duration(a.setupNs.Load())
+		validate     = time.Duration(a.validateNs.Load())
+		persist      = time.Duration(a.persistNs.Load())
+		prefetchStop = time.Duration(a.prefetchStopNs.Load())
+		decode       = time.Duration(a.decodeNs.Load())
+		commit       = time.Duration(a.commitNs.Load())
+		blockWrite   = time.Duration(a.blockWriteNs.Load())
+		trieFlush    = time.Duration(a.trieFlushNs.Load())
+		// head+snapshot+events: whatever writeBlockAndSetHead does beyond the
+		// commit/write/flush sub-phases already broken out.
+		headSnap = persist - commit - blockWrite - trieFlush
+		// Non-overlapping serial segments; their sum is the wall-clock floor that
+		// single-threaded work imposes on the import (commit/write/flush are
+		// subsets of persist and deliberately excluded from the sum).
+		accounted = process + setup + validate + persist + prefetchStop + decode
 	)
 	if txExec > 0 {
 		efficiency = float64(txWork) / float64(txExec)
@@ -152,10 +179,15 @@ func ParallelExecutionSummary() string {
   ---- out-of-Process phases (summed, serial) ----
   setup (state/rdr):  %v
   validate:           %v
-  commit (trie):      %v
-  block write:        %v
-  trie flush:         %v
+  persist (write):    %v
+    commit (trie):    %v
+    block write:      %v
+    trie flush:       %v
+    head+snap+events: %v
+  prefetch stop:      %v
   rlp decode:         %v
+  ---- accounted serial total ----
+  Process+setup+validate+persist+prefetchStop+decode = %v
   ---- shared-cache reads ----
   account: %d hits, %d misses (%.1f%% hit), miss I/O %v
   storage: %d hits, %d misses (%.1f%% hit), miss I/O %v`,
@@ -169,13 +201,17 @@ func ParallelExecutionSummary() string {
 		common.PrettyDuration(time.Duration(a.gatherNs.Load())),
 		common.PrettyDuration(time.Duration(a.stateApplyNs.Load())),
 		common.PrettyDuration(time.Duration(a.stateHashNs.Load())),
-		common.PrettyDuration(time.Duration(a.totalNs.Load())),
-		common.PrettyDuration(time.Duration(a.setupNs.Load())),
-		common.PrettyDuration(time.Duration(a.validateNs.Load())),
-		common.PrettyDuration(time.Duration(a.commitNs.Load())),
-		common.PrettyDuration(time.Duration(a.blockWriteNs.Load())),
-		common.PrettyDuration(time.Duration(a.trieFlushNs.Load())),
-		common.PrettyDuration(time.Duration(a.decodeNs.Load())),
+		common.PrettyDuration(process),
+		common.PrettyDuration(setup),
+		common.PrettyDuration(validate),
+		common.PrettyDuration(persist),
+		common.PrettyDuration(commit),
+		common.PrettyDuration(blockWrite),
+		common.PrettyDuration(trieFlush),
+		common.PrettyDuration(headSnap),
+		common.PrettyDuration(prefetchStop),
+		common.PrettyDuration(decode),
+		common.PrettyDuration(accounted),
 		a.accountHit.Load(), a.accountMiss.Load(), hitRate(a.accountHit.Load(), a.accountMiss.Load()), common.PrettyDuration(time.Duration(a.accountMissNs.Load())),
 		a.storageHit.Load(), a.storageMiss.Load(), hitRate(a.storageHit.Load(), a.storageMiss.Load()), common.PrettyDuration(time.Duration(a.storageMissNs.Load())),
 	)

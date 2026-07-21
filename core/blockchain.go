@@ -2278,7 +2278,11 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 		// - Sequential execution feeds it from the EVM as it touches state;
 		// - BAL-driven parallel execution feeds it from the block access list;
 		statedb.StartPrefetcher("chain", witness)
-		defer statedb.StopPrefetcher()
+		defer func() {
+			pfStart := time.Now()
+			statedb.StopPrefetcher()
+			parallelStats.addPrefetchStop(time.Since(pfStart))
+		}()
 	}
 
 	// Instrument the blockchain tracing
@@ -2317,11 +2321,6 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 		return nil, err
 	}
 	vtime := time.Since(vstart)
-
-	// Fold the surrounding ProcessBlock phases (state/reader setup before Process,
-	// and ValidateState after it) into the parallel-execution summary, so the
-	// serial per-block overhead beyond Process itself is visible.
-	parallelStats.addProcessBlock(pstart.Sub(startTime), vtime)
 
 	// If witnesses was generated and stateless self-validation requested, do
 	// that now. Self validation should *never* run in production, it's more of
@@ -2407,6 +2406,12 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 		stats.StorageCommits = statedb.StorageCommits  // Storage commits are complete, we can mark them
 		stats.DatabaseCommit = statedb.DatabaseCommits // Database commits are complete, we can mark them
 		stats.BlockWrite = time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.DatabaseCommits
+
+		// Fold the serial per-block phases surrounding Process into the
+		// parallel-execution summary: state/reader setup, ValidateState, and the
+		// full block persistence (writeBlockAndSetHead, a superset of the
+		// commit/write/flush already recorded inside writeBlockWithState).
+		parallelStats.addProcessBlock(pstart.Sub(startTime), vtime, time.Since(wstart))
 	}
 	elapsed := time.Since(startTime) + 1 // prevent zero division
 	stats.TotalTime = elapsed
