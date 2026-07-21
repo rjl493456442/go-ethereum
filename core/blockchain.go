@@ -1667,8 +1667,16 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	var (
 		batch = bc.db.NewBatch()
 		start = time.Now()
+
+		// Per-phase timings folded into the parallel-execution summary so that
+		// the serial out-of-Process persistence cost is visible (e.g. why a
+		// geth import is disk bound rather than CPU bound).
+		blockWriteDur time.Duration
+		commitDur     time.Duration
+		trieFlushDur  time.Duration
 	)
 	defer batch.Close()
+	defer func() { parallelStats.addCommit(commitDur, blockWriteDur, trieFlushDur) }()
 
 	rawdb.WriteBlock(batch, block)
 	rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
@@ -1676,7 +1684,8 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if err := batch.Write(); err != nil {
 		log.Crit("Failed to write block into disk", "err", err)
 	}
-	log.Debug("Committed block data", "size", common.StorageSize(batch.ValueSize()), "elapsed", common.PrettyDuration(time.Since(start)))
+	blockWriteDur = time.Since(start)
+	log.Debug("Committed block data", "size", common.StorageSize(batch.ValueSize()), "elapsed", common.PrettyDuration(blockWriteDur))
 
 	var (
 		err           error
@@ -1686,6 +1695,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		hasStateHook  = bc.logger != nil && bc.logger.OnStateUpdate != nil
 		hasStateSizer = bc.stateSizer != nil
 	)
+	commitStart := time.Now()
 	if hasStateHook || hasStateSizer {
 		r, update, err := statedb.CommitWithUpdate(block.NumberU64(), isEIP158, isCancun)
 		if err != nil {
@@ -1708,14 +1718,19 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 			return err
 		}
 	}
+	commitDur = time.Since(commitStart)
 	// If node is running in path mode, skip explicit gc operation
-	// which is unnecessary in this mode.
+	// which is unnecessary in this mode. Note the pathdb buffer flush is folded
+	// into the commit above, so trieFlushDur stays zero in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
 		return nil
 	}
 	// If we're running an archive node, always flush
 	if bc.cfg.ArchiveMode {
-		return bc.triedb.Commit(root, false)
+		flushStart := time.Now()
+		err := bc.triedb.Commit(root, false)
+		trieFlushDur = time.Since(flushStart)
+		return err
 	}
 	// Full but not archive node, do proper garbage collection
 	bc.triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
@@ -1732,7 +1747,9 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		limit          = common.StorageSize(bc.cfg.TrieDirtyLimit) * 1024 * 1024
 	)
 	if nodes > limit || imgs > 4*1024*1024 {
+		flushStart := time.Now()
 		bc.triedb.Cap(limit - ethdb.IdealBatchSize)
+		trieFlushDur = time.Since(flushStart)
 	}
 	// Find the next state trie we need to commit
 	chosen := current - state.TriesInMemory

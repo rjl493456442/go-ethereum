@@ -236,7 +236,10 @@ func ImportChain(chain *core.BlockChain, fn string) error {
 		i := 0
 		for ; i < importBatchSize; i++ {
 			var record exportBlock
-			if err := stream.Decode(&record); err == io.EOF {
+			decodeStart := time.Now()
+			err := stream.Decode(&record)
+			core.RecordImportDecode(time.Since(decodeStart))
+			if err == io.EOF {
 				break
 			} else if err != nil {
 				return fmt.Errorf("at block %d: %v", n, err)

@@ -49,6 +49,30 @@ type parallelAccumulator struct {
 	storageHit    atomic.Int64
 	storageMiss   atomic.Int64
 	storageMissNs atomic.Int64
+
+	// Out-of-Process phases, recorded by the insertion/import pipeline. These are
+	// the serial per-block costs that run between Process calls and dominate the
+	// wall-clock when execution is already parallel.
+	commits      atomic.Int64 // number of blocks committed (also gates the summary)
+	commitNs     atomic.Int64 // summed statedb.Commit time (trie node collection + triedb insert)
+	blockWriteNs atomic.Int64 // summed block/receipt/preimage batch write time
+	trieFlushNs  atomic.Int64 // summed triedb Cap/Commit (dirty-node flush to disk) time
+	decodeNs     atomic.Int64 // summed RLP decode time (geth import only)
+}
+
+// addCommit records one block's out-of-Process persistence costs.
+func (a *parallelAccumulator) addCommit(commit, blockWrite, trieFlush time.Duration) {
+	a.commits.Add(1)
+	a.commitNs.Add(int64(commit))
+	a.blockWriteNs.Add(int64(blockWrite))
+	a.trieFlushNs.Add(int64(trieFlush))
+}
+
+// RecordImportDecode folds RLP block-decode time into the parallel-execution
+// summary. It is called by the geth import pipeline, which decodes blocks
+// serially between insertions.
+func RecordImportDecode(d time.Duration) {
+	parallelStats.decodeNs.Add(int64(d))
 }
 
 // add folds one block's instrumentation into the running totals.
@@ -91,13 +115,13 @@ func hitRate(hit, miss int64) float64 {
 func ParallelExecutionSummary() string {
 	a := &parallelStats
 	blocks := a.blocks.Load()
-	if blocks == 0 {
+	if blocks == 0 && a.commits.Load() == 0 {
 		return ""
 	}
 	var (
-		txs      = a.txs.Load()
-		txExec   = time.Duration(a.txExecNs.Load())
-		txWork   = time.Duration(a.txWorkNs.Load())
+		txs        = a.txs.Load()
+		txExec     = time.Duration(a.txExecNs.Load())
+		txWork     = time.Duration(a.txWorkNs.Load())
 		efficiency float64
 	)
 	if txExec > 0 {
@@ -110,12 +134,17 @@ func ParallelExecutionSummary() string {
   tx CPU work (sum):  %v
   effective parallelism: %.2fx   (work / wall-clock)
   slowest single tx:  %v
-  ---- critical-path phases (summed) ----
+  ---- in-Process phases (summed) ----
   system (pre/post):  %v
   gather (serial):    %v
-  state apply:        %v
-  state hash:         %v
-  total (end-to-end): %v
+  state apply:        %v   (overlapped)
+  state hash:         %v   (overlapped)
+  Process total:      %v
+  ---- out-of-Process phases (summed, serial) ----
+  commit (trie):      %v
+  block write:        %v
+  trie flush:         %v
+  rlp decode:         %v
   ---- shared-cache reads ----
   account: %d hits, %d misses (%.1f%% hit), miss I/O %v
   storage: %d hits, %d misses (%.1f%% hit), miss I/O %v`,
@@ -130,6 +159,10 @@ func ParallelExecutionSummary() string {
 		common.PrettyDuration(time.Duration(a.stateApplyNs.Load())),
 		common.PrettyDuration(time.Duration(a.stateHashNs.Load())),
 		common.PrettyDuration(time.Duration(a.totalNs.Load())),
+		common.PrettyDuration(time.Duration(a.commitNs.Load())),
+		common.PrettyDuration(time.Duration(a.blockWriteNs.Load())),
+		common.PrettyDuration(time.Duration(a.trieFlushNs.Load())),
+		common.PrettyDuration(time.Duration(a.decodeNs.Load())),
 		a.accountHit.Load(), a.accountMiss.Load(), hitRate(a.accountHit.Load(), a.accountMiss.Load()), common.PrettyDuration(time.Duration(a.accountMissNs.Load())),
 		a.storageHit.Load(), a.storageMiss.Load(), hitRate(a.storageHit.Load(), a.storageMiss.Load()), common.PrettyDuration(time.Duration(a.storageMissNs.Load())),
 	)
