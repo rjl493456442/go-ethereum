@@ -1254,7 +1254,9 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 		return nil, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
 	}
 	// Finalize any pending changes and merge everything into the tries
+	phaseStart := time.Now()
 	root := s.IntermediateRoot(deleteEmptyObjects)
+	commitPhaseAccumulator.rootNs.Add(int64(time.Since(phaseStart)))
 
 	// Short circuit if any error occurs within the IntermediateRoot.
 	if s.dbErr != nil {
@@ -1302,6 +1304,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	// the same block, account deletions must be processed first. This ensures
 	// that the storage trie nodes deleted during destruction and recreated
 	// during subsequent resurrection can be combined correctly.
+	phaseStart = time.Now()
 	deletes, delNodes, err := s.handleDestruction(noStorageWiping)
 	if err != nil {
 		return nil, err
@@ -1311,6 +1314,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 			return nil, err
 		}
 	}
+	commitPhaseAccumulator.destructNs.Add(int64(time.Since(phaseStart)))
 	// Handle all state updates afterwards, concurrently to one another to shave
 	// off some milliseconds from the commit operation. Also accumulate the code
 	// writes to run in parallel with the computations.
@@ -1373,6 +1377,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	if err := workers.Wait(); err != nil {
 		return nil, err
 	}
+	commitPhaseAccumulator.trieCommitNs.Add(int64(time.Since(start)))
 	accountReadMeters.Mark(int64(s.AccountLoaded))
 	storageReadMeters.Mark(int64(s.StorageLoaded))
 	accountUpdatedMeter.Mark(int64(s.AccountUpdated))
@@ -1401,7 +1406,10 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	if noStorageWiping {
 		typ = StorageKeyPlain
 	}
-	return NewStateUpdate(typ, origin, root, blockNumber, deletes, updates, nodes), nil
+	phaseStart = time.Now()
+	update := NewStateUpdate(typ, origin, root, blockNumber, deletes, updates, nodes)
+	commitPhaseAccumulator.updateBuildNs.Add(int64(time.Since(phaseStart)))
+	return update, nil
 }
 
 // commitAndFlush is a wrapper of commit which also commits the state mutations
@@ -1421,10 +1429,14 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 		return nil, err
 	}
 	s.DatabaseCommits = time.Since(start)
+	commitPhaseAccumulator.dbCommitNs.Add(int64(s.DatabaseCommits))
 
 	// The reader update must be performed as the final step, otherwise,
 	// the new state would not be visible before db.commit.
+	start = time.Now()
 	s.reader, err = s.db.Reader(s.originalRoot)
+	commitPhaseAccumulator.readerNs.Add(int64(time.Since(start)))
+	commitPhaseAccumulator.commits.Add(1)
 	return ret, err
 }
 

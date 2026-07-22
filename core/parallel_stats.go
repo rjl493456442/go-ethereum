@@ -231,9 +231,11 @@ func ParallelExecutionSummary() string {
 	// is overlapped with the block processing and not on the critical path.
 	if cs := pathdb.ReadCommitStats(); cs.Updates > 0 {
 		var (
-			update   = cs.DiffLayerTime + cs.TreeAddTime + cs.TreeCapTime
-			capOther = cs.TreeCapTime - cs.HistoryStateTime - cs.HistoryTrienodeTime - cs.BufferAppendTime - cs.FreezeTime
-			outside  = commit - update
+			update    = cs.DiffLayerTime + cs.TreeAddTime + cs.TreeCapTime
+			capOther  = cs.TreeCapTime - cs.HistoryStateTime - cs.HistoryTrienodeTime - cs.BufferAppendTime - cs.FreezeTime
+			outside   = commit - update
+			ss        = state.ReadStateCommitStats()
+			dbConvert = ss.DBCommitTime - update
 		)
 		summary += fmt.Sprintf(`
   ---- triedb commit breakdown (inside commit(trie), serial) ----
@@ -247,6 +249,12 @@ func ParallelExecutionSummary() string {
       buffer freeze:      %v   (%d freezes, wait-flush %v)
       cap other:          %v
   outside triedb:     %v   (statedb commit minus triedb update)
+    root residual:    %v
+    destruction:      %v
+    trie commit:      %v   (account+storage tries, parallel wall-clock)
+    update build:     %v
+    db convert:       %v   (db.Commit minus triedb update)
+    reader swap:      %v
   ---- triedb background (overlapped) ----
   buffer compaction:  %v   (%d runs)
   buffer flush:       %v   (%d flushes, incl. flatten %v)`,
@@ -260,6 +268,12 @@ func ParallelExecutionSummary() string {
 			common.PrettyDuration(cs.FreezeTime), cs.Freezes, common.PrettyDuration(cs.WaitFlushTime),
 			common.PrettyDuration(capOther),
 			common.PrettyDuration(outside),
+			common.PrettyDuration(ss.RootTime),
+			common.PrettyDuration(ss.DestructTime),
+			common.PrettyDuration(ss.TrieCommitTime),
+			common.PrettyDuration(ss.UpdateBuildTime),
+			common.PrettyDuration(dbConvert),
+			common.PrettyDuration(ss.ReaderTime),
 			common.PrettyDuration(cs.CompactTime), cs.Compactions,
 			common.PrettyDuration(cs.FlushTime), cs.Flushes, common.PrettyDuration(cs.FlattenTime),
 		)

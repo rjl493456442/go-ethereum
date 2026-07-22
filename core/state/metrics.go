@@ -16,7 +16,51 @@
 
 package state
 
-import "github.com/ethereum/go-ethereum/metrics"
+import (
+	"sync/atomic"
+	"time"
+
+	"github.com/ethereum/go-ethereum/metrics"
+)
+
+// commitPhaseAccumulator accumulates the latency breakdown of the statedb
+// commits across the process lifetime, for the end-of-run summary such as
+// geth import. All phases are on the block import critical path.
+var commitPhaseAccumulator struct {
+	commits       atomic.Int64 // number of the statedb commits
+	rootNs        atomic.Int64 // summed residual IntermediateRoot time within the commit
+	destructNs    atomic.Int64 // summed account destruction handling time
+	trieCommitNs  atomic.Int64 // summed trie commit time (account and storage tries, parallel wall-clock)
+	updateBuildNs atomic.Int64 // summed state update construction time
+	dbCommitNs    atomic.Int64 // summed database commit time (including the triedb update)
+	readerNs      atomic.Int64 // summed post-commit reader reconstruction time
+}
+
+// StateCommitStats is a cumulative snapshot of the latency breakdown of the
+// statedb commits across the process lifetime.
+type StateCommitStats struct {
+	Commits         int64         // Number of the statedb commits
+	RootTime        time.Duration // Summed residual IntermediateRoot time within the commit
+	DestructTime    time.Duration // Summed account destruction handling time
+	TrieCommitTime  time.Duration // Summed trie commit time (account and storage tries, parallel wall-clock)
+	UpdateBuildTime time.Duration // Summed state update construction time
+	DBCommitTime    time.Duration // Summed database commit time (including the triedb update)
+	ReaderTime      time.Duration // Summed post-commit reader reconstruction time
+}
+
+// ReadStateCommitStats returns a cumulative snapshot of the latency breakdown
+// of the statedb commits across the process lifetime.
+func ReadStateCommitStats() StateCommitStats {
+	return StateCommitStats{
+		Commits:         commitPhaseAccumulator.commits.Load(),
+		RootTime:        time.Duration(commitPhaseAccumulator.rootNs.Load()),
+		DestructTime:    time.Duration(commitPhaseAccumulator.destructNs.Load()),
+		TrieCommitTime:  time.Duration(commitPhaseAccumulator.trieCommitNs.Load()),
+		UpdateBuildTime: time.Duration(commitPhaseAccumulator.updateBuildNs.Load()),
+		DBCommitTime:    time.Duration(commitPhaseAccumulator.dbCommitNs.Load()),
+		ReaderTime:      time.Duration(commitPhaseAccumulator.readerNs.Load()),
+	}
+}
 
 var (
 	accountReadMeters        = metrics.NewRegisteredMeter("state/read/account", nil)
