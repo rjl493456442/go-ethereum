@@ -36,14 +36,15 @@ type parallelAccumulator struct {
 	blocks atomic.Int64
 	txs    atomic.Int64
 
-	txExecNs     atomic.Int64 // summed wall-clock of the transaction phases
-	txWorkNs     atomic.Int64 // summed per-tx CPU work (serial-equivalent)
-	txMaxNs      atomic.Int64 // largest single-tx execution time observed
-	systemNs     atomic.Int64 // summed pre/post system-call time
-	gatherNs     atomic.Int64 // summed serial result-gathering time
-	stateApplyNs atomic.Int64 // summed ApplyBlockAccessList time
-	stateHashNs  atomic.Int64 // summed IntermediateRoot time
-	totalNs      atomic.Int64 // summed end-to-end block processing time
+	txExecNs      atomic.Int64 // summed wall-clock of the transaction phases
+	txWorkNs      atomic.Int64 // summed per-tx CPU work (serial-equivalent)
+	txMaxNs       atomic.Int64 // largest single-tx execution time observed
+	systemNs      atomic.Int64 // summed pre/post system-call time
+	gatherNs      atomic.Int64 // summed serial result-gathering time
+	stateApplyNs  atomic.Int64 // summed ApplyBlockAccessList time
+	stateHashNs   atomic.Int64 // summed IntermediateRoot time
+	stateCommitNs atomic.Int64 // summed PrepareCommit (state update construction) time
+	totalNs       atomic.Int64 // summed end-to-end block processing time
 
 	accountHit      atomic.Int64
 	accountMiss     atomic.Int64
@@ -61,6 +62,12 @@ type parallelAccumulator struct {
 	// wall-clock when execution is already parallel.
 	setupNs        atomic.Int64 // summed setupExecutionState + prefetcher start time
 	validateNs     atomic.Int64 // summed ValidateState time (receipt root, BAL hash, state root)
+
+	// ValidateState internal phase breakdown
+	validateBloomNs   atomic.Int64 // summed receipt bloom merging time
+	validateReceiptNs atomic.Int64 // summed receipt trie root derivation time
+	validateBALNs     atomic.Int64 // summed block access list encoding/hashing/validation time
+	validateRootNs    atomic.Int64 // summed state root comparison time
 	persistNs      atomic.Int64 // summed writeBlockAndSetHead time (superset of the three below)
 	prefetchStopNs atomic.Int64 // summed StopPrefetcher time (trie-prefetch join + subtrie merge)
 	commits        atomic.Int64 // number of blocks committed (also gates the summary)
@@ -101,7 +108,7 @@ func RecordImportDecode(d time.Duration) {
 }
 
 // add folds one block's instrumentation into the running totals.
-func (a *parallelAccumulator) add(txs int, txExec, system, gather, stateApply, stateHash, total time.Duration, p parallelProfile) {
+func (a *parallelAccumulator) add(txs int, txExec, system, gather, stateApply, stateHash, stateCommit, total time.Duration, p parallelProfile) {
 	a.blocks.Add(1)
 	a.txs.Add(int64(txs))
 	a.txExecNs.Add(int64(txExec))
@@ -116,6 +123,7 @@ func (a *parallelAccumulator) add(txs int, txExec, system, gather, stateApply, s
 	a.gatherNs.Add(int64(gather))
 	a.stateApplyNs.Add(int64(stateApply))
 	a.stateHashNs.Add(int64(stateHash))
+	a.stateCommitNs.Add(int64(stateCommit))
 	a.totalNs.Add(int64(total))
 
 	a.accountHit.Add(p.reads.AccountCacheHit)
@@ -185,10 +193,15 @@ func ParallelExecutionSummary() string {
   gather (serial):    %v
   state apply:        %v   (overlapped)
   state hash:         %v   (overlapped)
+  state commit:       %v   (overlapped)
   Process total:      %v
   ---- out-of-Process phases (summed, serial) ----
   setup (state/rdr):  %v
   validate:           %v
+    bloom merge:      %v
+    receipt root:     %v
+    BAL hash+check:   %v
+    state root:       %v
   persist (write):    %v
     commit (trie):    %v
     block write:      %v
@@ -212,9 +225,14 @@ func ParallelExecutionSummary() string {
 		common.PrettyDuration(time.Duration(a.gatherNs.Load())),
 		common.PrettyDuration(time.Duration(a.stateApplyNs.Load())),
 		common.PrettyDuration(time.Duration(a.stateHashNs.Load())),
+		common.PrettyDuration(time.Duration(a.stateCommitNs.Load())),
 		common.PrettyDuration(process),
 		common.PrettyDuration(setup),
 		common.PrettyDuration(validate),
+		common.PrettyDuration(time.Duration(a.validateBloomNs.Load())),
+		common.PrettyDuration(time.Duration(a.validateReceiptNs.Load())),
+		common.PrettyDuration(time.Duration(a.validateBALNs.Load())),
+		common.PrettyDuration(time.Duration(a.validateRootNs.Load())),
 		common.PrettyDuration(persist),
 		common.PrettyDuration(commit),
 		common.PrettyDuration(blockWrite),

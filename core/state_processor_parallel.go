@@ -39,8 +39,9 @@ import (
 var (
 	parallelSystemExecTimer = metrics.NewRegisteredResettingTimer("chain/execution/parallel/system", nil)
 	parallelTxExecTimer     = metrics.NewRegisteredResettingTimer("chain/execution/parallel/transactions", nil)
-	parallelStateApplyTimer = metrics.NewRegisteredResettingTimer("chain/execution/parallel/stateapply", nil)
-	parallelStateHashTimer  = metrics.NewRegisteredResettingTimer("chain/execution/parallel/statehash", nil)
+	parallelStateApplyTimer  = metrics.NewRegisteredResettingTimer("chain/execution/parallel/stateapply", nil)
+	parallelStateHashTimer   = metrics.NewRegisteredResettingTimer("chain/execution/parallel/statehash", nil)
+	parallelStateCommitTimer = metrics.NewRegisteredResettingTimer("chain/execution/parallel/statecommit", nil)
 	parallelGatherTimer     = metrics.NewRegisteredResettingTimer("chain/execution/parallel/gather", nil)
 	parallelTotalTimer      = metrics.NewRegisteredResettingTimer("chain/execution/parallel/total", nil)
 
@@ -129,10 +130,11 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 
 	// Stats
 	var (
-		systemExec time.Duration
-		txExec     time.Duration
-		stateApply time.Duration
-		stateHash  time.Duration
+		systemExec  time.Duration
+		txExec      time.Duration
+		stateApply  time.Duration
+		stateHash   time.Duration
+		stateCommit time.Duration
 	)
 	// Post-execution state root, computed concurrently with execution.
 	var wg errgroup.Group
@@ -146,7 +148,23 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		start = time.Now()
 		statedb.IntermediateRoot(config.IsEIP158(header.Number))
 		stateHash = time.Since(start)
-		return statedb.Error()
+		if err := statedb.Error(); err != nil {
+			return err
+		}
+		// Eagerly construct the state update (trie node collection etc.) right
+		// after the state root is finalized, overlapping it with the remaining
+		// transaction execution and result gathering. The prepared update will
+		// be consumed by the database commit in the persistence stage, leaving
+		// only the flushing on the serial path.
+		//
+		// Note this operation invalidates the internal tries of the statedb;
+		// IntermediateRoot returns the finalized root from then on.
+		start = time.Now()
+		if err := statedb.PrepareCommit(header.Number.Uint64(), config.IsEIP158(header.Number), config.IsCancun(header.Number, header.Time)); err != nil {
+			return err
+		}
+		stateCommit = time.Since(start)
+		return nil
 	})
 	// Ensure the root goroutine has stopped mutating the canonical state before
 	// returning on any path, including the error paths below. Wait is idempotent,
@@ -240,6 +258,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	parallelTxExecTimer.Update(txExec)
 	parallelStateApplyTimer.Update(stateApply)
 	parallelStateHashTimer.Update(stateHash)
+	parallelStateCommitTimer.Update(stateCommit)
 	parallelGatherTimer.Update(gather)
 	parallelTotalTimer.UpdateSince(start)
 	parallelTxWorkTimer.Update(profile.totalTime)
@@ -253,7 +272,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		parallelEfficiency.Update(efficiency)
 	}
 	reportParallelReadStats(header.Number, profile.reads)
-	parallelStats.add(len(txs), txExec, systemExec, gather, stateApply, stateHash, time.Since(start), profile)
+	parallelStats.add(len(txs), txExec, systemExec, gather, stateApply, stateHash, stateCommit, time.Since(start), profile)
 
 	log.Debug("Parallel block execution", "number", header.Number, "txs", len(txs),
 		"system", common.PrettyDuration(systemExec), "txexec", common.PrettyDuration(txExec),
@@ -261,6 +280,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		"parallelism", fmt.Sprintf("%.2fx/%d", efficiency, profile.workers),
 		"gather", common.PrettyDuration(gather),
 		"stateapply", common.PrettyDuration(stateApply), "statehash", common.PrettyDuration(stateHash),
+		"statecommit", common.PrettyDuration(stateCommit),
 		"elapsed", common.PrettyDuration(time.Since(start)),
 	)
 	return &ProcessResult{

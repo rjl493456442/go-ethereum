@@ -86,6 +86,16 @@ type StateDB struct {
 	// It will be updated when the Commit is called.
 	originalRoot common.Hash
 
+	// preparedUpdate holds the state update constructed by PrepareCommit,
+	// pending to be flushed into the database by a subsequent Commit (or
+	// CommitWithUpdate) invocation. Non-nil value also indicates the state
+	// root has been finalized and the internal tries are no longer usable.
+	//
+	// The field is not lock protected; the caller must guarantee the
+	// happens-before relation between the preparation and the flushing
+	// (e.g. via the completion join of the preparation thread).
+	preparedUpdate *StateUpdate
+
 	// This map holds 'live' objects, which will get modified while
 	// processing a state transition.
 	stateObjects map[common.Address]*stateObject
@@ -914,6 +924,12 @@ func (s *StateDB) finaliseAmsterdam(deleteEmptyObjects bool) *bal.ConstructionBl
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
 func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
+	// Short circuit if the state mutations were already committed through
+	// PrepareCommit: the state root has been finalized and the internal
+	// tries are no longer functional.
+	if s.preparedUpdate != nil {
+		return s.preparedUpdate.Root
+	}
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
 
@@ -1412,12 +1428,39 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	return update, nil
 }
 
+// PrepareCommit constructs the state update out of the accumulated state
+// mutations without flushing it into the database. The constructed update
+// is cached internally and will be consumed by the subsequent Commit (or
+// CommitWithUpdate) invocation, which then only needs to perform the
+// database flushing.
+//
+// It's mainly used to overlap the heavy state update construction (trie
+// node collection etc.) with other block processing stages (e.g. the block
+// validation). Note after the preparation, the internal tries are no longer
+// functional and the state root is finalized; IntermediateRoot returns the
+// finalized root from then on.
+func (s *StateDB) PrepareCommit(block uint64, deleteEmptyObjects bool, noStorageWiping bool) error {
+	ret, err := s.commit(deleteEmptyObjects, noStorageWiping, block)
+	if err != nil {
+		return err
+	}
+	s.preparedUpdate = ret
+	return nil
+}
+
 // commitAndFlush is a wrapper of commit which also commits the state mutations
 // to the configured data stores.
 func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorageWiping bool, deriveCodeFields bool) (*StateUpdate, error) {
-	ret, err := s.commit(deleteEmptyObjects, noStorageWiping, block)
-	if err != nil {
-		return nil, err
+	// Short circuit the state update construction if it was already prepared
+	// (typically overlapped with the block execution/validation), only the
+	// database flushing is left to be performed.
+	ret := s.preparedUpdate
+	if ret == nil {
+		var err error
+		ret, err = s.commit(deleteEmptyObjects, noStorageWiping, block)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if deriveCodeFields {
 		if err := ret.deriveCodeFields(s.reader); err != nil {
@@ -1430,14 +1473,19 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	}
 	s.DatabaseCommits = time.Since(start)
 	commitPhaseAccumulator.dbCommitNs.Add(int64(s.DatabaseCommits))
+	s.preparedUpdate = nil
 
 	// The reader update must be performed as the final step, otherwise,
 	// the new state would not be visible before db.commit.
 	start = time.Now()
-	s.reader, err = s.db.Reader(s.originalRoot)
+	reader, err := s.db.Reader(s.originalRoot)
+	if err != nil {
+		return nil, err
+	}
+	s.reader = reader
 	commitPhaseAccumulator.readerNs.Add(int64(time.Since(start)))
 	commitPhaseAccumulator.commits.Add(1)
-	return ret, err
+	return ret, nil
 }
 
 // Commit writes the state mutations into the configured data stores.

@@ -19,6 +19,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -159,20 +160,26 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	// Receipts must go through MakeReceipt to calculate the receipt's bloom
 	// already. Merge the receipt's bloom together instead of recalculating
 	// everything.
+	start := time.Now()
 	rbloom := types.MergeBloom(res.Receipts)
 	if rbloom != header.Bloom {
 		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
 	}
+	parallelStats.validateBloomNs.Add(int64(time.Since(start)))
+
 	// In stateless mode, return early because the receipt and state root are not
 	// provided through the witness, rather the cross validator needs to return it.
 	if stateless {
 		return nil
 	}
 	// The receipt Trie's root (R = (Tr [[H1, R1], ... [Hn, Rn]]))
+	start = time.Now()
 	receiptSha := types.DeriveSha(res.Receipts, trie.NewStackTrie(nil))
 	if receiptSha != header.ReceiptHash {
 		return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
 	}
+	parallelStats.validateReceiptNs.Add(int64(time.Since(start)))
+
 	// Validate the parsed requests match the expected header value.
 	if header.RequestsHash != nil {
 		reqhash := types.CalcRequestsHash(res.Requests)
@@ -190,6 +197,7 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 		if block.Header().BlockAccessListHash == nil {
 			return errors.New("block access list hash not set in header")
 		}
+		start = time.Now()
 		enc := res.Bal.ToEncodingObj()
 		local, remote := enc.Hash(), *block.Header().BlockAccessListHash
 		if local != remote {
@@ -198,12 +206,15 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 		if err := enc.Validate(block.GasLimit(), len(block.Transactions())); err != nil {
 			return fmt.Errorf("invalid block access list: %v", err)
 		}
+		parallelStats.validateBALNs.Add(int64(time.Since(start)))
 	}
 	// Validate the state root against the received state root and throw
 	// an error if they don't match.
+	start = time.Now()
 	if root := statedb.IntermediateRoot(v.config.IsEIP158(header.Number)); header.Root != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x) dberr: %w", header.Root, root, statedb.Error())
 	}
+	parallelStats.validateRootNs.Add(int64(time.Since(start)))
 	return nil
 }
 
