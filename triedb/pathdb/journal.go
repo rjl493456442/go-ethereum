@@ -271,12 +271,16 @@ func (dl *diskLayer) journal(w io.Writer) error {
 	if err := rlp.Encode(w, dl.id); err != nil {
 		return err
 	}
-	// Step three, write the accumulated trie nodes into the journal
-	if err := dl.buffer.nodes.encode(w); err != nil {
+	// Step three, collapse the aggregated sets in the buffer into a single
+	// one for journaling.
+	nodes, states := dl.buffer.flatten()
+
+	// Step four, write the accumulated trie nodes into the journal
+	if err := nodes.encode(w); err != nil {
 		return err
 	}
-	// Step four, write the accumulated flat states into the journal
-	if err := dl.buffer.states.encode(w); err != nil {
+	// Step five, write the accumulated flat states into the journal
+	if err := states.encode(w); err != nil {
 		return err
 	}
 	log.Debug("Journaled pathdb disk layer", "root", dl.root, "id", dl.id)
@@ -326,9 +330,9 @@ func (db *Database) Journal(root common.Hash) error {
 	}
 	disk := db.tree.bottom()
 	if l, ok := l.(*diffLayer); ok {
-		log.Info("Persisting dirty state", "head", l.block, "root", root, "layers", l.id-disk.id+disk.buffer.layers)
+		log.Info("Persisting dirty state", "head", l.block, "root", root, "layers", l.id-disk.id+disk.buffer.layers())
 	} else { // disk layer only on noop runs (likely) or deep reorgs (unlikely)
-		log.Info("Persisting dirty state", "root", root, "layers", disk.buffer.layers)
+		log.Info("Persisting dirty state", "root", root, "layers", disk.buffer.layers())
 	}
 	// Block until the background flushing is finished and terminate
 	// the potential active state generator.
