@@ -278,6 +278,69 @@ func (s *stateSet) merge(other *stateSet) {
 	s.updateSize(delta)
 }
 
+// mergeStateSets aggregates the provided state sets (ordered from oldest to
+// newest) into a single set, with entries from the newer sets overwriting
+// the ones from the older sets. The returned set assumes the ownership of
+// the freshly allocated internal maps, leaving the source sets unmodified.
+func mergeStateSets(sets []*stateSet) *stateSet {
+	var (
+		accountOverwrites counter
+		storageOverwrites counter
+		accounts          int // the upper bound of the account entries
+		owners            int // the upper bound of the storage sets
+	)
+	for _, set := range sets {
+		accounts += len(set.accountData)
+		owners += len(set.storageData)
+	}
+	out := &stateSet{
+		accountData: make(map[common.Hash][]byte, accounts),
+		storageData: make(map[common.Hash]map[common.Hash][]byte, owners),
+
+		// The background compaction only folds the sets with the identical
+		// rawStorageKey flag together, ensuring the flag of the merged set
+		// is unambiguous.
+		//
+		// The only exception is the buffer flattening (for flushing and
+		// journaling) which may combine the sets across the flag boundary
+		// (e.g. the buffer holds the transitions across the Cancun fork).
+		// It's tolerable as the flat states aggregated in the buffer are
+		// always keyed by hashes regardless of the flag, and the flag of
+		// the flattened set is never consumed for history construction
+		// (the flag is always resolved from the individual diff layers
+		// before they reach the buffer). The flag from the most recent
+		// set is taken as the representative for this case.
+		rawStorageKey: sets[len(sets)-1].rawStorageKey,
+
+		storageListSorted: make(map[common.Hash][]common.Hash),
+	}
+	for _, set := range sets {
+		for accountHash, data := range set.accountData {
+			if origin, ok := out.accountData[accountHash]; ok {
+				accountOverwrites.add(common.HashLength + len(origin))
+			}
+			out.accountData[accountHash] = data
+		}
+		for accountHash, storage := range set.storageData {
+			slots, ok := out.storageData[accountHash]
+			if !ok {
+				slots = make(map[common.Hash][]byte, len(storage))
+				out.storageData[accountHash] = slots
+			}
+			for storageHash, data := range storage {
+				if origin, ok := slots[storageHash]; ok {
+					storageOverwrites.add(2*common.HashLength + len(origin))
+				}
+				slots[storageHash] = data
+			}
+		}
+	}
+	out.size = out.check()
+	accountOverwrites.report(gcAccountMeter, gcAccountBytesMeter)
+	storageOverwrites.report(gcStorageMeter, gcStorageBytesMeter)
+	return out
+}
+
 // revertTo takes the original value of accounts and storages as input and reverts
 // the latest state transition applied on the state set.
 //
@@ -426,16 +489,6 @@ func (s *stateSet) decode(r *rlp.Stream) error {
 // write flushes state mutations into the provided database batch as a whole.
 func (s *stateSet) write(batch ethdb.Batch, genMarker []byte, clean *fastcache.Cache) (int, int) {
 	return writeStates(batch, genMarker, s.accountData, s.storageData, clean)
-}
-
-// reset clears all cached state data, including any optional sorted lists that
-// may have been generated.
-func (s *stateSet) reset() {
-	s.accountData = make(map[common.Hash][]byte)
-	s.storageData = make(map[common.Hash]map[common.Hash][]byte)
-	s.size = 0
-	s.accountListSorted = nil
-	s.storageListSorted = make(map[common.Hash][]common.Hash)
 }
 
 // dbsize returns the approximate size for db write.

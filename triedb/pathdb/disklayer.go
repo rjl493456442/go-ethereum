@@ -120,8 +120,9 @@ func (dl *diskLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 		return nil, common.Hash{}, nodeLoc{}, errSnapshotStale
 	}
 	// Try to retrieve the trie node from the not-yet-written node buffer first
-	// (both the live one and the frozen one). Note the buffer is lock free since
-	// it's impossible to mutate the buffer before tagging the layer as stale.
+	// (both the live one and the frozen one). Note the buffer access is lock
+	// free, as the buffer content is resolved through an immutable view which
+	// is atomically replaced on mutation.
 	for _, buffer := range []*buffer{dl.buffer, dl.frozen} {
 		if buffer != nil {
 			n, found := buffer.node(owner, path)
@@ -176,8 +177,9 @@ func (dl *diskLayer) account(hash common.Hash, depth int) ([]byte, error) {
 		return nil, errSnapshotStale
 	}
 	// Try to retrieve the trie node from the not-yet-written node buffer first
-	// (both the live one and the frozen one). Note the buffer is lock free since
-	// it's impossible to mutate the buffer before tagging the layer as stale.
+	// (both the live one and the frozen one). Note the buffer access is lock
+	// free, as the buffer content is resolved through an immutable view which
+	// is atomically replaced on mutation.
 	for _, buffer := range []*buffer{dl.buffer, dl.frozen} {
 		if buffer != nil {
 			blob, found := buffer.account(hash)
@@ -254,8 +256,9 @@ func (dl *diskLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 		return nil, errSnapshotStale
 	}
 	// Try to retrieve the trie node from the not-yet-written node buffer first
-	// (both the live one and the frozen one). Note the buffer is lock free since
-	// it's impossible to mutate the buffer before tagging the layer as stale.
+	// (both the live one and the frozen one). Note the buffer access is lock
+	// free, as the buffer content is resolved through an immutable view which
+	// is atomically replaced on mutation.
 	for _, buffer := range []*buffer{dl.buffer, dl.frozen} {
 		if buffer != nil {
 			if blob, found := buffer.storage(accountHash, storageHash); found {
