@@ -17,6 +17,8 @@
 package state
 
 import (
+	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,6 +84,51 @@ var prefetchAccumulator struct {
 	leadNs      atomic.Int64 // summed lead time of the completion ahead of the closing
 	waitNs      atomic.Int64 // summed close blocking time on the termination
 	weight      atomic.Int64 // summed task weight (accounts + slots)
+}
+
+// uncoveredSampleLimit caps the number of retained samples for the cache
+// misses not covered by the prefetch hint.
+const uncoveredSampleLimit = 8
+
+// uncoveredSamples retains a few examples of the cache misses which are not
+// covered by the prefetch hint (the block access list), for debugging the
+// coverage gap. The associated block context is unknown at this level, the
+// samples are only meant to identify the category of the uncovered reads.
+var uncoveredSamples struct {
+	mu       sync.Mutex
+	accounts []common.Address
+	storages []string
+}
+
+// sampleUncoveredAccount retains the account address missed by the prefetch
+// hint, capped by uncoveredSampleLimit.
+func sampleUncoveredAccount(addr common.Address) {
+	uncoveredSamples.mu.Lock()
+	defer uncoveredSamples.mu.Unlock()
+
+	if len(uncoveredSamples.accounts) < uncoveredSampleLimit {
+		uncoveredSamples.accounts = append(uncoveredSamples.accounts, addr)
+	}
+}
+
+// sampleUncoveredStorage retains the storage slot missed by the prefetch
+// hint, capped by uncoveredSampleLimit.
+func sampleUncoveredStorage(addr common.Address, slot common.Hash) {
+	uncoveredSamples.mu.Lock()
+	defer uncoveredSamples.mu.Unlock()
+
+	if len(uncoveredSamples.storages) < uncoveredSampleLimit {
+		uncoveredSamples.storages = append(uncoveredSamples.storages, fmt.Sprintf("%x:%x", addr, slot))
+	}
+}
+
+// ReadUncoveredSamples returns the retained samples of the cache misses not
+// covered by the prefetch hint.
+func ReadUncoveredSamples() (accounts []common.Address, storages []string) {
+	uncoveredSamples.mu.Lock()
+	defer uncoveredSamples.mu.Unlock()
+
+	return slices.Clone(uncoveredSamples.accounts), slices.Clone(uncoveredSamples.storages)
 }
 
 // PrefetchStats is a cumulative snapshot of the BAL prefetcher activity.

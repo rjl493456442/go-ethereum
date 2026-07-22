@@ -49,10 +49,12 @@ type parallelAccumulator struct {
 	accountMiss     atomic.Int64
 	accountMissNs   atomic.Int64
 	accountMissRace atomic.Int64 // misses occurred while the BAL prefetcher was still running
+	accountMissNoPf atomic.Int64 // misses occurred without an associated prefetcher
 	storageHit      atomic.Int64
 	storageMiss     atomic.Int64
 	storageMissNs   atomic.Int64
 	storageMissRace atomic.Int64 // misses occurred while the BAL prefetcher was still running
+	storageMissNoPf atomic.Int64 // misses occurred without an associated prefetcher
 
 	// Out-of-Process phases, recorded by the insertion/import pipeline. These are
 	// the serial per-block costs that run between Process calls and dominate the
@@ -120,10 +122,12 @@ func (a *parallelAccumulator) add(txs int, txExec, system, gather, stateApply, s
 	a.accountMiss.Add(p.reads.AccountCacheMiss)
 	a.accountMissNs.Add(int64(p.reads.AccountMissTime))
 	a.accountMissRace.Add(p.reads.AccountMissRace)
+	a.accountMissNoPf.Add(p.reads.AccountMissNoPrefetch)
 	a.storageHit.Add(p.reads.StorageCacheHit)
 	a.storageMiss.Add(p.reads.StorageCacheMiss)
 	a.storageMissNs.Add(int64(p.reads.StorageMissTime))
 	a.storageMissRace.Add(p.reads.StorageMissRace)
+	a.storageMissNoPf.Add(p.reads.StorageMissNoPrefetch)
 }
 
 func hitRate(hit, miss int64) float64 {
@@ -197,7 +201,7 @@ func ParallelExecutionSummary() string {
   ---- shared-cache reads ----
   account: %d hits, %d misses (%.1f%% hit), miss I/O %v
   storage: %d hits, %d misses (%.1f%% hit), miss I/O %v
-  miss attribution:   account %d raced prefetch / %d uncovered, storage %d raced prefetch / %d uncovered`,
+  miss attribution:   account %d raced / %d uncovered / %d unhinted, storage %d raced / %d uncovered / %d unhinted`,
 		blocks,
 		txs,
 		common.PrettyDuration(txExec),
@@ -221,9 +225,20 @@ func ParallelExecutionSummary() string {
 		common.PrettyDuration(accounted),
 		a.accountHit.Load(), a.accountMiss.Load(), hitRate(a.accountHit.Load(), a.accountMiss.Load()), common.PrettyDuration(time.Duration(a.accountMissNs.Load())),
 		a.storageHit.Load(), a.storageMiss.Load(), hitRate(a.storageHit.Load(), a.storageMiss.Load()), common.PrettyDuration(time.Duration(a.storageMissNs.Load())),
-		a.accountMissRace.Load(), a.accountMiss.Load()-a.accountMissRace.Load(),
-		a.storageMissRace.Load(), a.storageMiss.Load()-a.storageMissRace.Load(),
+		a.accountMissRace.Load(), a.accountMiss.Load()-a.accountMissRace.Load()-a.accountMissNoPf.Load(), a.accountMissNoPf.Load(),
+		a.storageMissRace.Load(), a.storageMiss.Load()-a.storageMissRace.Load()-a.storageMissNoPf.Load(), a.storageMissNoPf.Load(),
 	)
+	// Append a few samples of the uncovered reads (missed after the prefetch
+	// completion), identifying the state not covered by the access list hint.
+	if accounts, storages := state.ReadUncoveredSamples(); len(accounts) > 0 || len(storages) > 0 {
+		summary += "\n  uncovered samples: "
+		for _, addr := range accounts {
+			summary += fmt.Sprintf(" %x", addr)
+		}
+		for _, entry := range storages {
+			summary += " " + entry
+		}
+	}
 	// Append the triedb commit breakdown if any state commit was performed.
 	// The serial part is a subset of the commit (trie) phase above; whatever
 	// remains ("outside triedb") is the statedb-side commit cost (trie node

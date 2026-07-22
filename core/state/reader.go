@@ -530,6 +530,9 @@ type stateReaderWithStats struct {
 
 	accountMissRace atomic.Int64 // Number of account misses occurred with the active prefetcher
 	storageMissRace atomic.Int64 // Number of storage misses occurred with the active prefetcher
+
+	accountMissNoPrefetch atomic.Int64 // Number of account misses occurred without an associated prefetcher
+	storageMissNoPrefetch atomic.Int64 // Number of storage misses occurred without an associated prefetcher
 }
 
 // newReaderWithStats constructs the state reader with additional statistics tracked.
@@ -544,6 +547,13 @@ func newStateReaderWithStats(sr *stateReaderWithCache) *stateReaderWithStats {
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount, error) {
+	// Sample the prefetcher activity before resolving the state, ensuring
+	// the cache misses raced with the prefetching are attributed correctly
+	// (the prefetching might be completed during the state resolution).
+	var active bool
+	if r.prefetchActive != nil {
+		active = r.prefetchActive()
+	}
 	start := time.Now()
 	account, incache, err := r.stateReaderWithCache.account(addr)
 	if err != nil {
@@ -554,8 +564,15 @@ func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount
 	} else {
 		r.accountCacheMiss.Add(1)
 		r.accountMissTime.Add(int64(time.Since(start)))
-		if r.prefetchActive != nil && r.prefetchActive() {
+		switch {
+		case r.prefetchActive == nil:
+			r.accountMissNoPrefetch.Add(1)
+		case active:
 			r.accountMissRace.Add(1)
+		default:
+			// The prefetch was completed before the read even began, the
+			// missed item is not covered by the prefetch hint at all.
+			sampleUncoveredAccount(addr)
 		}
 	}
 	return account, nil
@@ -567,6 +584,13 @@ func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount
 //
 // An error will be returned if the state is corrupted in the underlying reader.
 func (r *stateReaderWithStats) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
+	// Sample the prefetcher activity before resolving the state, ensuring
+	// the cache misses raced with the prefetching are attributed correctly
+	// (the prefetching might be completed during the state resolution).
+	var active bool
+	if r.prefetchActive != nil {
+		active = r.prefetchActive()
+	}
 	start := time.Now()
 	value, incache, err := r.stateReaderWithCache.storage(addr, slot)
 	if err != nil {
@@ -577,8 +601,15 @@ func (r *stateReaderWithStats) Storage(addr common.Address, slot common.Hash) (c
 	} else {
 		r.storageCacheMiss.Add(1)
 		r.storageMissTime.Add(int64(time.Since(start)))
-		if r.prefetchActive != nil && r.prefetchActive() {
+		switch {
+		case r.prefetchActive == nil:
+			r.storageMissNoPrefetch.Add(1)
+		case active:
 			r.storageMissRace.Add(1)
+		default:
+			// The prefetch was completed before the read even began, the
+			// missed item is not covered by the prefetch hint at all.
+			sampleUncoveredStorage(addr, slot)
 		}
 	}
 	return value, nil
@@ -596,6 +627,9 @@ func (r *stateReaderWithStats) GetStateStats() StateReaderStats {
 		StorageMissTime:  time.Duration(r.storageMissTime.Load()),
 		AccountMissRace:  r.accountMissRace.Load(),
 		StorageMissRace:  r.storageMissRace.Load(),
+
+		AccountMissNoPrefetch: r.accountMissNoPrefetch.Load(),
+		StorageMissNoPrefetch: r.storageMissNoPrefetch.Load(),
 	}
 }
 

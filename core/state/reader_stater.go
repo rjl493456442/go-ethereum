@@ -57,6 +57,12 @@ type StateReaderStats struct {
 	// not covered by the prefetch hint (e.g. the block access list).
 	AccountMissRace int64
 	StorageMissRace int64
+
+	// The number of cache misses occurred without an associated prefetcher
+	// (e.g. the blocks with an empty prefetch hint), for which the race or
+	// coverage attribution is not applicable.
+	AccountMissNoPrefetch int64
+	StorageMissNoPrefetch int64
 }
 
 // AccountCacheHitRate returns the cache hit rate of account requests in percentage.
