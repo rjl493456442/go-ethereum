@@ -2385,7 +2385,9 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 	// BAL is only meaningful from Amsterdam onward; skip pre-Amsterdam blocks
 	// to avoid persisting and serving empty BALs over the network.
 	if res.Bal != nil && block.AccessList() == nil && bc.chainConfig.IsAmsterdam(block.Number(), block.Time()) {
-		block = block.WithAccessListUnsafe(res.Bal.ToEncodingObj())
+		// Reuse the encoding object already constructed during the block
+		// validation, the conversion is expensive for large access lists.
+		block = block.WithAccessListUnsafe(res.BalEncoding())
 	}
 
 	// Write the block to the chain and get the status.

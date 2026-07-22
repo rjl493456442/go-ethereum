@@ -18,6 +18,7 @@ package core
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/core/state"
@@ -63,4 +64,26 @@ type ProcessResult struct {
 	// BAL is only meaningful for post-Amsterdam blocks. Please ensure
 	// fork validation is performed before accessing it.
 	Bal *bal.ConstructionBlockAccessList
+
+	// The lazily converted encoding object of the block access list. The
+	// conversion involves sorting the entire list and is relatively expensive,
+	// thus the result is cached for reuse (e.g. hash validation and block
+	// persistence).
+	balEncOnce sync.Once
+	balEnc     *bal.BlockAccessList
+}
+
+// BalEncoding returns the block access list expressed as the canonical
+// encoding object, converted lazily and cached for the subsequent calls.
+//
+// Note the access list held by the result must not be mutated anymore
+// once the function is invoked.
+func (r *ProcessResult) BalEncoding() *bal.BlockAccessList {
+	if r.Bal == nil {
+		return nil
+	}
+	r.balEncOnce.Do(func() {
+		r.balEnc = r.Bal.ToEncodingObj()
+	})
+	return r.balEnc
 }
