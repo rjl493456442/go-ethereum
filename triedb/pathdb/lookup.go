@@ -175,7 +175,9 @@ func (l *lookup) storageTip(accountHash common.Hash, slotHash common.Hash, state
 // order.
 func (l *lookup) addLayer(diff *diffLayer) {
 	defer func(now time.Time) {
-		lookupAddLayerTimer.UpdateSince(now)
+		elapsed := time.Since(now)
+		lookupAddLayerTimer.Update(elapsed)
+		commitStatsAccumulator.lookupAddNs.Add(int64(elapsed))
 	}(time.Now())
 
 	var (
@@ -241,7 +243,9 @@ func removeFromList(list []common.Hash, element common.Hash) (bool, []common.Has
 // unlink them from the lookup set.
 func (l *lookup) removeLayer(diff *diffLayer) error {
 	defer func(now time.Time) {
-		lookupRemoveLayerTimer.UpdateSince(now)
+		elapsed := time.Since(now)
+		lookupRemoveLayerTimer.Update(elapsed)
+		commitStatsAccumulator.lookupRemoveNs.Add(int64(elapsed))
 	}(time.Now())
 
 	var (

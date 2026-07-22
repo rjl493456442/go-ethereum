@@ -256,13 +256,13 @@ func ParallelExecutionSummary() string {
   ---- triedb commit breakdown (inside commit(trie), serial) ----
   triedb update:      %v   (%d updates)
     difflayer build:  %v
-    layer link (add): %v
+    layer link (add): %v   (incl. lookup index %v)
     layer cap:        %v
       history (state):    %v
       history (trienode): %v
       buffer append:      %v
       buffer freeze:      %v   (%d freezes, wait-flush %v)
-      cap other:          %v
+      cap other:          %v   (incl. lookup unindex %v)
   outside triedb:     %v   (statedb commit minus triedb update)
     root residual:    %v
     destruction:      %v
@@ -275,13 +275,13 @@ func ParallelExecutionSummary() string {
   buffer flush:       %v   (%d flushes, incl. flatten %v)`,
 			common.PrettyDuration(update), cs.Updates,
 			common.PrettyDuration(cs.DiffLayerTime),
-			common.PrettyDuration(cs.TreeAddTime),
+			common.PrettyDuration(cs.TreeAddTime), common.PrettyDuration(cs.LookupAddTime),
 			common.PrettyDuration(cs.TreeCapTime),
 			common.PrettyDuration(cs.HistoryStateTime),
 			common.PrettyDuration(cs.HistoryTrienodeTime),
 			common.PrettyDuration(cs.BufferAppendTime),
 			common.PrettyDuration(cs.FreezeTime), cs.Freezes, common.PrettyDuration(cs.WaitFlushTime),
-			common.PrettyDuration(capOther),
+			common.PrettyDuration(capOther), common.PrettyDuration(cs.LookupRemoveTime),
 			common.PrettyDuration(outside),
 			common.PrettyDuration(ss.RootTime),
 			common.PrettyDuration(ss.DestructTime),

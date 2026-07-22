@@ -39,6 +39,8 @@ var commitStatsAccumulator struct {
 	freezes           atomic.Int64 // number of the buffer freezing operations
 	freezeNs          atomic.Int64 // summed buffer freezing time
 	waitFlushNs       atomic.Int64 // summed blocking time on the previous background flush
+	lookupAddNs       atomic.Int64 // summed lookup indexing time (part of the layer tree linking)
+	lookupRemoveNs    atomic.Int64 // summed lookup unindexing time (part of the layer tree capping)
 
 	compactions atomic.Int64 // number of the background compaction runs
 	compactNs   atomic.Int64 // summed background compaction time
@@ -60,6 +62,8 @@ type CommitStats struct {
 	Freezes             int64         // Number of the buffer freezing operations
 	FreezeTime          time.Duration // Summed buffer freezing time
 	WaitFlushTime       time.Duration // Summed blocking time on the previous background flush
+	LookupAddTime       time.Duration // Summed lookup indexing time (part of the layer tree linking)
+	LookupRemoveTime    time.Duration // Summed lookup unindexing time (part of the layer tree capping)
 
 	Compactions int64         // Number of the background compaction runs
 	CompactTime time.Duration // Summed background compaction time
@@ -82,6 +86,8 @@ func ReadCommitStats() CommitStats {
 		Freezes:             commitStatsAccumulator.freezes.Load(),
 		FreezeTime:          time.Duration(commitStatsAccumulator.freezeNs.Load()),
 		WaitFlushTime:       time.Duration(commitStatsAccumulator.waitFlushNs.Load()),
+		LookupAddTime:       time.Duration(commitStatsAccumulator.lookupAddNs.Load()),
+		LookupRemoveTime:    time.Duration(commitStatsAccumulator.lookupRemoveNs.Load()),
 		Compactions:         commitStatsAccumulator.compactions.Load(),
 		CompactTime:         time.Duration(commitStatsAccumulator.compactNs.Load()),
 		Flushes:             commitStatsAccumulator.flushes.Load(),
