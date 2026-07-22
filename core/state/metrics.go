@@ -29,4 +29,17 @@ var (
 	storageTriesUpdatedMeter = metrics.NewRegisteredMeter("state/update/storagenodes", nil)
 	accountTrieDeletedMeter  = metrics.NewRegisteredMeter("state/delete/accountnodes", nil)
 	storageTriesDeletedMeter = metrics.NewRegisteredMeter("state/delete/storagenodes", nil)
+
+	// Metrics of the background state prefetcher (EIP-7928 access list driven).
+	//
+	// The lead timer and the interrupt meter together reveal the relation
+	// between the prefetching and the transaction execution: a large lead
+	// time indicates the prefetching completes way ahead of the execution;
+	// while a high interrupt rate with non-trivial wait time indicates the
+	// execution constantly outpaces the prefetching.
+	prefetchTimeTimer      = metrics.NewRegisteredResettingTimer("state/prefetch/time", nil)     // Duration of the fully completed prefetch runs
+	prefetchLeadTimer      = metrics.NewRegisteredResettingTimer("state/prefetch/lead", nil)     // How long the prefetch completed before being closed
+	prefetchWaitTimer      = metrics.NewRegisteredResettingTimer("state/prefetch/wait", nil)     // How long the closer blocked on terminating the prefetch
+	prefetchInterruptMeter = metrics.NewRegisteredMeter("state/prefetch/interrupt", nil)         // Number of prefetch runs terminated before completion
+	prefetchTaskWeightHist = metrics.NewRegisteredHistogram("state/prefetch/weight", nil, metrics.NewExpDecaySample(1028, 0.015)) // Total task weight (accounts + slots) per run
 )

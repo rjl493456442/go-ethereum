@@ -226,12 +226,20 @@ func newBuffer(limit int, nodes *nodeSet, states *stateSet, layers uint64) *buff
 			size = set.size()
 		}
 	}
-	b.view.Store(&bufferView{
+	b.publish(&bufferView{
 		layers: layers,
 		size:   size,
 		sets:   sets,
 	})
 	return b
+}
+
+// publish atomically installs the given view as the current content snapshot
+// and updates the associated metrics. Except for the buffer initialization,
+// the caller must hold the viewMu.
+func (b *buffer) publish(view *bufferView) {
+	b.view.Store(view)
+	bufferSetsGauge.Update(int64(len(view.sets)))
 }
 
 // account retrieves the account blob with account address hash.
@@ -340,7 +348,7 @@ func (b *buffer) commit(nodes *nodeSet, states *stateSet) *buffer {
 	sets = append(sets, view.sets...)
 	sets = append(sets, set)
 
-	b.view.Store(&bufferView{
+	b.publish(&bufferView{
 		layers: view.layers + 1,
 		size:   view.size + set.size(),
 		sets:   sets,
@@ -371,7 +379,7 @@ func (b *buffer) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[str
 	}
 	// Reset the entire buffer if only a single transition left
 	if view.layers == 1 {
-		b.view.Store(&bufferView{})
+		b.publish(&bufferView{})
 		return nil
 	}
 	var (
@@ -396,7 +404,7 @@ func (b *buffer) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[str
 	for _, set := range sets {
 		size += set.size()
 	}
-	b.view.Store(&bufferView{
+	b.publish(&bufferView{
 		layers: view.layers - 1,
 		size:   size,
 		sets:   sets,
@@ -412,7 +420,7 @@ func (b *buffer) reset() {
 	b.viewMu.Lock()
 	defer b.viewMu.Unlock()
 
-	b.view.Store(&bufferView{})
+	b.publish(&bufferView{})
 }
 
 // empty returns an indicator if buffer is empty.
@@ -530,7 +538,7 @@ func (b *buffer) compact() {
 		for _, set := range sets {
 			size += set.size()
 		}
-		b.view.Store(&bufferView{
+		b.publish(&bufferView{
 			layers: cur.layers,
 			size:   size,
 			sets:   sets,
@@ -562,7 +570,7 @@ func (b *buffer) flatten() (*nodeSet, *stateSet) {
 		return view.sets[0].nodes, view.sets[0].states
 	}
 	merged := mergeBufferSets(view.sets)
-	b.view.Store(&bufferView{
+	b.publish(&bufferView{
 		layers: view.layers,
 		size:   merged.size(),
 		sets:   []*bufferSet{merged},
@@ -598,7 +606,9 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, freezers []ethd
 		// Collapse the aggregated sets into a single one for flushing. The
 		// buffer content is still fully available for state access during
 		// the flattening.
+		flattenStart := time.Now()
 		nodes, states := b.flatten()
+		flushFlattenTimer.UpdateSince(flattenStart)
 
 		// Terminate the state snapshot generation if it's active
 		var (

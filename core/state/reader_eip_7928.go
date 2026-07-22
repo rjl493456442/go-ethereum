@@ -18,6 +18,8 @@ package state
 
 import (
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -70,6 +72,41 @@ import (
 // Instead, it directly utilizes the readerTracker, wrapped around the
 // base reader, to construct the access list.
 
+// prefetchAccumulator accumulates the BAL prefetcher activity across every
+// block processed in this process lifetime. It is cumulative and O(1) in
+// memory, making it suitable for an end-of-run summary such as geth import.
+var prefetchAccumulator struct {
+	runs        atomic.Int64 // number of the fully completed prefetch runs
+	interrupted atomic.Int64 // number of the prefetch runs terminated before completion
+	prefetchNs  atomic.Int64 // summed duration of the fully completed runs
+	leadNs      atomic.Int64 // summed lead time of the completion ahead of the closing
+	waitNs      atomic.Int64 // summed close blocking time on the termination
+	weight      atomic.Int64 // summed task weight (accounts + slots)
+}
+
+// PrefetchStats is a cumulative snapshot of the BAL prefetcher activity.
+type PrefetchStats struct {
+	Runs         int64         // Number of the fully completed prefetch runs
+	Interrupted  int64         // Number of the prefetch runs terminated before completion
+	PrefetchTime time.Duration // Summed duration of the fully completed runs
+	Lead         time.Duration // Summed lead time of the completion ahead of the closing
+	Wait         time.Duration // Summed close blocking time on the termination
+	Weight       int64         // Summed task weight (accounts + slots)
+}
+
+// ReadPrefetchStats returns a cumulative snapshot of the BAL prefetcher
+// activity across every block processed in this process lifetime.
+func ReadPrefetchStats() PrefetchStats {
+	return PrefetchStats{
+		Runs:         prefetchAccumulator.runs.Load(),
+		Interrupted:  prefetchAccumulator.interrupted.Load(),
+		PrefetchTime: time.Duration(prefetchAccumulator.prefetchNs.Load()),
+		Lead:         time.Duration(prefetchAccumulator.leadNs.Load()),
+		Wait:         time.Duration(prefetchAccumulator.waitNs.Load()),
+		Weight:       prefetchAccumulator.weight.Load(),
+	}
+}
+
 type fetchTask struct {
 	addr  common.Address
 	slots []common.Hash
@@ -85,6 +122,9 @@ type prefetchStateReader struct {
 	done      chan struct{}
 	term      chan struct{}
 	closeOnce sync.Once
+
+	interrupted atomic.Bool  // whether any worker was terminated before completion
+	finished    atomic.Int64 // nanotime of the natural prefetch completion, 0 if not completed
 }
 
 func newPrefetchStateReader(reader StateReader, accessList map[common.Address][]common.Hash, nThreads int) *prefetchStateReader {
@@ -112,8 +152,26 @@ func newPrefetchStateReaderInternal(reader StateReader, tasks []*fetchTask, nThr
 
 func (r *prefetchStateReader) Close() {
 	r.closeOnce.Do(func() {
-		close(r.term)
-		<-r.done
+		select {
+		case <-r.done:
+			// The prefetch has already been completed naturally, measure how
+			// long it finished ahead of the closing (typically the end of the
+			// block execution).
+			if finished := r.finished.Load(); finished != 0 {
+				lead := time.Since(time.Unix(0, finished))
+				prefetchLeadTimer.Update(lead)
+				prefetchAccumulator.leadNs.Add(int64(lead))
+			}
+			close(r.term)
+		default:
+			// The prefetch is still running, terminate it and measure the
+			// blocking time on the termination.
+			start := time.Now()
+			close(r.term)
+			<-r.done
+			prefetchWaitTimer.UpdateSince(start)
+			prefetchAccumulator.waitNs.Add(int64(time.Since(start)))
+		}
 	})
 }
 
@@ -136,9 +194,13 @@ func (r *prefetchStateReader) prefetch() {
 	for _, t := range r.tasks {
 		total += t.weight()
 	}
+	prefetchTaskWeightHist.Update(int64(total))
+	prefetchAccumulator.weight.Add(int64(total))
+
 	var (
-		wg   sync.WaitGroup
-		unit = (total + r.nThreads - 1) / r.nThreads // round-up the per worker unit
+		begin = time.Now()
+		wg    sync.WaitGroup
+		unit  = (total + r.nThreads - 1) / r.nThreads // round-up the per worker unit
 	)
 	for i := 0; i < r.nThreads; i++ {
 		start := i * unit
@@ -158,6 +220,18 @@ func (r *prefetchStateReader) prefetch() {
 		}(i, start, limit)
 	}
 	wg.Wait()
+
+	// Only the fully completed runs are counted for the completion time,
+	// the interrupted ones are tracked separately.
+	if r.interrupted.Load() {
+		prefetchInterruptMeter.Mark(1)
+		prefetchAccumulator.interrupted.Add(1)
+	} else {
+		prefetchTimeTimer.UpdateSince(begin)
+		prefetchAccumulator.runs.Add(1)
+		prefetchAccumulator.prefetchNs.Add(int64(time.Since(begin)))
+		r.finished.Store(time.Now().UnixNano())
+	}
 }
 
 func (r *prefetchStateReader) process(start, limit int) {
@@ -176,6 +250,7 @@ func (r *prefetchStateReader) process(start, limit int) {
 			for j := s; j < l; j++ {
 				select {
 				case <-r.term:
+					r.interrupted.Store(true)
 					return
 				default:
 					if j == 0 {

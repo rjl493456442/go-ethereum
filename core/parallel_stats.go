@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 )
 
 // parallelStats accumulates BAL parallel-execution instrumentation across every
@@ -163,7 +164,7 @@ func ParallelExecutionSummary() string {
 	if txExec > 0 {
 		efficiency = float64(txWork) / float64(txExec)
 	}
-	return fmt.Sprintf(`Parallel execution summary (BAL-driven):
+	summary := fmt.Sprintf(`Parallel execution summary (BAL-driven):
   blocks (parallel):  %d
   transactions:       %d
   tx wall-clock:      %v
@@ -215,4 +216,37 @@ func ParallelExecutionSummary() string {
 		a.accountHit.Load(), a.accountMiss.Load(), hitRate(a.accountHit.Load(), a.accountMiss.Load()), common.PrettyDuration(time.Duration(a.accountMissNs.Load())),
 		a.storageHit.Load(), a.storageMiss.Load(), hitRate(a.storageHit.Load(), a.storageMiss.Load()), common.PrettyDuration(time.Duration(a.storageMissNs.Load())),
 	)
+	// Append the BAL state prefetcher activity if any run was scheduled. All
+	// the prefetch runs are overlapped with the transaction execution, thus
+	// the numbers below are not part of the serial wall-clock. The lead time
+	// (completion ahead of the execution end) along with the interrupt rate
+	// reveals whether the prefetching outpaces the execution or not.
+	if ps := state.ReadPrefetchStats(); ps.Runs+ps.Interrupted > 0 {
+		var (
+			avgPrefetch time.Duration
+			avgLead     time.Duration
+			avgWeight   int64
+		)
+		if ps.Runs > 0 {
+			avgPrefetch = ps.PrefetchTime / time.Duration(ps.Runs)
+			avgLead = ps.Lead / time.Duration(ps.Runs)
+		}
+		if scheduled := ps.Runs + ps.Interrupted; scheduled > 0 {
+			avgWeight = ps.Weight / scheduled
+		}
+		summary += fmt.Sprintf(`
+  ---- BAL state prefetch (background, overlapped) ----
+  runs:               %d completed, %d interrupted (%.1f%% interrupted)
+  task weight:        %d accounts+slots (avg %d /block)
+  prefetch time:      %v   (avg %v /block)
+  finish lead:        %v   (avg %v ahead of exec end)
+  stop wait:          %v   (blocking, part of prefetch stop)`,
+			ps.Runs, ps.Interrupted, hitRate(ps.Interrupted, ps.Runs),
+			ps.Weight, avgWeight,
+			common.PrettyDuration(ps.PrefetchTime), common.PrettyDuration(avgPrefetch),
+			common.PrettyDuration(ps.Lead), common.PrettyDuration(avgLead),
+			common.PrettyDuration(ps.Wait),
+		)
+	}
+	return summary
 }

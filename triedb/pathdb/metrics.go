@@ -56,7 +56,21 @@ var (
 	nodeDiskFalseMeter  = metrics.NewRegisteredMeter("pathdb/disk/false", nil)
 	nodeDiffFalseMeter  = metrics.NewRegisteredMeter("pathdb/diff/false", nil)
 
-	compactTimeTimer    = metrics.NewRegisteredResettingTimer("pathdb/compact/time", nil)
+	compactTimeTimer = metrics.NewRegisteredResettingTimer("pathdb/compact/time", nil)
+	bufferSetsGauge  = metrics.NewRegisteredGauge("pathdb/buffer/sets", nil)
+
+	// Timers breaking down the latency of the database update (state commit),
+	// all of them are measured on the block import critical path.
+	updateDiffLayerTimer       = metrics.NewRegisteredResettingTimer("pathdb/update/difflayer/time", nil)        // Construction of the node set with origins
+	updateTreeAddTimer         = metrics.NewRegisteredResettingTimer("pathdb/update/add/time", nil)              // Linking the new diff layer (including the lookup indexing)
+	updateTreeCapTimer         = metrics.NewRegisteredResettingTimer("pathdb/update/cap/time", nil)              // Capping the layer tree (including the disk layer commit)
+	commitHistoryStateTimer    = metrics.NewRegisteredResettingTimer("pathdb/commit/history/state/time", nil)    // Writing the state history into the freezer
+	commitHistoryTrienodeTimer = metrics.NewRegisteredResettingTimer("pathdb/commit/history/trienode/time", nil) // Writing the trienode history into the freezer
+	commitAppendTimer          = metrics.NewRegisteredResettingTimer("pathdb/commit/append/time", nil)           // Appending the bottom-most diff layer into the buffer
+	commitFreezeTimer          = metrics.NewRegisteredResettingTimer("pathdb/commit/freeze/time", nil)           // Freezing the buffer and scheduling the background flush
+	commitWaitFlushTimer       = metrics.NewRegisteredResettingTimer("pathdb/commit/waitflush/time", nil)        // Blocking on the previous background buffer flush
+	flushFlattenTimer          = metrics.NewRegisteredResettingTimer("pathdb/flush/flatten/time", nil)           // Flattening the frozen buffer (background)
+
 	commitTimeTimer     = metrics.NewRegisteredResettingTimer("pathdb/commit/time", nil)
 	commitNodesMeter    = metrics.NewRegisteredMeter("pathdb/commit/nodes", nil)
 	commitAccountsMeter = metrics.NewRegisteredMeter("pathdb/commit/accounts", nil)

@@ -430,18 +430,23 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Construct and store the state history first. If crash happens after storing
 	// the state history but without flushing the corresponding states(journal),
 	// the stored state history will be truncated from head in the next restart.
+	start := time.Now()
 	flushA, err := dl.writeHistory(typeStateHistory, bottom)
 	if err != nil {
 		return nil, err
 	}
+	commitHistoryStateTimer.UpdateSince(start)
+
 	// Construct and store the trienode history first. If crash happens after
 	// storing the trienode history but without flushing the corresponding
 	// states(journal), the stored trienode history will be truncated from head
 	// in the next restart.
+	start = time.Now()
 	flushB, err := dl.writeHistory(typeTrienodeHistory, bottom)
 	if err != nil {
 		return nil, err
 	}
+	commitHistoryTrienodeTimer.UpdateSince(start)
 	// Since the state history and trienode history may be configured with different
 	// lengths, the buffer will be flushed once either of them meets its threshold.
 	flush := flushA || flushB
@@ -457,18 +462,24 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	}
 	rawdb.WriteStateID(dl.db.diskdb, bottom.rootHash(), bottom.stateID())
 
-	// Merge the trie nodes and flat states of the bottom-most diff layer into the
-	// buffer as the combined layer.
+	// Append the trie nodes and flat states of the bottom-most diff layer into
+	// the buffer as a new set, aggregation is deferred to the background thread.
+	start = time.Now()
 	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet)
+	commitAppendTimer.UpdateSince(start)
 
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
 	if combined.full() || force || flush {
+		freezeStart := time.Now()
+
 		// Wait until the previous frozen buffer is fully flushed
 		if dl.frozen != nil {
+			start = time.Now()
 			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
+			commitWaitFlushTimer.UpdateSince(start)
 		}
 		// Release the frozen buffer and the internally referenced maps will
 		// be reclaimed by GC.
@@ -515,6 +526,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 			dl.frozen = nil
 		}
 		combined = newBuffer(dl.db.config.WriteBufferSize, nil, nil, 0)
+		commitFreezeTimer.UpdateSince(freezeStart)
 	}
 	// Link the generator if snapshot is not yet completed
 	ndl := newDiskLayer(bottom.root, bottom.stateID(), dl.db, dl.nodes, dl.states, combined, dl.frozen)
