@@ -521,6 +521,15 @@ type stateReaderWithStats struct {
 
 	accountMissTime atomic.Int64 // Accumulated wall-clock time spent on the miss accounts
 	storageMissTime atomic.Int64 // Accumulated wall-clock time spent on the miss storages
+
+	// prefetchActive is an optional probe reporting whether the background
+	// state prefetcher is still running, for attributing the cache misses
+	// to either the prefetch race or the prefetch coverage gap. Nil if no
+	// prefetcher is associated.
+	prefetchActive func() bool
+
+	accountMissRace atomic.Int64 // Number of account misses occurred with the active prefetcher
+	storageMissRace atomic.Int64 // Number of storage misses occurred with the active prefetcher
 }
 
 // newReaderWithStats constructs the state reader with additional statistics tracked.
@@ -545,6 +554,9 @@ func (r *stateReaderWithStats) Account(addr common.Address) (*types.StateAccount
 	} else {
 		r.accountCacheMiss.Add(1)
 		r.accountMissTime.Add(int64(time.Since(start)))
+		if r.prefetchActive != nil && r.prefetchActive() {
+			r.accountMissRace.Add(1)
+		}
 	}
 	return account, nil
 }
@@ -565,6 +577,9 @@ func (r *stateReaderWithStats) Storage(addr common.Address, slot common.Hash) (c
 	} else {
 		r.storageCacheMiss.Add(1)
 		r.storageMissTime.Add(int64(time.Since(start)))
+		if r.prefetchActive != nil && r.prefetchActive() {
+			r.storageMissRace.Add(1)
+		}
 	}
 	return value, nil
 }
@@ -579,6 +594,8 @@ func (r *stateReaderWithStats) GetStateStats() StateReaderStats {
 		StorageCacheMiss: r.storageCacheMiss.Load(),
 		AccountMissTime:  time.Duration(r.accountMissTime.Load()),
 		StorageMissTime:  time.Duration(r.storageMissTime.Load()),
+		AccountMissRace:  r.accountMissRace.Load(),
+		StorageMissRace:  r.storageMissRace.Load(),
 	}
 }
 

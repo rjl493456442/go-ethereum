@@ -49,6 +49,14 @@ type StateReaderStats struct {
 	StorageCacheMiss int64         // Number of storage cache misses
 	AccountMissTime  time.Duration // Accumulated wall-clock time spent resolving accounts
 	StorageMissTime  time.Duration // Accumulated wall-clock time spent resolving storages
+
+	// The number of cache misses occurred while the background state
+	// prefetcher was still running. These misses are attributed to the
+	// execution racing ahead of the prefetching; the remaining misses
+	// (occurred after the prefetch completion) indicate the state reads
+	// not covered by the prefetch hint (e.g. the block access list).
+	AccountMissRace int64
+	StorageMissRace int64
 }
 
 // AccountCacheHitRate returns the cache hit rate of account requests in percentage.

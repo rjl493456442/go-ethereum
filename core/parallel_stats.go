@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/triedb/pathdb"
 )
 
 // parallelStats accumulates BAL parallel-execution instrumentation across every
@@ -44,12 +45,14 @@ type parallelAccumulator struct {
 	stateHashNs  atomic.Int64 // summed IntermediateRoot time
 	totalNs      atomic.Int64 // summed end-to-end block processing time
 
-	accountHit    atomic.Int64
-	accountMiss   atomic.Int64
-	accountMissNs atomic.Int64
-	storageHit    atomic.Int64
-	storageMiss   atomic.Int64
-	storageMissNs atomic.Int64
+	accountHit      atomic.Int64
+	accountMiss     atomic.Int64
+	accountMissNs   atomic.Int64
+	accountMissRace atomic.Int64 // misses occurred while the BAL prefetcher was still running
+	storageHit      atomic.Int64
+	storageMiss     atomic.Int64
+	storageMissNs   atomic.Int64
+	storageMissRace atomic.Int64 // misses occurred while the BAL prefetcher was still running
 
 	// Out-of-Process phases, recorded by the insertion/import pipeline. These are
 	// the serial per-block costs that run between Process calls and dominate the
@@ -116,9 +119,11 @@ func (a *parallelAccumulator) add(txs int, txExec, system, gather, stateApply, s
 	a.accountHit.Add(p.reads.AccountCacheHit)
 	a.accountMiss.Add(p.reads.AccountCacheMiss)
 	a.accountMissNs.Add(int64(p.reads.AccountMissTime))
+	a.accountMissRace.Add(p.reads.AccountMissRace)
 	a.storageHit.Add(p.reads.StorageCacheHit)
 	a.storageMiss.Add(p.reads.StorageCacheMiss)
 	a.storageMissNs.Add(int64(p.reads.StorageMissTime))
+	a.storageMissRace.Add(p.reads.StorageMissRace)
 }
 
 func hitRate(hit, miss int64) float64 {
@@ -191,7 +196,8 @@ func ParallelExecutionSummary() string {
   Process+setup+validate+persist+prefetchStop+decode = %v
   ---- shared-cache reads ----
   account: %d hits, %d misses (%.1f%% hit), miss I/O %v
-  storage: %d hits, %d misses (%.1f%% hit), miss I/O %v`,
+  storage: %d hits, %d misses (%.1f%% hit), miss I/O %v
+  miss attribution:   account %d raced prefetch / %d uncovered, storage %d raced prefetch / %d uncovered`,
 		blocks,
 		txs,
 		common.PrettyDuration(txExec),
@@ -215,7 +221,49 @@ func ParallelExecutionSummary() string {
 		common.PrettyDuration(accounted),
 		a.accountHit.Load(), a.accountMiss.Load(), hitRate(a.accountHit.Load(), a.accountMiss.Load()), common.PrettyDuration(time.Duration(a.accountMissNs.Load())),
 		a.storageHit.Load(), a.storageMiss.Load(), hitRate(a.storageHit.Load(), a.storageMiss.Load()), common.PrettyDuration(time.Duration(a.storageMissNs.Load())),
+		a.accountMissRace.Load(), a.accountMiss.Load()-a.accountMissRace.Load(),
+		a.storageMissRace.Load(), a.storageMiss.Load()-a.storageMissRace.Load(),
 	)
+	// Append the triedb commit breakdown if any state commit was performed.
+	// The serial part is a subset of the commit (trie) phase above; whatever
+	// remains ("outside triedb") is the statedb-side commit cost (trie node
+	// collection, account/storage set conversion etc). The background part
+	// is overlapped with the block processing and not on the critical path.
+	if cs := pathdb.ReadCommitStats(); cs.Updates > 0 {
+		var (
+			update   = cs.DiffLayerTime + cs.TreeAddTime + cs.TreeCapTime
+			capOther = cs.TreeCapTime - cs.HistoryStateTime - cs.HistoryTrienodeTime - cs.BufferAppendTime - cs.FreezeTime
+			outside  = commit - update
+		)
+		summary += fmt.Sprintf(`
+  ---- triedb commit breakdown (inside commit(trie), serial) ----
+  triedb update:      %v   (%d updates)
+    difflayer build:  %v
+    layer link (add): %v
+    layer cap:        %v
+      history (state):    %v
+      history (trienode): %v
+      buffer append:      %v
+      buffer freeze:      %v   (%d freezes, wait-flush %v)
+      cap other:          %v
+  outside triedb:     %v   (statedb commit minus triedb update)
+  ---- triedb background (overlapped) ----
+  buffer compaction:  %v   (%d runs)
+  buffer flush:       %v   (%d flushes, incl. flatten %v)`,
+			common.PrettyDuration(update), cs.Updates,
+			common.PrettyDuration(cs.DiffLayerTime),
+			common.PrettyDuration(cs.TreeAddTime),
+			common.PrettyDuration(cs.TreeCapTime),
+			common.PrettyDuration(cs.HistoryStateTime),
+			common.PrettyDuration(cs.HistoryTrienodeTime),
+			common.PrettyDuration(cs.BufferAppendTime),
+			common.PrettyDuration(cs.FreezeTime), cs.Freezes, common.PrettyDuration(cs.WaitFlushTime),
+			common.PrettyDuration(capOther),
+			common.PrettyDuration(outside),
+			common.PrettyDuration(cs.CompactTime), cs.Compactions,
+			common.PrettyDuration(cs.FlushTime), cs.Flushes, common.PrettyDuration(cs.FlattenTime),
+		)
+	}
 	// Append the BAL state prefetcher activity if any run was scheduled. All
 	// the prefetch runs are overlapped with the transaction execution, thus
 	// the numbers below are not part of the serial wall-clock. The lead time

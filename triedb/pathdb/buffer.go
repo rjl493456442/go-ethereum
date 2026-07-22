@@ -545,8 +545,11 @@ func (b *buffer) compact() {
 		})
 		b.viewMu.Unlock()
 
-		compactTimeTimer.UpdateSince(start)
-		log.Debug("Compacted buffer sets", "count", j-i, "rank", merged.rank, "layers", merged.layers, "size", common.StorageSize(merged.size()), "elapsed", common.PrettyDuration(time.Since(start)))
+		elapsed := time.Since(start)
+		compactTimeTimer.Update(elapsed)
+		commitStatsAccumulator.compactions.Add(1)
+		commitStatsAccumulator.compactNs.Add(int64(elapsed))
+		log.Debug("Compacted buffer sets", "count", j-i, "rank", merged.rank, "layers", merged.layers, "size", common.StorageSize(merged.size()), "elapsed", common.PrettyDuration(elapsed))
 	}
 }
 
@@ -589,7 +592,10 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, freezers []ethd
 	// Schedule the background thread to construct the batch, which usually
 	// take a few seconds.
 	go func() {
+		flushStart := time.Now()
 		defer func() {
+			commitStatsAccumulator.flushes.Add(1)
+			commitStatsAccumulator.flushNs.Add(int64(time.Since(flushStart)))
 			if postFlush != nil {
 				postFlush()
 			}
@@ -608,7 +614,9 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, freezers []ethd
 		// the flattening.
 		flattenStart := time.Now()
 		nodes, states := b.flatten()
-		flushFlattenTimer.UpdateSince(flattenStart)
+		flattenElapsed := time.Since(flattenStart)
+		flushFlattenTimer.Update(flattenElapsed)
+		commitStatsAccumulator.flattenNs.Add(int64(flattenElapsed))
 
 		// Terminate the state snapshot generation if it's active
 		var (

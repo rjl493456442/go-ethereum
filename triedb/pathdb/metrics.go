@@ -16,7 +16,79 @@
 
 package pathdb
 
-import "github.com/ethereum/go-ethereum/metrics"
+import (
+	"sync/atomic"
+	"time"
+
+	"github.com/ethereum/go-ethereum/metrics"
+)
+
+// commitStatsAccumulator accumulates the latency breakdown of the database
+// update (state commit) across the process lifetime. Unlike the metrics
+// timers (which are no-op if the metrics collection is disabled), it is
+// always active, cumulative and O(1) in memory, making it suitable for an
+// end-of-run summary such as geth import.
+var commitStatsAccumulator struct {
+	updates           atomic.Int64 // number of the database updates (state commits)
+	difflayerNs       atomic.Int64 // summed diff layer construction time
+	treeAddNs         atomic.Int64 // summed layer tree linking time (including the lookup indexing)
+	treeCapNs         atomic.Int64 // summed layer tree capping time (including the disk layer commit)
+	historyStateNs    atomic.Int64 // summed state history writing time
+	historyTrienodeNs atomic.Int64 // summed trienode history writing time
+	appendNs          atomic.Int64 // summed buffer appending time
+	freezes           atomic.Int64 // number of the buffer freezing operations
+	freezeNs          atomic.Int64 // summed buffer freezing time
+	waitFlushNs       atomic.Int64 // summed blocking time on the previous background flush
+
+	compactions atomic.Int64 // number of the background compaction runs
+	compactNs   atomic.Int64 // summed background compaction time
+	flushes     atomic.Int64 // number of the background buffer flushes
+	flushNs     atomic.Int64 // summed background buffer flushing time
+	flattenNs   atomic.Int64 // summed buffer flattening time (part of the flushing)
+}
+
+// CommitStats is a cumulative snapshot of the latency breakdown of the
+// database updates (state commits) across the process lifetime.
+type CommitStats struct {
+	Updates             int64         // Number of the database updates (state commits)
+	DiffLayerTime       time.Duration // Summed diff layer construction time
+	TreeAddTime         time.Duration // Summed layer tree linking time (including the lookup indexing)
+	TreeCapTime         time.Duration // Summed layer tree capping time (including the disk layer commit)
+	HistoryStateTime    time.Duration // Summed state history writing time
+	HistoryTrienodeTime time.Duration // Summed trienode history writing time
+	BufferAppendTime    time.Duration // Summed buffer appending time
+	Freezes             int64         // Number of the buffer freezing operations
+	FreezeTime          time.Duration // Summed buffer freezing time
+	WaitFlushTime       time.Duration // Summed blocking time on the previous background flush
+
+	Compactions int64         // Number of the background compaction runs
+	CompactTime time.Duration // Summed background compaction time
+	Flushes     int64         // Number of the background buffer flushes
+	FlushTime   time.Duration // Summed background buffer flushing time
+	FlattenTime time.Duration // Summed buffer flattening time (part of the flushing)
+}
+
+// ReadCommitStats returns a cumulative snapshot of the latency breakdown of
+// the database updates across the process lifetime.
+func ReadCommitStats() CommitStats {
+	return CommitStats{
+		Updates:             commitStatsAccumulator.updates.Load(),
+		DiffLayerTime:       time.Duration(commitStatsAccumulator.difflayerNs.Load()),
+		TreeAddTime:         time.Duration(commitStatsAccumulator.treeAddNs.Load()),
+		TreeCapTime:         time.Duration(commitStatsAccumulator.treeCapNs.Load()),
+		HistoryStateTime:    time.Duration(commitStatsAccumulator.historyStateNs.Load()),
+		HistoryTrienodeTime: time.Duration(commitStatsAccumulator.historyTrienodeNs.Load()),
+		BufferAppendTime:    time.Duration(commitStatsAccumulator.appendNs.Load()),
+		Freezes:             commitStatsAccumulator.freezes.Load(),
+		FreezeTime:          time.Duration(commitStatsAccumulator.freezeNs.Load()),
+		WaitFlushTime:       time.Duration(commitStatsAccumulator.waitFlushNs.Load()),
+		Compactions:         commitStatsAccumulator.compactions.Load(),
+		CompactTime:         time.Duration(commitStatsAccumulator.compactNs.Load()),
+		Flushes:             commitStatsAccumulator.flushes.Load(),
+		FlushTime:           time.Duration(commitStatsAccumulator.flushNs.Load()),
+		FlattenTime:         time.Duration(commitStatsAccumulator.flattenNs.Load()),
+	}
+}
 
 var (
 	cleanNodeHitMeter   = metrics.NewRegisteredMeter("pathdb/clean/node/hit", nil)

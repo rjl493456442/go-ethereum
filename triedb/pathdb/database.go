@@ -310,13 +310,17 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 	} else {
 		nodesWithOrigins = NewNodeSetWithOrigin(nodes.Nodes(), nil)
 	}
-	updateDiffLayerTimer.UpdateSince(start)
+	elapsed := time.Since(start)
+	updateDiffLayerTimer.Update(elapsed)
+	commitStatsAccumulator.difflayerNs.Add(int64(elapsed))
 
 	start = time.Now()
 	if err := db.tree.add(root, parentRoot, block, nodesWithOrigins, states); err != nil {
 		return err
 	}
-	updateTreeAddTimer.UpdateSince(start)
+	elapsed = time.Since(start)
+	updateTreeAddTimer.Update(elapsed)
+	commitStatsAccumulator.treeAddNs.Add(int64(elapsed))
 
 	// Keep 128 diff layers in the memory, persistent layer is 129th.
 	// - head layer is paired with HEAD state
@@ -327,7 +331,10 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 	if err := db.tree.cap(root, maxDiffLayers); err != nil {
 		return err
 	}
-	updateTreeCapTimer.UpdateSince(start)
+	elapsed = time.Since(start)
+	updateTreeCapTimer.Update(elapsed)
+	commitStatsAccumulator.treeCapNs.Add(int64(elapsed))
+	commitStatsAccumulator.updates.Add(1)
 	return nil
 }
 

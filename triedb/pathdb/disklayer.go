@@ -435,7 +435,9 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	if err != nil {
 		return nil, err
 	}
-	commitHistoryStateTimer.UpdateSince(start)
+	elapsed := time.Since(start)
+	commitHistoryStateTimer.Update(elapsed)
+	commitStatsAccumulator.historyStateNs.Add(int64(elapsed))
 
 	// Construct and store the trienode history first. If crash happens after
 	// storing the trienode history but without flushing the corresponding
@@ -446,7 +448,9 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	if err != nil {
 		return nil, err
 	}
-	commitHistoryTrienodeTimer.UpdateSince(start)
+	elapsed = time.Since(start)
+	commitHistoryTrienodeTimer.Update(elapsed)
+	commitStatsAccumulator.historyTrienodeNs.Add(int64(elapsed))
 	// Since the state history and trienode history may be configured with different
 	// lengths, the buffer will be flushed once either of them meets its threshold.
 	flush := flushA || flushB
@@ -466,7 +470,9 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// the buffer as a new set, aggregation is deferred to the background thread.
 	start = time.Now()
 	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet)
-	commitAppendTimer.UpdateSince(start)
+	elapsed = time.Since(start)
+	commitAppendTimer.Update(elapsed)
+	commitStatsAccumulator.appendNs.Add(int64(elapsed))
 
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
@@ -479,7 +485,9 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
-			commitWaitFlushTimer.UpdateSince(start)
+			elapsed = time.Since(start)
+			commitWaitFlushTimer.Update(elapsed)
+			commitStatsAccumulator.waitFlushNs.Add(int64(elapsed))
 		}
 		// Release the frozen buffer and the internally referenced maps will
 		// be reclaimed by GC.
@@ -526,7 +534,10 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 			dl.frozen = nil
 		}
 		combined = newBuffer(dl.db.config.WriteBufferSize, nil, nil, 0)
-		commitFreezeTimer.UpdateSince(freezeStart)
+		elapsed = time.Since(freezeStart)
+		commitFreezeTimer.Update(elapsed)
+		commitStatsAccumulator.freezes.Add(1)
+		commitStatsAccumulator.freezeNs.Add(int64(elapsed))
 	}
 	// Link the generator if snapshot is not yet completed
 	ndl := newDiskLayer(bottom.root, bottom.stateID(), dl.db, dl.nodes, dl.states, combined, dl.frozen)

@@ -274,13 +274,25 @@ func (r *prefetchStateReader) process(start, limit int) {
 func NewBlockExecutionReader(base Reader, prefetch map[common.Address][]common.Hash, threads int) (Reader, func()) {
 	var (
 		cache = newStateReaderWithCache(base)
+		stats = newStateReaderWithStats(cache)
 		stop  = func() {}
 	)
 	if len(prefetch) > 0 && threads > 0 {
 		pf := newPrefetchStateReader(cache, prefetch, threads)
 		stop = pf.Close
+
+		// Attach the probe for attributing the cache misses to either the
+		// prefetch race or the prefetch coverage gap.
+		stats.prefetchActive = func() bool {
+			select {
+			case <-pf.done:
+				return false
+			default:
+				return true
+			}
+		}
 	}
-	return newReader(base, newStateReaderWithStats(cache)), stop
+	return newReader(base, stats), stop
 }
 
 // ReaderWithBlockLevelAccessList provides state access that reflects the
