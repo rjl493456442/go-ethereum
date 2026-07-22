@@ -218,6 +218,12 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 	//
 	// - States older than the current disk layer (including the disk layer
 	//   itself) are available via `db.HistoricReader`.
+	//
+	// The lookup and the history are written in background, wait for the
+	// scheduled writes first.
+	if err := db.waitWrites(); err != nil {
+		return nil, err
+	}
 	id := rawdb.ReadStateID(db.diskdb, root)
 	if id == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
@@ -341,6 +347,12 @@ func (db *Database) HistoricNodeReader(root common.Hash) (*HistoricalNodeReader,
 	//
 	// - States older than the current disk layer (including the disk layer
 	//   itself) are available via `db.HistoricalNodeReader`.
+	//
+	// The lookup and the history are written in background, wait for the
+	// scheduled writes first.
+	if err := db.waitWrites(); err != nil {
+		return nil, err
+	}
 	id := rawdb.ReadStateID(db.diskdb, root)
 	if id == nil {
 		return nil, fmt.Errorf("state %#x is not available", root)
