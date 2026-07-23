@@ -463,9 +463,11 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	if combined.full() || force || flush {
 		// Wait until the previous frozen buffer is fully flushed
 		if dl.frozen != nil {
+			stall := time.Now()
 			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
+			commitStallTimeTimer.UpdateSince(stall)
 		}
 		// Release the frozen buffer and the internally referenced maps will
 		// be reclaimed by GC.

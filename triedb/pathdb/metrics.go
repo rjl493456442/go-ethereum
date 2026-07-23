@@ -56,6 +56,17 @@ var (
 	nodeDiskFalseMeter  = metrics.NewRegisteredMeter("pathdb/disk/false", nil)
 	nodeDiffFalseMeter  = metrics.NewRegisteredMeter("pathdb/diff/false", nil)
 
+	updateNodesetTimer = metrics.NewRegisteredResettingTimer("pathdb/update/nodeset/time", nil)
+	treeAddTimer       = metrics.NewRegisteredResettingTimer("pathdb/tree/add/time", nil)
+	treeCapTimer       = metrics.NewRegisteredResettingTimer("pathdb/tree/cap/time", nil)
+
+	bufferMergeTimeTimer  = metrics.NewRegisteredResettingTimer("pathdb/buffer/merge/time", nil)
+	bufferMergeNodeTimer  = metrics.NewRegisteredResettingTimer("pathdb/buffer/merge/node/time", nil)
+	bufferMergeStateTimer = metrics.NewRegisteredResettingTimer("pathdb/buffer/merge/state/time", nil)
+	bufferSizeGauge       = metrics.NewRegisteredGauge("pathdb/buffer/size", nil)
+	bufferLayersGauge     = metrics.NewRegisteredGauge("pathdb/buffer/layers", nil)
+	commitStallTimeTimer  = metrics.NewRegisteredResettingTimer("pathdb/commit/stall/time", nil)
+
 	commitTimeTimer     = metrics.NewRegisteredResettingTimer("pathdb/commit/time", nil)
 	commitNodesMeter    = metrics.NewRegisteredMeter("pathdb/commit/nodes", nil)
 	commitAccountsMeter = metrics.NewRegisteredMeter("pathdb/commit/accounts", nil)

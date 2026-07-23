@@ -19,6 +19,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -159,20 +160,25 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	// Receipts must go through MakeReceipt to calculate the receipt's bloom
 	// already. Merge the receipt's bloom together instead of recalculating
 	// everything.
+	start := time.Now()
 	rbloom := types.MergeBloom(res.Receipts)
 	if rbloom != header.Bloom {
 		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
 	}
+	blockValidationBloomTimer.UpdateSince(start)
+
 	// In stateless mode, return early because the receipt and state root are not
 	// provided through the witness, rather the cross validator needs to return it.
 	if stateless {
 		return nil
 	}
 	// The receipt Trie's root (R = (Tr [[H1, R1], ... [Hn, Rn]]))
+	start = time.Now()
 	receiptSha := types.DeriveSha(res.Receipts, trie.NewStackTrie(nil))
 	if receiptSha != header.ReceiptHash {
 		return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
 	}
+	blockValidationReceiptRootTimer.UpdateSince(start)
 	// Validate the parsed requests match the expected header value.
 	if header.RequestsHash != nil {
 		reqhash := types.CalcRequestsHash(res.Requests)
@@ -190,14 +196,22 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 		if block.Header().BlockAccessListHash == nil {
 			return errors.New("block access list hash not set in header")
 		}
+		start = time.Now()
 		enc := res.Bal.ToEncodingObj()
+		blockValidationBalEncodeTimer.UpdateSince(start)
+
+		start = time.Now()
 		local, remote := enc.Hash(), *block.Header().BlockAccessListHash
 		if local != remote {
 			return fmt.Errorf("access list hash mismatch, local: %x, remote: %x", local, remote)
 		}
+		blockValidationBalHashTimer.UpdateSince(start)
+
+		start = time.Now()
 		if err := enc.Validate(block.GasLimit(), len(block.Transactions())); err != nil {
 			return fmt.Errorf("invalid block access list: %v", err)
 		}
+		blockValidationBalCheckTimer.UpdateSince(start)
 	}
 	// Validate the state root against the received state root and throw
 	// an error if they don't match.

@@ -81,9 +81,18 @@ func (b *buffer) node(owner common.Hash, path []byte) (*trienode.Node, bool) {
 
 // commit merges the provided states and trie nodes into the buffer.
 func (b *buffer) commit(nodes *nodeSet, states *stateSet) *buffer {
+	start := time.Now()
 	b.layers++
 	b.nodes.merge(nodes)
+	mark := time.Now()
 	b.states.merge(states)
+	done := time.Now()
+
+	bufferMergeNodeTimer.Update(mark.Sub(start))
+	bufferMergeStateTimer.Update(done.Sub(mark))
+	bufferMergeTimeTimer.Update(done.Sub(start))
+	bufferSizeGauge.Update(int64(b.size()))
+	bufferLayersGauge.Update(int64(b.layers))
 	return b
 }
 

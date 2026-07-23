@@ -105,6 +105,18 @@ var (
 	blockExecutionTimer       = metrics.NewRegisteredResettingTimer("chain/execution", nil)
 	blockWriteTimer           = metrics.NewRegisteredResettingTimer("chain/write", nil)
 
+	// Sub-phase breakdown of the block validation (chain/validation)
+	blockValidationBloomTimer       = metrics.NewRegisteredResettingTimer("chain/validation/bloom", nil)
+	blockValidationReceiptRootTimer = metrics.NewRegisteredResettingTimer("chain/validation/receiptroot", nil)
+	blockValidationBalEncodeTimer   = metrics.NewRegisteredResettingTimer("chain/validation/bal/encode", nil)
+	blockValidationBalHashTimer     = metrics.NewRegisteredResettingTimer("chain/validation/bal/hash", nil)
+	blockValidationBalCheckTimer    = metrics.NewRegisteredResettingTimer("chain/validation/bal/check", nil)
+
+	// Sub-phase breakdown of the block write (chain/write)
+	blockWriteBlockDataTimer   = metrics.NewRegisteredResettingTimer("chain/write/blockdata", nil)
+	blockWriteStateCommitTimer = metrics.NewRegisteredResettingTimer("chain/write/statecommit", nil)
+	blockWriteSetHeadTimer     = metrics.NewRegisteredResettingTimer("chain/write/sethead", nil)
+
 	blockReorgMeter     = metrics.NewRegisteredMeter("chain/reorg/executes", nil)
 	blockReorgAddMeter  = metrics.NewRegisteredMeter("chain/reorg/add", nil)
 	blockReorgDropMeter = metrics.NewRegisteredMeter("chain/reorg/drop", nil)
@@ -1676,6 +1688,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if err := batch.Write(); err != nil {
 		log.Crit("Failed to write block into disk", "err", err)
 	}
+	blockWriteBlockDataTimer.UpdateSince(start)
 	log.Debug("Committed block data", "size", common.StorageSize(batch.ValueSize()), "elapsed", common.PrettyDuration(time.Since(start)))
 
 	var (
@@ -1686,6 +1699,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		hasStateHook  = bc.logger != nil && bc.logger.OnStateUpdate != nil
 		hasStateSizer = bc.stateSizer != nil
 	)
+	cstart := time.Now()
 	if hasStateHook || hasStateSizer {
 		r, update, err := statedb.CommitWithUpdate(block.NumberU64(), isEIP158, isCancun)
 		if err != nil {
@@ -1708,6 +1722,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 			return err
 		}
 	}
+	blockWriteStateCommitTimer.UpdateSince(cstart)
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
@@ -1774,6 +1789,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 	if err := bc.writeBlockWithState(block, receipts, state); err != nil {
 		return NonStatTy, err
 	}
+	hstart := time.Now()
 	currentBlock := bc.CurrentBlock()
 
 	// Reorganise the chain if the parent is not the head block
@@ -1803,6 +1819,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 	if emitHeadEvent {
 		bc.chainHeadFeed.Send(ChainHeadEvent{Header: block.Header()})
 	}
+	blockWriteSetHeadTimer.UpdateSince(hstart)
 	return CanonStatTy, nil
 }
 
