@@ -102,35 +102,57 @@ type bufferView struct {
 	layers uint64       // the total number of state transitions aggregated inside
 	size   uint64       // approximate memory size of the aggregated sets
 	sets   []*bufferSet // aggregated sets, sorted from oldest to newest
+
+	// bloom is the filter guarding the aggregated sets, short-circuiting the
+	// linear scan over them for the lookups of the non-contained state entries
+	// (the vast majority). The filter is shared between the consecutive views:
+	// it's strictly additive and the keys of a view are guaranteed to be fully
+	// inserted before the view publication, thus no false negative is possible.
+	bloom *bufferBloom
 }
 
 // node retrieves the trie node with node path and its trie identifier.
 func (v *bufferView) node(owner common.Hash, path []byte) (*trienode.Node, bool) {
+	if !v.bloom.contains(bloomNodeKey(owner, path)) {
+		bloomShortcircuitMeter.Mark(1)
+		return nil, false
+	}
 	for i := len(v.sets) - 1; i >= 0; i-- {
 		if n, ok := v.sets[i].nodes.node(owner, path); ok {
 			return n, true
 		}
 	}
+	bloomFalsePositiveMeter.Mark(1)
 	return nil, false
 }
 
 // account retrieves the account blob with account address hash.
 func (v *bufferView) account(hash common.Hash) ([]byte, bool) {
+	if !v.bloom.contains(bloomAccountKey(hash)) {
+		bloomShortcircuitMeter.Mark(1)
+		return nil, false
+	}
 	for i := len(v.sets) - 1; i >= 0; i-- {
 		if blob, ok := v.sets[i].states.account(hash); ok {
 			return blob, true
 		}
 	}
+	bloomFalsePositiveMeter.Mark(1)
 	return nil, false
 }
 
 // storage retrieves the storage slot with account address hash and slot key hash.
 func (v *bufferView) storage(addrHash common.Hash, storageHash common.Hash) ([]byte, bool) {
+	if !v.bloom.contains(bloomStorageKey(addrHash, storageHash)) {
+		bloomShortcircuitMeter.Mark(1)
+		return nil, false
+	}
 	for i := len(v.sets) - 1; i >= 0; i-- {
 		if blob, ok := v.sets[i].states.storage(addrHash, storageHash); ok {
 			return blob, true
 		}
 	}
+	bloomFalsePositiveMeter.Mark(1)
 	return nil, false
 }
 
@@ -216,20 +238,23 @@ func newBuffer(limit int, nodes *nodeSet, states *stateSet, layers uint64) *buff
 	b.compactCond = sync.NewCond(&b.compactMu)
 
 	var (
-		size uint64
-		sets []*bufferSet
+		size  uint64
+		sets  []*bufferSet
+		bloom = newBufferBloom(uint64(limit))
 	)
 	if nodes != nil || states != nil || layers != 0 {
 		set := newBufferSet(nodes, states, layers)
 		if set.size() > 0 || layers > 0 {
 			sets = []*bufferSet{set}
 			size = set.size()
+			bloom.insertSet(set.nodes, set.states)
 		}
 	}
 	b.view.Store(&bufferView{
 		layers: layers,
 		size:   size,
 		sets:   sets,
+		bloom:  bloom,
 	})
 	return b
 }
@@ -332,6 +357,11 @@ func (b *buffer) commit(nodes *nodeSet, states *stateSet) *buffer {
 	b.viewMu.Lock()
 	view := b.view.Load()
 
+	// Insert the keys of the new set into the shared bloom filter before the
+	// view publication, ensuring the readers of the new view can never observe
+	// a false negative.
+	view.bloom.insertSet(set.nodes, set.states)
+
 	// Construct the set list for the new view. Note the list held by the
 	// current view must not be modified in place (append could mutate the
 	// shared backing array which might still be referenced by the readers
@@ -344,6 +374,7 @@ func (b *buffer) commit(nodes *nodeSet, states *stateSet) *buffer {
 		layers: view.layers + 1,
 		size:   view.size + set.size(),
 		sets:   sets,
+		bloom:  view.bloom,
 	})
 	b.viewMu.Unlock()
 
@@ -371,7 +402,7 @@ func (b *buffer) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[str
 	}
 	// Reset the entire buffer if only a single transition left
 	if view.layers == 1 {
-		b.view.Store(&bufferView{})
+		b.view.Store(&bufferView{bloom: newBufferBloom(b.limit)})
 		return nil
 	}
 	var (
@@ -396,10 +427,15 @@ func (b *buffer) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[str
 	for _, set := range sets {
 		size += set.size()
 	}
+	// Note the bloom filter is reused as is: the keys of the reverted
+	// transition are left inside as stale entries, which only slightly
+	// increases the false positive rate (harmless for correctness) and
+	// avoids an expensive rebuild for the rare revert operation.
 	b.view.Store(&bufferView{
 		layers: view.layers - 1,
 		size:   size,
 		sets:   sets,
+		bloom:  view.bloom,
 	})
 	return nil
 }
@@ -412,7 +448,7 @@ func (b *buffer) reset() {
 	b.viewMu.Lock()
 	defer b.viewMu.Unlock()
 
-	b.view.Store(&bufferView{})
+	b.view.Store(&bufferView{bloom: newBufferBloom(b.limit)})
 }
 
 // empty returns an indicator if buffer is empty.
@@ -530,10 +566,14 @@ func (b *buffer) compact() {
 		for _, set := range sets {
 			size += set.size()
 		}
+		// The bloom filter is untouched by the compaction: the folded set
+		// holds the same key set as its constituents (the keys overwritten
+		// inside remain as stale bloom entries, harmless for correctness).
 		b.view.Store(&bufferView{
 			layers: cur.layers,
 			size:   size,
 			sets:   sets,
+			bloom:  cur.bloom,
 		})
 		b.viewMu.Unlock()
 
@@ -566,6 +606,7 @@ func (b *buffer) flatten() (*nodeSet, *stateSet) {
 		layers: view.layers,
 		size:   merged.size(),
 		sets:   []*bufferSet{merged},
+		bloom:  view.bloom,
 	})
 	return merged.nodes, merged.states
 }

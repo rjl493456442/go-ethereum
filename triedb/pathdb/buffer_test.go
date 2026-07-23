@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
@@ -416,5 +417,121 @@ func BenchmarkBufferRead(bench *testing.B) {
 				b.account(keys[i%len(keys)])
 			}
 		})
+	}
+}
+
+// BenchmarkBufferReadMiss measures the lookup latency for the state entries
+// not contained in the buffer (the dominant case for the reads landing on
+// the disk layer), which is expected to be short-circuited by the bloom
+// filter regardless of the number of aggregated sets.
+func BenchmarkBufferReadMiss(bench *testing.B) {
+	for _, sets := range []int{1, 8, 32} {
+		bench.Run(fmt.Sprintf("sets-%d", sets), func(bench *testing.B) {
+			r := rand.New(rand.NewSource(0x1337))
+			b := newBuffer(math.MaxInt, nil, nil, 0)
+
+			// Suspend the compaction to pin the set count
+			b.pauseCompaction()
+			defer b.resumeCompaction()
+
+			for i := 0; i < sets; i++ {
+				nodes, states := randomBufferSets(r, 1024)
+				b.commit(nodes, states)
+			}
+			keys := make([]common.Hash, 4096)
+			for i := range keys {
+				keys[i] = bufTestKey("absent", i)
+			}
+			bench.ResetTimer()
+			for i := 0; i < bench.N; i++ {
+				if _, ok := b.account(keys[i%len(keys)]); ok {
+					bench.Fatal("unexpected account")
+				}
+			}
+		})
+	}
+}
+
+// TestBufferBloom verifies the bloom filter guarding the buffer sets: the
+// contained entries must always pass the filter (no false negative), the
+// non-contained entries are mostly short-circuited, and the lookups remain
+// correct after the revert operation which leaves stale keys in the filter.
+func TestBufferBloom(t *testing.T) {
+	var (
+		r = rand.New(rand.NewSource(0x1337))
+		b = newBuffer(math.MaxInt, nil, nil, 0)
+	)
+	for i := 0; i < 16; i++ {
+		nodes, states := randomBufferSets(r, 64)
+		b.commit(nodes, states)
+	}
+	// Lookups of the absent entries must fail, and the vast majority is
+	// expected to be filtered out by the bloom filter.
+	var passed int
+	view := b.view.Load()
+	for i := 0; i < 4096; i++ {
+		hash := bufTestKey("bloom-absent", i)
+		if _, ok := b.account(hash); ok {
+			t.Fatalf("unexpected account, %x", hash)
+		}
+		if _, ok := b.storage(hash, hash); ok {
+			t.Fatalf("unexpected storage, %x", hash)
+		}
+		if _, ok := b.node(hash, []byte("bloom-path")); ok {
+			t.Fatalf("unexpected node, %x", hash)
+		}
+		if view.bloom.contains(bloomAccountKey(hash)) {
+			passed++
+		}
+	}
+	if rate := float64(passed) / 4096; rate > 0.05 {
+		t.Fatalf("false positive rate too high: %v", rate)
+	}
+
+	// Revert the most recent transition which is aggregated in its own set,
+	// ensuring the lookups of the reverted entries fail correctly even with
+	// their keys left in the filter as stale entries. The compaction is
+	// suspended beforehand to keep the upcoming set unfolded, pinning the
+	// revert on the set-dropping path.
+	b.pauseCompaction()
+	defer b.resumeCompaction()
+
+	var (
+		accounts = make(map[common.Hash][]byte)
+		nodes    = map[common.Hash]map[string]*trienode.Node{
+			bufTestKey("bloom-revert", 0): {"bloom-revert-path": trienode.New(common.Hash{}, bufTestBlob(r, 32))},
+		}
+	)
+	for i := 0; i < 16; i++ {
+		accounts[bufTestKey("bloom-revert", i)] = bufTestBlob(r, 16)
+	}
+	b.commit(newNodeSet(nodes), newStates(accounts, nil, false))
+	for hash := range accounts {
+		if _, ok := b.account(hash); !ok {
+			t.Fatalf("account not found, %x", hash)
+		}
+	}
+	if err := b.revertTo(rawdb.NewMemoryDatabase(), nil, nil, nil); err != nil {
+		t.Fatalf("failed to revert buffer: %v", err)
+	}
+	for hash := range accounts {
+		if _, ok := b.account(hash); ok {
+			t.Fatalf("unexpected account after revert, %x", hash)
+		}
+	}
+	if _, ok := b.node(bufTestKey("bloom-revert", 0), []byte("bloom-revert-path")); ok {
+		t.Fatal("unexpected node after revert")
+	}
+
+	// Ensure the initial set provided at the construction time (e.g. loaded
+	// from the journal) is covered by the filter as well.
+	nb := newBuffer(math.MaxInt, newNodeSet(nodes), newStates(accounts, nil, false), 5)
+	for hash := range accounts {
+		if _, ok := nb.account(hash); !ok {
+			t.Fatalf("account not found in journal-loaded buffer, %x", hash)
+		}
+	}
+	if _, ok := nb.node(bufTestKey("bloom-revert", 0), []byte("bloom-revert-path")); !ok {
+		t.Fatal("node not found in journal-loaded buffer")
 	}
 }
