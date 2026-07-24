@@ -127,10 +127,11 @@ type executableDataMarshaling struct {
 
 // StatelessPayloadStatusV1 is the result of a stateless payload execution.
 type StatelessPayloadStatusV1 struct {
-	Status          string      `json:"status"`
-	StateRoot       common.Hash `json:"stateRoot"`
-	ReceiptsRoot    common.Hash `json:"receiptsRoot"`
-	ValidationError *string     `json:"validationError"`
+	Status              string      `json:"status"`
+	StateRoot           common.Hash `json:"stateRoot"`
+	ReceiptsRoot        common.Hash `json:"receiptsRoot"`
+	BlockAccessListRoot common.Hash `json:"blockAccessListRoot"`
+	ValidationError     *string     `json:"validationError"`
 }
 
 //go:generate go run github.com/fjl/gencodec -enc=false -type ExecutionPayloadEnvelope -field-override executionPayloadEnvelopeMarshaling -out epe_decode.go

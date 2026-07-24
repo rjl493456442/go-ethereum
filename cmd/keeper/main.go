@@ -53,17 +53,21 @@ func main() {
 	}
 	vmConfig := vm.Config{}
 
-	crossStateRoot, crossReceiptRoot, err := core.ExecuteStateless(context.Background(), chainConfig, vmConfig, payload.Block, payload.Witness)
+	result, err := core.ExecuteStateless(context.Background(), chainConfig, vmConfig, payload.Block, payload.Witness)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stateless self-validation failed: %v\n", err)
 		os.Exit(10)
 	}
-	if crossStateRoot != payload.Block.Root() {
-		fmt.Fprintf(os.Stderr, "stateless self-validation root mismatch (cross: %x local: %x)\n", crossStateRoot, payload.Block.Root())
+	if result.StateRoot != payload.Block.Root() {
+		fmt.Fprintf(os.Stderr, "stateless self-validation root mismatch (cross: %x local: %x)\n", result.StateRoot, payload.Block.Root())
 		os.Exit(11)
 	}
-	if crossReceiptRoot != payload.Block.ReceiptHash() {
-		fmt.Fprintf(os.Stderr, "stateless self-validation receipt root mismatch (cross: %x local: %x)\n", crossReceiptRoot, payload.Block.ReceiptHash())
+	if result.ReceiptRoot != payload.Block.ReceiptHash() {
+		fmt.Fprintf(os.Stderr, "stateless self-validation receipt root mismatch (cross: %x local: %x)\n", result.ReceiptRoot, payload.Block.ReceiptHash())
 		os.Exit(12)
+	}
+	if balHash := payload.Block.Header().BlockAccessListHash; balHash != nil && result.BlockAccessListRoot != *balHash {
+		fmt.Fprintf(os.Stderr, "stateless self-validation block access list root mismatch (cross: %x local: %x)\n", result.BlockAccessListRoot, *balHash)
+		os.Exit(14)
 	}
 }

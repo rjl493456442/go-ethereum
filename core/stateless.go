@@ -33,16 +33,28 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 )
 
+// StatelessResult wraps the block-derived commitments computed during a
+// stateless execution. These roots are intentionally not validated inside
+// ExecuteStateless; they are returned so that the caller can recompute the
+// expected values independently and cross-check them. The stateless runner is
+// thereby forced to derive them from scratch rather than being handed the
+// expected values through the header.
+type StatelessResult struct {
+	StateRoot           common.Hash
+	ReceiptRoot         common.Hash
+	BlockAccessListRoot common.Hash // Zero value before the Amsterdam fork
+}
+
 // ExecuteStateless runs a stateless execution based on a witness, verifies
-// everything it can locally and returns the state root and receipt root, that
-// need the other side to explicitly check.
+// everything it can locally and returns the state root, receipt root and block
+// access list root, that need the other side to explicitly check.
 //
 // This method is a bit of a sore thumb here, but:
 //   - It cannot be placed in core/stateless, because state.New produces a circular dep
 //   - It cannot be placed outside of core, because it needs to construct a dud headerchain
 //
 // TODO(karalabe): Would be nice to resolve both issues above somehow and move it.
-func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig vm.Config, block *types.Block, witness *stateless.Witness) (common.Hash, common.Hash, error) {
+func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig vm.Config, block *types.Block, witness *stateless.Witness) (*StatelessResult, error) {
 	// Sanity check if the supplied block accidentally contains a set root or
 	// receipt hash. If so, be very loud, but still continue.
 	if block.Root() != (common.Hash{}) {
@@ -55,7 +67,7 @@ func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig 
 	memdb := witness.MakeHashDB()
 	db, err := state.New(witness.Root(), state.NewDatabase(triedb.NewDatabase(memdb, triedb.HashDefaults), state.NewCodeDB(memdb)))
 	if err != nil {
-		return common.Hash{}, common.Hash{}, err
+		return nil, err
 	}
 	// Create a blockchain that is idle, but can be used to access headers through
 	chain := &HeaderChain{
@@ -65,18 +77,37 @@ func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig 
 		engine:      beacon.New(ethash.NewFaker()),
 	}
 	processor := NewStateProcessor(chain)
-	validator := NewBlockValidator(config, nil) // No chain, we only validate the state, not the block
+	validator := NewBlockValidator(config)
 
-	// Run the stateless blocks processing and self-validate certain fields
+	// Validate the block body against the header before execution. These checks
+	// are self-contained within the block and are shared with the regular block
+	// insertion path; the chain-dependent checks (known block, uncle
+	// verification against ancestors, ancestor availability) are intentionally
+	// omitted here as there is no canonical chain to validate against.
+	if err = validator.ValidateBody(block); err != nil {
+		return nil, err
+	}
+	// Run the stateless block processing and self-validate everything that can
+	// be validated locally.
 	res, err := processor.Process(ctx, block, db, nil, nil, vmconfig, nil)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, err
+		return nil, err
 	}
+	// Validate the state transition. The receipt root, state root and block
+	// access list root are deliberately excluded here (stateless=true): the
+	// stateless runner must recompute them from scratch and return them so the
+	// caller can cross-validate against the expected values.
 	if err = validator.ValidateState(block, db, res, true); err != nil {
-		return common.Hash{}, common.Hash{}, err
+		return nil, err
 	}
-	// Almost everything validated, but receipt and state root needs to be returned
-	receiptRoot := types.DeriveSha(res.Receipts, trie.NewStackTrie(nil))
-	stateRoot := db.IntermediateRoot(config.IsEIP158(block.Number()))
-	return stateRoot, receiptRoot, nil
+	// Everything that can be self-validated has been checked. Recompute the
+	// commitments that need cross-validation and return them.
+	result := &StatelessResult{
+		ReceiptRoot: types.DeriveSha(res.Receipts, trie.NewStackTrie(nil)),
+		StateRoot:   db.IntermediateRoot(config.IsEIP158(block.Number())),
+	}
+	if config.IsAmsterdam(block.Number(), block.Time()) {
+		result.BlockAccessListRoot = res.Bal.ToEncodingObj().Hash()
+	}
+	return result, nil
 }

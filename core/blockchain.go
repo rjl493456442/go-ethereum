@@ -433,7 +433,7 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		return nil, err
 	}
 	bc.flushInterval.Store(int64(cfg.TrieTimeLimit))
-	bc.validator = NewBlockValidator(chainConfig, bc)
+	bc.validator = NewBlockValidator(chainConfig)
 	bc.prefetcher = newStatePrefetcher(chainConfig, bc.hc)
 	bc.processor = NewStateProcessor(bc.hc)
 
@@ -1889,7 +1889,7 @@ func (bc *BlockChain) insertChain(ctx context.Context, chain types.Blocks, setHe
 	defer close(abort)
 
 	// Peek the error for the first block to decide the directing import logic
-	it := newInsertIterator(chain, results, bc.validator)
+	it := newInsertIterator(chain, results, bc)
 	block, err := it.next()
 
 	// Left-trim all the known blocks that don't need to build snapshot
@@ -2319,19 +2319,24 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 		context := block.Header()
 		context.Root = common.Hash{}
 		context.ReceiptHash = common.Hash{}
-
+		if context.BlockAccessListHash != nil {
+			context.BlockAccessListHash = new(common.Hash)
+		}
 		task := types.NewBlockWithHeader(context).WithBody(*block.Body())
 
 		// Run the stateless self-cross-validation
-		crossStateRoot, crossReceiptRoot, err := ExecuteStateless(ctx, bc.chainConfig, bc.cfg.VmConfig, task, witness)
+		result, err := ExecuteStateless(ctx, bc.chainConfig, bc.cfg.VmConfig, task, witness)
 		if err != nil {
 			return nil, fmt.Errorf("stateless self-validation failed: %v", err)
 		}
-		if crossStateRoot != block.Root() {
-			return nil, fmt.Errorf("stateless self-validation root mismatch (cross: %x local: %x)", crossStateRoot, block.Root())
+		if result.StateRoot != block.Root() {
+			return nil, fmt.Errorf("stateless self-validation root mismatch (cross: %x local: %x)", result.StateRoot, block.Root())
 		}
-		if crossReceiptRoot != block.ReceiptHash() {
-			return nil, fmt.Errorf("stateless self-validation receipt root mismatch (cross: %x local: %x)", crossReceiptRoot, block.ReceiptHash())
+		if result.ReceiptRoot != block.ReceiptHash() {
+			return nil, fmt.Errorf("stateless self-validation receipt root mismatch (cross: %x local: %x)", result.ReceiptRoot, block.ReceiptHash())
+		}
+		if balHash := block.Header().BlockAccessListHash; balHash != nil && result.BlockAccessListRoot != *balHash {
+			return nil, fmt.Errorf("stateless self-validation block access list root mismatch (cross: %x local: %x)", result.BlockAccessListRoot, *balHash)
 		}
 	}
 
