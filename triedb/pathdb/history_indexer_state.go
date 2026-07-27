@@ -57,7 +57,7 @@ const (
 	// syncStalledTimeout defines the maximum duration during which no sync
 	// progress is observed. If this timeout is exceeded, the node's status
 	// will be considered stalled.
-	syncStalledTimeout = 5 * time.Minute
+	syncStalledTimeout = time.Minute
 )
 
 type initerState struct {
