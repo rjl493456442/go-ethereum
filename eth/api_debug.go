@@ -29,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types/bal"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/log"
@@ -129,6 +131,70 @@ func (api *DebugAPI) GetBadBlocks(ctx context.Context) ([]*BadBlockArgs, error) 
 		})
 	}
 	return results, nil
+}
+
+// ReplayBadBlock re-executes a stored bad block via both the block-building path
+// and the block-import path, returning the outputs of each side by side so they
+// can be diffed to diagnose build-vs-import divergence — both the EIP-7928
+// block-level access list and per-transaction gas accounting.
+//
+// For each path it reports the total gas used, per-transaction receipts, and the
+// access list (hash and full entries). It also reports the header's own GasUsed
+// and BlockAccessListHash, and whether each path reproduces them. The block's
+// parent state must still be available.
+func (api *DebugAPI) ReplayBadBlock(ctx context.Context, hash common.Hash) (map[string]interface{}, error) {
+	block := rawdb.ReadBadBlock(api.eth.chainDb, hash)
+	if block == nil {
+		return nil, fmt.Errorf("bad block %#x not found", hash)
+	}
+	// Build path: replay the miner's block-building.
+	build, err := api.eth.Miner().ReplayBlock(ctx, block)
+	if err != nil {
+		return nil, fmt.Errorf("build path: %w", err)
+	}
+	// Import path: re-execute the block through the state processor.
+	parent := api.eth.blockchain.GetHeader(block.ParentHash(), block.NumberU64()-1)
+	if parent == nil {
+		return nil, fmt.Errorf("parent header %#x not found", block.ParentHash())
+	}
+	statedb, err := api.eth.blockchain.StateAt(parent)
+	if err != nil {
+		return nil, fmt.Errorf("parent state unavailable: %w", err)
+	}
+	res, err := core.NewStateProcessor(api.eth.blockchain).Process(ctx, block, statedb, nil, vm.Config{}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("import path: %w", err)
+	}
+	var (
+		importBAL  *bal.BlockAccessList
+		importHash common.Hash
+	)
+	if res.Bal != nil {
+		importBAL = res.Bal.ToEncodingObj()
+		importHash = importBAL.Hash()
+	}
+	out := map[string]interface{}{
+		// Gas accounting.
+		"headerGasUsed": block.GasUsed(),
+		"buildGasUsed":  build.GasUsed,
+		"importGasUsed": res.GasUsed,
+		// Block-level access list.
+		"headerBALHash": block.Header().BlockAccessListHash,
+		"buildBALHash":  build.BALHash,
+		"importBALHash": importHash,
+		"buildBAL":      build.BAL,
+		"importBAL":     importBAL,
+		// Per-transaction receipts (for per-tx gas / status diffing).
+		"buildReceipts":  build.Receipts,
+		"importReceipts": res.Receipts,
+	}
+	out["buildReproducesHeaderGas"] = block.GasUsed() == build.GasUsed
+	out["importReproducesHeaderGas"] = block.GasUsed() == res.GasUsed
+	if h := block.Header().BlockAccessListHash; h != nil {
+		out["buildReproducesHeaderBAL"] = *h == build.BALHash
+		out["importReproducesHeaderBAL"] = *h == importHash
+	}
+	return out, nil
 }
 
 // AccountRangeMaxResults is the maximum number of results to be returned per call
