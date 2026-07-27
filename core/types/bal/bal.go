@@ -162,13 +162,13 @@ func (b *ConstructionBlockAccessList) Merge(other *ConstructionBlockAccessList) 
 	for addr, otherAcc := range other.Accounts {
 		acc, ok := b.Accounts[addr]
 		if !ok {
-			b.Accounts[addr] = otherAcc
+			b.Accounts[addr] = otherAcc.Copy()
 			continue
 		}
 		for key, writes := range otherAcc.StorageWrites {
 			existing, ok := acc.StorageWrites[key]
 			if !ok {
-				acc.StorageWrites[key] = writes
+				acc.StorageWrites[key] = maps.Clone(writes)
 			} else {
 				for txIdx, value := range writes {
 					existing[txIdx] = value
@@ -183,43 +183,44 @@ func (b *ConstructionBlockAccessList) Merge(other *ConstructionBlockAccessList) 
 			acc.StorageReads[key] = struct{}{}
 		}
 		for txIdx, balance := range otherAcc.BalanceChanges {
-			acc.BalanceChanges[txIdx] = balance
+			acc.BalanceChanges[txIdx] = balance.Clone()
 		}
 		for txIdx, nonce := range otherAcc.NonceChanges {
 			acc.NonceChanges[txIdx] = nonce
 		}
 		for txIdx, code := range otherAcc.CodeChange {
-			acc.CodeChange[txIdx] = code
+			acc.CodeChange[txIdx] = bytes.Clone(code)
 		}
 	}
+}
+
+// Copy returns a deep copy of the account access, sharing no mutable state with
+// the receiver.
+func (a *ConstructionAccountAccess) Copy() *ConstructionAccountAccess {
+	cpy := &ConstructionAccountAccess{
+		StorageWrites:  make(map[common.Hash]map[uint32]common.Hash, len(a.StorageWrites)),
+		StorageReads:   maps.Clone(a.StorageReads),
+		BalanceChanges: make(map[uint32]*uint256.Int, len(a.BalanceChanges)),
+		NonceChanges:   maps.Clone(a.NonceChanges),
+		CodeChange:     make(map[uint32][]byte, len(a.CodeChange)),
+	}
+	for key, m := range a.StorageWrites {
+		cpy.StorageWrites[key] = maps.Clone(m)
+	}
+	for index, balance := range a.BalanceChanges {
+		cpy.BalanceChanges[index] = balance.Clone()
+	}
+	for index, code := range a.CodeChange {
+		cpy.CodeChange[index] = bytes.Clone(code)
+	}
+	return cpy
 }
 
 // Copy returns a deep copy of the access list.
 func (b *ConstructionBlockAccessList) Copy() *ConstructionBlockAccessList {
 	res := NewConstructionBlockAccessList()
 	for addr, aa := range b.Accounts {
-		var aaCopy ConstructionAccountAccess
-
-		slotWrites := make(map[common.Hash]map[uint32]common.Hash, len(aa.StorageWrites))
-		for key, m := range aa.StorageWrites {
-			slotWrites[key] = maps.Clone(m)
-		}
-		aaCopy.StorageWrites = slotWrites
-		aaCopy.StorageReads = maps.Clone(aa.StorageReads)
-
-		balances := make(map[uint32]*uint256.Int, len(aa.BalanceChanges))
-		for index, balance := range aa.BalanceChanges {
-			balances[index] = balance.Clone()
-		}
-		aaCopy.BalanceChanges = balances
-		aaCopy.NonceChanges = maps.Clone(aa.NonceChanges)
-
-		codes := make(map[uint32][]byte, len(aa.CodeChange))
-		for index, code := range aa.CodeChange {
-			codes[index] = bytes.Clone(code)
-		}
-		aaCopy.CodeChange = codes
-		res.Accounts[addr] = &aaCopy
+		res.Accounts[addr] = aa.Copy()
 	}
 	return res
 }

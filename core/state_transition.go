@@ -670,6 +670,19 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		contractCreation = msg.To == nil
 		floorDataGas     uint64
 	)
+	// Execute the preparatory steps for state transition which includes:
+	// - prepare accessList(post-berlin)
+	// - reset transient storage(EIP-1153)
+	// - enable block-level accessList construction (EIP-7928)
+	//
+	// This must run before any other pre-execution operations, so that the
+	// EIP-7928 block-level access-list accumulator is reset up front.
+	// Otherwise a transaction that fails validation here (e.g. bad nonce/balance
+	// during block building) would record its state reads into the previous
+	// transition's already-merged accumulator, leaking accesses of a reverted,
+	// non-included transaction into the block-level access list.
+	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
+
 	// Validate the message and pre-pay gas.
 	if err := st.preCheck(rules); err != nil {
 		return nil, err
@@ -721,12 +734,6 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 	if !value.IsZero() && !st.evm.Context.CanTransfer(st.state, msg.From, value) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From.Hex())
 	}
-
-	// Execute the preparatory steps for state transition which includes:
-	// - prepare accessList(post-berlin)
-	// - reset transient storage(EIP-1153)
-	// - enable block-level accessList construction (EIP-7928)
-	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
 
 	// Initialize the running gas budget with the post-intrinsic remainder.
 	st.initRuntimeGasBudget(rules, intrinsicGas)

@@ -381,3 +381,85 @@ func TestBlockAccessListValidation(t *testing.T) {
 		t.Fatalf("Unexpected validation error: %v", err)
 	}
 }
+
+// TestMergeDoesNotShareReferences verifies that once a per-transaction access
+// list has been merged into a block-level access list, subsequent mutations of
+// the (still-live) source list do NOT leak into the block-level list.
+//
+// This models the block-building bug: after a successful tx's access list is
+// merged into env.bal, s.stateAccessList still points at that same object. A
+// later invalid transaction (which fails preCheck before Prepare resets the
+// list) appends its reads to it — and if Merge shared references, those reads
+// silently pollute the block-level BAL even though the tx was reverted and never
+// merged. Merge must therefore take an independent copy of the merged data.
+func TestMergeDoesNotShareReferences(t *testing.T) {
+	var (
+		addr     = common.Address{0xaa}
+		slotReal = common.Hash{0x01}
+		slotEvil = common.Hash{0x99}
+	)
+
+	// tx access list: a successful tx legitimately reads slotReal on addr.
+	tx := NewConstructionBlockAccessList()
+	tx.StorageRead(addr, slotReal)
+
+	// Merge it into the block-level access list, as block building does.
+	block := NewConstructionBlockAccessList()
+	block.Merge(tx)
+
+	// snapshot the block-level hash right after the merge.
+	before := block.ToEncodingObj().Hash()
+
+	// A later reverted/invalid tx appends a read to the SAME source list (this
+	// is what happens when s.stateAccessList has not been reset yet).
+	tx.StorageRead(addr, slotEvil)
+
+	// The block-level list must be unaffected.
+	if _, ok := block.Accounts[addr].StorageReads[slotEvil]; ok {
+		t.Errorf("StorageReads pollution: slotEvil leaked into block-level BAL via shared reference")
+	}
+	if after := block.ToEncodingObj().Hash(); after != before {
+		t.Errorf("block-level BAL hash changed after mutating the merged source: before=%x after=%x", before, after)
+	}
+}
+
+// TestMergeDoesNotShareStorageWrites is the write-side counterpart: a storage
+// write appended to the source after the merge must not appear in the block-level
+// list either.
+func TestMergeDoesNotShareStorageWrites(t *testing.T) {
+	var (
+		addr = common.Address{0xbb}
+		slot = common.Hash{0x02}
+	)
+	tx := NewConstructionBlockAccessList()
+	tx.StorageWrite(1, addr, slot, common.Hash{0x11})
+
+	block := NewConstructionBlockAccessList()
+	block.Merge(tx)
+
+	// Append another write to the same slot on the source list.
+	tx.StorageWrite(2, addr, slot, common.Hash{0x22})
+
+	if writes, ok := block.Accounts[addr].StorageWrites[slot]; ok {
+		if _, polluted := writes[2]; polluted {
+			t.Errorf("StorageWrites pollution: tx-index 2 write leaked into block-level BAL via shared reference")
+		}
+	}
+}
+
+// TestMergeDoesNotShareBalanceChanges is the balance-side counterpart.
+func TestMergeDoesNotShareBalanceChanges(t *testing.T) {
+	addr := common.Address{0xcc}
+
+	tx := NewConstructionBlockAccessList()
+	tx.BalanceChange(1, addr, uint256.NewInt(100))
+
+	block := NewConstructionBlockAccessList()
+	block.Merge(tx)
+
+	tx.BalanceChange(2, addr, uint256.NewInt(200))
+
+	if _, polluted := block.Accounts[addr].BalanceChanges[2]; polluted {
+		t.Errorf("BalanceChanges pollution: tx-index 2 balance change leaked into block-level BAL via shared reference")
+	}
+}
