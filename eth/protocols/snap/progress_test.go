@@ -183,7 +183,7 @@ func TestSyncProgressV1Discarded(t *testing.T) {
 	orphanStorageSlot := common.HexToHash("0xabcd")
 	rawdb.WriteStorageSnapshot(db, orphanStorageAccount, orphanStorageSlot, []byte{0xff, 0xff})
 
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	syncer.loadSyncStatus()
 
 	if syncer.pivot != nil {
@@ -206,7 +206,7 @@ func TestSyncProgressV1Discarded(t *testing.T) {
 func TestSyncProgressV2RoundTrip(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 
-	saver := newSyncerV2(db, rawdb.HashScheme)
+	saver := newSyncerV2(db, rawdb.PathScheme)
 	saver.pivot = &types.Header{Number: new(big.Int).SetUint64(123), Difficulty: common.Big0}
 	saver.accountSynced = 1
 	saver.accountBytes = 2
@@ -221,7 +221,7 @@ func TestSyncProgressV2RoundTrip(t *testing.T) {
 		t.Fatalf("expected version byte %d at offset 0, got blob %x", syncProgressVersion, raw)
 	}
 
-	loader := newSyncerV2(db, rawdb.HashScheme)
+	loader := newSyncerV2(db, rawdb.PathScheme)
 	loader.loadSyncStatus()
 	for _, c := range []struct {
 		name string
@@ -255,7 +255,7 @@ func TestSyncProgressCorruptPayload(t *testing.T) {
 	orphanAccountHash := common.HexToHash("0xdeadbeef")
 	rawdb.WriteAccountSnapshot(db, orphanAccountHash, []byte{0xde, 0xad})
 
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	syncer.loadSyncStatus()
 
 	if syncer.pivot != nil {

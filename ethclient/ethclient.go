@@ -841,7 +841,6 @@ type rpcProgress struct {
 	HealingBytecode        hexutil.Uint64
 	SyncedAccessLists      hexutil.Uint64
 	TotalAccessLists       hexutil.Uint64
-	TrieGenProgress        hexutil.Uint64
 	TxIndexFinishedBlocks  hexutil.Uint64
 	TxIndexRemainingBlocks hexutil.Uint64
 	StateIndexRemaining    hexutil.Uint64
@@ -872,7 +871,6 @@ func (p *rpcProgress) toSyncProgress() *ethereum.SyncProgress {
 		HealingBytecode:        uint64(p.HealingBytecode),
 		SyncedAccessLists:      uint64(p.SyncedAccessLists),
 		TotalAccessLists:       uint64(p.TotalAccessLists),
-		TrieGenProgress:        uint64(p.TrieGenProgress),
 		TxIndexFinishedBlocks:  uint64(p.TxIndexFinishedBlocks),
 		TxIndexRemainingBlocks: uint64(p.TxIndexRemainingBlocks),
 		StateIndexRemaining:    uint64(p.StateIndexRemaining),

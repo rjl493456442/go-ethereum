@@ -2590,7 +2590,7 @@ func (s *syncer) OnAccounts(peer SyncPeer, id uint64, hashes []common.Hash, acco
 	for i, node := range proof {
 		nodes[i] = node
 	}
-	cont, err := trie.VerifyRangeProof(root, req.origin[:], keys, accounts, nodes.Set())
+	cont, _, err := trie.VerifyRangeProof(root, req.origin[:], keys, accounts, nodes.Set())
 	if err != nil {
 		logger.Warn("Account range failed proof", "err", err)
 		// Signal this request as failed, and ready for rescheduling
@@ -2842,7 +2842,7 @@ func (s *syncer) OnStorage(peer SyncPeer, id uint64, hashes [][]common.Hash, slo
 		if len(nodes) == 0 {
 			// No proof has been attached, the response must cover the entire key
 			// space and hash to the origin root.
-			_, err = trie.VerifyRangeProof(req.roots[i], nil, keys, slots[i], nil)
+			_, _, err = trie.VerifyRangeProof(req.roots[i], nil, keys, slots[i], nil)
 			if err != nil {
 				s.scheduleRevertStorageRequest(req) // reschedule request
 				logger.Warn("Storage slots failed proof", "err", err)
@@ -2853,7 +2853,7 @@ func (s *syncer) OnStorage(peer SyncPeer, id uint64, hashes [][]common.Hash, slo
 			// returned data is indeed part of the storage trie
 			proofdb := nodes.Set()
 
-			cont, err = trie.VerifyRangeProof(req.roots[i], req.origin[:], keys, slots[i], proofdb)
+			cont, _, err = trie.VerifyRangeProof(req.roots[i], req.origin[:], keys, slots[i], proofdb)
 			if err != nil {
 				s.scheduleRevertStorageRequest(req) // reschedule request
 				logger.Warn("Storage range failed proof", "err", err)

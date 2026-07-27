@@ -809,7 +809,7 @@ func (s *Suite) snapGetAccountRange(t *utesting.T, tc *accRangeTest) error {
 	}
 	proofdb := nodes.Set()
 
-	_, err = trie.VerifyRangeProof(tc.root, tc.startingHash[:], keys, accounts, proofdb)
+	_, _, err = trie.VerifyRangeProof(tc.root, tc.startingHash[:], keys, accounts, proofdb)
 	return err
 }
 

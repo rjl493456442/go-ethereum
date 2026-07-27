@@ -253,9 +253,15 @@ func New(stateDb ethdb.Database, mode ethconfig.SyncMode, chain BlockChain, drop
 		syncStartBlock:    chain.CurrentSnapBlock().Number.Uint64(),
 	}
 	// Select the snap/1 or snap/2 state syncer based on the feature flag.
-	if snapV2 {
+	// snap/2's inline trie generation relies on the path scheme's positional
+	// node addressing; the deprecated hash scheme is not supported and stays
+	// on snap/1.
+	if snapV2 && chain.TrieDB().Scheme() == rawdb.PathScheme {
 		dl.snapSyncer = snap.NewV2Syncer(stateDb, chain.TrieDB().Scheme())
 	} else {
+		if snapV2 {
+			log.Warn("snap/2 sync is unsupported under the hash scheme, using snap/1")
+		}
 		dl.snapSyncer = snap.NewV1Syncer(stateDb, chain.TrieDB().Scheme())
 	}
 	// Create the post-merge skeleton syncer and start the process
@@ -311,7 +317,6 @@ func (d *Downloader) Progress() ethereum.SyncProgress {
 		// Snap/2 progress fields
 		SyncedAccessLists: progress.AccessListSynced,
 		TotalAccessLists:  progress.AccessListTotal,
-		TrieGenProgress:   progress.TrieGenPercent,
 	}
 }
 
@@ -506,18 +511,6 @@ func (d *Downloader) syncToHead() (err error) {
 	// nil panics on access.
 	if mode == ethconfig.SnapSync && pivot == nil {
 		pivot = d.blockchain.CurrentBlock()
-	}
-	// If the snap syncer froze its pivot in a previous cycle, resume against
-	// the frozen header instead of a fresh one.
-	if mode == ethconfig.SnapSync && pivot != nil {
-		if frozen := d.snapSyncer.FrozenPivot(); frozen != nil {
-			if rawdb.ReadCanonicalHash(d.stateDB, frozen.Number.Uint64()) == frozen.Hash() {
-				log.Info("Resuming snap sync against frozen pivot", "number", frozen.Number, "hash", frozen.Hash())
-				pivot = frozen
-			} else {
-				log.Warn("Frozen pivot is no longer canonical", "number", frozen.Number, "hash", frozen.Hash())
-			}
-		}
 	}
 	height := latest.Number.Uint64()
 
@@ -944,9 +937,7 @@ func (d *Downloader) processSnapSyncContent() error {
 	// the results in the meantime.
 	//
 	// Note, there's no issue with memory piling up since after 64 blocks the
-	// pivot will forcefully move so these accumulators will be dropped. The
-	// exception is snap/2 trie generation, where the pivot is frozen on
-	// purpose and results accumulate until the generation finishes.
+	// pivot will forcefully move so these accumulators will be dropped.
 	var (
 		oldPivot *fetchResult   // Locked in pivot block, might change eventually
 		oldTail  []*fetchResult // Downloaded content after the pivot

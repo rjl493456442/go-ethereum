@@ -38,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
+	"github.com/ethereum/go-ethereum/triedb/database"
 	"github.com/holiman/uint256"
 )
 
@@ -421,7 +422,6 @@ func noProofStorageRequestHandlerV2(t *testPeerV2, requestId uint64, root common
 // the remote side does not do any follow-up requests
 func TestSyncBloatedProofV2(t *testing.T) {
 	t.Parallel()
-	testSyncBloatedProofV2(t, rawdb.HashScheme)
 	testSyncBloatedProofV2(t, rawdb.PathScheme)
 }
 
@@ -521,7 +521,6 @@ func makeAccessListHeaders(bals map[common.Hash]rlp.RawValue) map[common.Hash]*t
 // TestSyncV2 tests a basic sync with one peer
 func TestSyncV2(t *testing.T) {
 	t.Parallel()
-	testSyncV2(t, rawdb.HashScheme)
 	testSyncV2(t, rawdb.PathScheme)
 }
 
@@ -543,22 +542,21 @@ func testSyncV2(t *testing.T, scheme string) {
 	if err := syncer.Sync(mkPivot(0, sourceAccountTrie.Hash()), cancel); err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 	verifyAdoptedSyncedState(scheme, syncer.db, sourceAccountTrie.Hash(), elems, t)
 }
 
-// TestSyncV2FrozenPivot checks the pivot freeze signal around the sync
-// lifecycle. The pivot is unfrozen while flat state is downloading, frozen
-// once the download completes, stays frozen after the sync returns so the
-// downloader resumes against it until the pivot block is committed, and
-// unfreezes again after a state reset.
-func TestSyncV2FrozenPivot(t *testing.T) {
+// TestSyncV2DoneFlag checks the done flag around the sync lifecycle. The
+// flag stays clear while the sync is incomplete (download, catch-up and
+// verification all roll forward with a moving pivot), flips once the trie
+// is verified, survives a restart via the persisted journal, and resets
+// together with the sync state.
+func TestSyncV2DoneFlag(t *testing.T) {
 	t.Parallel()
-	testSyncV2FrozenPivot(t, rawdb.HashScheme)
-	testSyncV2FrozenPivot(t, rawdb.PathScheme)
+	testSyncV2DoneFlag(t, rawdb.PathScheme)
 }
 
-func testSyncV2FrozenPivot(t *testing.T, scheme string) {
+func testSyncV2DoneFlag(t *testing.T, scheme string) {
 	var (
 		once   sync.Once
 		cancel = make(chan struct{})
@@ -576,33 +574,34 @@ func testSyncV2FrozenPivot(t *testing.T, scheme string) {
 	// The handler runs while account ranges are still being served, so it
 	// can observe the signal mid download.
 	source.accountRequestV2Handler = func(p *testPeerV2, requestId uint64, root common.Hash, origin common.Hash, limit common.Hash, cap int) error {
-		if syncer.FrozenPivot() != nil {
-			t.Error("pivot frozen during flat state download")
+		if syncer.done.Load() {
+			t.Error("sync marked done during flat state download")
 		}
 		return defaultAccountRequestHandlerV2(p, requestId, root, origin, limit, cap)
 	}
-	if syncer.FrozenPivot() != nil {
-		t.Fatal("pivot frozen before sync started")
+	if syncer.done.Load() {
+		t.Fatal("sync marked done before it started")
 	}
 	if err := syncer.Sync(pivot, cancel); err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	if frozen := syncer.FrozenPivot(); frozen == nil || frozen.Hash() != pivot.Hash() {
-		t.Fatal("pivot not frozen at the synced header after download completed")
+	if !syncer.done.Load() {
+		t.Fatal("sync not marked done after download completed")
 	}
-	// A restart must not lose the freeze: a fresh syncer instance on the same
-	// database derives it from the persisted journal, before any Sync call.
+	// A restart must not lose the done flag: a fresh syncer instance on the
+	// same database derives it from the persisted journal, before any Sync
+	// call.
 	restarted := newSyncerV2(syncer.db, nodeScheme)
-	if frozen := restarted.FrozenPivot(); frozen == nil || frozen.Hash() != pivot.Hash() {
-		t.Fatal("pivot freeze lost after restart")
+	if !restarted.done.Load() {
+		t.Fatal("done flag lost after restart")
 	}
 	syncer.resetSyncState()
-	if syncer.FrozenPivot() != nil {
-		t.Fatal("pivot still frozen after state reset")
+	if syncer.done.Load() {
+		t.Fatal("sync still marked done after state reset")
 	}
-	// The reset deletes the journal, so a restarted instance is unfrozen too.
-	if restarted := newSyncerV2(syncer.db, nodeScheme); restarted.FrozenPivot() != nil {
-		t.Fatal("pivot still frozen after restart following a state reset")
+	// The reset deletes the journal, so a restarted instance starts over too.
+	if restarted := newSyncerV2(syncer.db, nodeScheme); restarted.done.Load() {
+		t.Fatal("sync still marked done after restart following a state reset")
 	}
 }
 
@@ -644,7 +643,6 @@ func verifyAdoptedSyncedState(scheme string, db ethdb.KeyValueStore, root common
 // panic within the prover
 func TestSyncTinyTriePanicV2(t *testing.T) {
 	t.Parallel()
-	testSyncTinyTriePanicV2(t, rawdb.HashScheme)
 	testSyncTinyTriePanicV2(t, rawdb.PathScheme)
 }
 
@@ -668,13 +666,12 @@ func testSyncTinyTriePanicV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestMultiSyncV2 tests a basic sync with multiple peers
 func TestMultiSyncV2(t *testing.T) {
 	t.Parallel()
-	testMultiSyncV2(t, rawdb.HashScheme)
 	testMultiSyncV2(t, rawdb.PathScheme)
 }
 
@@ -698,13 +695,12 @@ func testMultiSyncV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncWithStorageV2 tests  basic sync using accounts + storage + code
 func TestSyncWithStorageV2(t *testing.T) {
 	t.Parallel()
-	testSyncWithStorageV2(t, rawdb.HashScheme)
 	testSyncWithStorageV2(t, rawdb.PathScheme)
 }
 
@@ -730,13 +726,12 @@ func testSyncWithStorageV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestMultiSyncManyUselessV2 contains one good peer, and many which doesn't return anything valuable at all
 func TestMultiSyncManyUselessV2(t *testing.T) {
 	t.Parallel()
-	testMultiSyncManyUselessV2(t, rawdb.HashScheme)
 	testMultiSyncManyUselessV2(t, rawdb.PathScheme)
 }
 
@@ -773,13 +768,12 @@ func testMultiSyncManyUselessV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestMultiSyncManyUselessWithLowTimeoutV2 contains one good peer, and many which doesn't return anything valuable at all
 func TestMultiSyncManyUselessWithLowTimeoutV2(t *testing.T) {
 	t.Parallel()
-	testMultiSyncManyUselessWithLowTimeoutV2(t, rawdb.HashScheme)
 	testMultiSyncManyUselessWithLowTimeoutV2(t, rawdb.PathScheme)
 }
 
@@ -818,13 +812,12 @@ func testMultiSyncManyUselessWithLowTimeoutV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestMultiSyncManyUnresponsiveV2 contains one good peer, and many which doesn't respond at all
 func TestMultiSyncManyUnresponsiveV2(t *testing.T) {
 	t.Parallel()
-	testMultiSyncManyUnresponsiveV2(t, rawdb.HashScheme)
 	testMultiSyncManyUnresponsiveV2(t, rawdb.PathScheme)
 }
 
@@ -863,14 +856,13 @@ func testMultiSyncManyUnresponsiveV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncBoundaryAccountTrieV2 tests sync against a few normal peers, but the
 // account trie has a few boundary elements.
 func TestSyncBoundaryAccountTrieV2(t *testing.T) {
 	t.Parallel()
-	testSyncBoundaryAccountTrieV2(t, rawdb.HashScheme)
 	testSyncBoundaryAccountTrieV2(t, rawdb.PathScheme)
 }
 
@@ -898,14 +890,13 @@ func testSyncBoundaryAccountTrieV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncNoStorageAndOneCappedPeerV2 tests sync using accounts and no storage, where one peer is
 // consistently returning very small results
 func TestSyncNoStorageAndOneCappedPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncNoStorageAndOneCappedPeerV2(t, rawdb.HashScheme)
 	testSyncNoStorageAndOneCappedPeerV2(t, rawdb.PathScheme)
 }
 
@@ -939,14 +930,13 @@ func testSyncNoStorageAndOneCappedPeerV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncNoStorageAndOneCodeCorruptPeerV2 has one peer which doesn't deliver
 // code requests properly.
 func TestSyncNoStorageAndOneCodeCorruptPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncNoStorageAndOneCodeCorruptPeerV2(t, rawdb.HashScheme)
 	testSyncNoStorageAndOneCodeCorruptPeerV2(t, rawdb.PathScheme)
 }
 
@@ -975,12 +965,11 @@ func testSyncNoStorageAndOneCodeCorruptPeerV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 func TestSyncNoStorageAndOneAccountCorruptPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncNoStorageAndOneAccountCorruptPeerV2(t, rawdb.HashScheme)
 	testSyncNoStorageAndOneAccountCorruptPeerV2(t, rawdb.PathScheme)
 }
 
@@ -1009,14 +998,13 @@ func testSyncNoStorageAndOneAccountCorruptPeerV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncNoStorageAndOneCodeCappedPeerV2 has one peer which delivers code hashes
 // one by one
 func TestSyncNoStorageAndOneCodeCappedPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncNoStorageAndOneCodeCappedPeerV2(t, rawdb.HashScheme)
 	testSyncNoStorageAndOneCodeCappedPeerV2(t, rawdb.PathScheme)
 }
 
@@ -1052,14 +1040,13 @@ func testSyncNoStorageAndOneCodeCappedPeerV2(t *testing.T, scheme string) {
 	if threshold := 100; counter > threshold {
 		t.Logf("Error, expected < %d invocations, got %d", threshold, counter)
 	}
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncBoundaryStorageTrieV2 tests sync against a few normal peers, but the
 // storage trie has a few boundary elements.
 func TestSyncBoundaryStorageTrieV2(t *testing.T) {
 	t.Parallel()
-	testSyncBoundaryStorageTrieV2(t, rawdb.HashScheme)
 	testSyncBoundaryStorageTrieV2(t, rawdb.PathScheme)
 }
 
@@ -1089,14 +1076,13 @@ func testSyncBoundaryStorageTrieV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncWithStorageAndOneCappedPeerV2 tests sync using accounts + storage, where one peer is
 // consistently returning very small results
 func TestSyncWithStorageAndOneCappedPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncWithStorageAndOneCappedPeerV2(t, rawdb.HashScheme)
 	testSyncWithStorageAndOneCappedPeerV2(t, rawdb.PathScheme)
 }
 
@@ -1129,14 +1115,13 @@ func testSyncWithStorageAndOneCappedPeerV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncWithStorageAndCorruptPeerV2 tests sync using accounts + storage, where one peer is
 // sometimes sending bad proofs
 func TestSyncWithStorageAndCorruptPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncWithStorageAndCorruptPeerV2(t, rawdb.HashScheme)
 	testSyncWithStorageAndCorruptPeerV2(t, rawdb.PathScheme)
 }
 
@@ -1169,12 +1154,11 @@ func testSyncWithStorageAndCorruptPeerV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 func TestSyncWithStorageAndNonProvingPeerV2(t *testing.T) {
 	t.Parallel()
-	testSyncWithStorageAndNonProvingPeerV2(t, rawdb.HashScheme)
 	testSyncWithStorageAndNonProvingPeerV2(t, rawdb.PathScheme)
 }
 
@@ -1207,7 +1191,7 @@ func testSyncWithStorageAndNonProvingPeerV2(t *testing.T, scheme string) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	close(done)
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncWithStorageMisbehavingProveV2 tests  basic sync using accounts + storage + code, against
@@ -1216,7 +1200,6 @@ func testSyncWithStorageAndNonProvingPeerV2(t *testing.T, scheme string) {
 // did not mark the account for healing.
 func TestSyncWithStorageMisbehavingProveV2(t *testing.T) {
 	t.Parallel()
-	testSyncWithStorageMisbehavingProveV2(t, rawdb.HashScheme)
 	testSyncWithStorageMisbehavingProveV2(t, rawdb.PathScheme)
 }
 
@@ -1241,14 +1224,13 @@ func testSyncWithStorageMisbehavingProveV2(t *testing.T, scheme string) {
 	if err := syncer.Sync(mkPivot(0, sourceAccountTrie.Hash()), cancel); err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	verifyTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, sourceAccountTrie.Hash(), t)
 }
 
 // TestSyncWithUnevenStorageV2 tests sync where the storage trie is not even
 // and with a few empty ranges.
 func TestSyncWithUnevenStorageV2(t *testing.T) {
 	t.Parallel()
-	testSyncWithUnevenStorageV2(t, rawdb.HashScheme)
 	testSyncWithUnevenStorageV2(t, rawdb.PathScheme)
 }
 
@@ -1275,7 +1257,7 @@ func testSyncWithUnevenStorageV2(t *testing.T, scheme string) {
 	if err := syncer.Sync(mkPivot(0, accountTrie.Hash()), cancel); err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	verifyTrie(scheme, syncer.db, accountTrie.Hash(), t)
+	verifySyncedTrie(scheme, syncer.db, accountTrie.Hash(), t)
 }
 
 // makeAccountTrieWithAddresses creates an account trie keyed by keccak(address),
@@ -1396,7 +1378,7 @@ func TestIsPivotReorged(t *testing.T) {
 func TestSyncDetectsPivotReorged(t *testing.T) {
 	t.Parallel()
 
-	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.HashScheme)
+	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.PathScheme)
 	root := sourceAccountTrie.Hash()
 
 	db := rawdb.NewMemoryDatabase()
@@ -1447,12 +1429,12 @@ func TestSyncDetectsPivotReorged(t *testing.T) {
 	if err := syncer.Sync(newPivot, cancel); err != nil {
 		t.Fatalf("sync failed (reorg detection likely broken): %v", err)
 	}
-	// After successful completion, status should reach the complete phase
+	// After successful completion, the persisted status should be done
 	// against the new (canonical) pivot.
 	loader := newSyncerV2(db, nodeScheme)
 	loader.loadSyncStatus()
-	if loader.getPhase() != phaseComplete {
-		t.Fatal("sync status should reach the complete phase after successful completion")
+	if !loader.done.Load() {
+		t.Fatal("sync status should be done after successful completion")
 	}
 	if loader.pivot == nil || loader.pivot.Hash() != newPivot.Hash() {
 		t.Fatalf("expected persisted pivot to match new pivot")
@@ -1469,7 +1451,6 @@ func TestSyncDetectsPivotReorged(t *testing.T) {
 // state is persisted and resumed on restart.
 func TestInterruptedDownloadRecovery(t *testing.T) {
 	t.Parallel()
-	testInterruptedDownloadRecovery(t, rawdb.HashScheme)
 	testInterruptedDownloadRecovery(t, rawdb.PathScheme)
 }
 
@@ -1559,7 +1540,7 @@ func testInterruptedDownloadRecovery(t *testing.T, scheme string) {
 // old-pivot accounts with new-pivot data.
 func TestSyncPersistsPivotDuringDownload(t *testing.T) {
 	t.Parallel()
-	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.HashScheme)
+	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.PathScheme)
 
 	var (
 		once      sync.Once
@@ -1603,14 +1584,12 @@ func TestSyncPersistsPivotDuringDownload(t *testing.T) {
 // and completes against the new state.
 func TestPivotMovement(t *testing.T) {
 	t.Parallel()
-	testPivotMovement(t, rawdb.HashScheme, 1)
 	testPivotMovement(t, rawdb.PathScheme, 1)
 }
 
 // TestPivotMovementRepeated verifies that multiple pivot moves work correctly.
 func TestPivotMovementRepeated(t *testing.T) {
 	t.Parallel()
-	testPivotMovement(t, rawdb.HashScheme, 2)
 	testPivotMovement(t, rawdb.PathScheme, 2)
 }
 
@@ -1761,7 +1740,6 @@ func testPivotMovement(t *testing.T, scheme string, pivotMoves int) {
 // so a follow-up Sync can resume from there rather than reapplying everything.
 func TestCatchUpPersistsIncrementally(t *testing.T) {
 	t.Parallel()
-	testCatchUpPersistsIncrementally(t, rawdb.HashScheme)
 	testCatchUpPersistsIncrementally(t, rawdb.PathScheme)
 }
 
@@ -1906,7 +1884,6 @@ func testCatchUpPersistsIncrementally(t *testing.T, scheme string) {
 // applied, and the final pivot must reach the target.
 func TestCatchUpWindowed(t *testing.T) {
 	t.Parallel()
-	testCatchUpWindowed(t, rawdb.HashScheme)
 	testCatchUpWindowed(t, rawdb.PathScheme)
 }
 
@@ -2040,11 +2017,10 @@ func testCatchUpWindowed(t *testing.T, scheme string) {
 }
 
 // TestSyncStatusMarkedCompleteAfterCompletion verifies that after a full sync
-// completes, the persisted sync status reaches the complete phase. This lets a
+// completes, the persisted sync status is marked done. This lets a
 // subsequent Sync call distinguish "already done" from "fresh node" and skip.
 func TestSyncStatusMarkedCompleteAfterCompletion(t *testing.T) {
 	t.Parallel()
-	testSyncStatusMarkedCompleteAfterCompletion(t, rawdb.HashScheme)
 	testSyncStatusMarkedCompleteAfterCompletion(t, rawdb.PathScheme)
 }
 
@@ -2069,11 +2045,11 @@ func testSyncStatusMarkedCompleteAfterCompletion(t *testing.T, scheme string) {
 	}
 
 	// After successful sync, persisted status should be present with
-	// the complete phase and the pivot we synced to.
+	// done and the pivot we synced to.
 	loader := newSyncerV2(syncer.db, nodeScheme)
 	loader.loadSyncStatus()
-	if loader.getPhase() != phaseComplete {
-		t.Fatal("expected persisted status to reach the complete phase after successful sync")
+	if !loader.done.Load() {
+		t.Fatal("expected persisted status to be done after successful sync")
 	}
 	if loader.pivot == nil || loader.pivot.Hash() != pivot.Hash() {
 		t.Fatalf("expected persisted pivot to match synced pivot")
@@ -2089,7 +2065,7 @@ func testSyncStatusMarkedCompleteAfterCompletion(t *testing.T, scheme string) {
 func TestSyncSkipsIfAlreadyComplete(t *testing.T) {
 	t.Parallel()
 
-	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.HashScheme)
+	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.PathScheme)
 	pivot := mkPivot(0, sourceAccountTrie.Hash())
 
 	var (
@@ -2105,7 +2081,7 @@ func TestSyncSkipsIfAlreadyComplete(t *testing.T) {
 		t.Fatalf("first sync failed: %v", err)
 	}
 
-	// Wipe the flat state. The persisted status (in the complete phase) stays.
+	// Wipe the flat state. The persisted status (marked done) stays.
 	if err := syncer.db.DeleteRange(rawdb.SnapshotAccountPrefix, []byte{rawdb.SnapshotAccountPrefix[0] + 1}); err != nil {
 		t.Fatalf("failed to wipe account snapshot: %v", err)
 	}
@@ -2127,7 +2103,7 @@ func TestSyncSkipsIfAlreadyComplete(t *testing.T) {
 func TestInterruptedGenerationRecovery(t *testing.T) {
 	t.Parallel()
 
-	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.HashScheme)
+	nodeScheme, sourceAccountTrie, elems := makeAccountTrieNoStorage(100, rawdb.PathScheme)
 	root := sourceAccountTrie.Hash()
 
 	// First run: complete download, save status, simulate interruption
@@ -2178,16 +2154,12 @@ func TestInterruptedGenerationRecovery(t *testing.T) {
 	if err := syncer2.Sync(mkPivot(0, root), cancel2); err != nil {
 		t.Fatalf("resumed sync failed: %v", err)
 	}
-	// The resumed run re-arms the pivot freeze once its no-op download
-	// completes, the downloader relies on it until the pivot block commits.
-	if syncer2.FrozenPivot() == nil {
-		t.Fatal("pivot not frozen after resumed sync")
-	}
-	// After generation completes, status should reach the complete phase.
+	// After the resumed run completes (no-op download plus trie
+	// verification), the persisted status should be marked done.
 	loader := newSyncerV2(db, nodeScheme)
 	loader.loadSyncStatus()
-	if loader.getPhase() != phaseComplete {
-		t.Fatal("sync status should reach the complete phase after generation completes")
+	if !loader.done.Load() {
+		t.Fatal("sync status should be done after generation completes")
 	}
 }
 
@@ -2201,7 +2173,7 @@ func TestPruneStaleState(t *testing.T) {
 
 	var (
 		db     = rawdb.NewMemoryDatabase()
-		syncer = newSyncerV2(db, rawdb.HashScheme)
+		syncer = newSyncerV2(db, rawdb.PathScheme)
 
 		fetched   = common.Hash{0x20} // below the cursor, journal-covered
 		next      = common.Hash{0x40} // task cursor
@@ -2299,7 +2271,6 @@ func TestPruneStaleState(t *testing.T) {
 // would survive the re-download untouched and corrupt the generated trie.
 func TestResumeWipesUncoveredState(t *testing.T) {
 	t.Parallel()
-	testResumeWipesUncoveredState(t, rawdb.HashScheme)
 	testResumeWipesUncoveredState(t, rawdb.PathScheme)
 }
 
@@ -2368,7 +2339,7 @@ func testResumeWipesUncoveredState(t *testing.T, scheme string) {
 	if len(rawdb.ReadAccountSnapshot(db, bogus)) != 0 {
 		t.Fatal("uncovered account entry should have been pruned on resume")
 	}
-	verifyTrie(scheme, db, root, t)
+	verifySyncedTrie(scheme, db, root, t)
 }
 
 // TestFetchAccessListsMultiplePeers verifies that fetch distributes work
@@ -2400,7 +2371,7 @@ func TestFetchAccessListsMultiplePeers(t *testing.T) {
 		source.accessLists = bals
 		return source
 	}
-	syncer := setupSyncerV2(rawdb.HashScheme, mkSource("peer-a"), mkSource("peer-b"), mkSource("peer-c"))
+	syncer := setupSyncerV2(rawdb.PathScheme, mkSource("peer-a"), mkSource("peer-b"), mkSource("peer-c"))
 	results, err := syncer.fetchAccessLists(hashes, makeAccessListHeaders(bals), cancel)
 	if err != nil {
 		t.Fatalf("fetchAccessLists failed: %v", err)
@@ -2445,7 +2416,7 @@ func TestFetchAccessListsPeerTimeout(t *testing.T) {
 	// Second peer serves correctly
 	good := newTestPeerV2("good", t, term)
 	good.accessLists = bals
-	syncer := setupSyncerV2(rawdb.HashScheme, nonResponsive, good)
+	syncer := setupSyncerV2(rawdb.PathScheme, nonResponsive, good)
 	syncer.rates.OverrideTTLLimit = time.Millisecond // Fast timeout
 	results, err := syncer.fetchAccessLists(hashes, makeAccessListHeaders(bals), cancel)
 	if err != nil {
@@ -2482,7 +2453,7 @@ func TestFetchAccessListsPeerRejection(t *testing.T) {
 	// Second peer serves correctly
 	good := newTestPeerV2("good", t, term)
 	good.accessLists = bals
-	syncer := setupSyncerV2(rawdb.HashScheme, rejector, good)
+	syncer := setupSyncerV2(rawdb.PathScheme, rejector, good)
 	results, err := syncer.fetchAccessLists(hashes, makeAccessListHeaders(bals), cancel)
 	if err != nil {
 		t.Fatalf("fetchAccessLists failed: %v", err)
@@ -2503,7 +2474,7 @@ func TestFetchAccessListsCancel(t *testing.T) {
 	nonResponsive.accessListRequestHandler = func(t *testPeerV2, id uint64, hashes []common.Hash, max int) error {
 		return nil // never deliver
 	}
-	syncer := setupSyncerV2(rawdb.HashScheme, nonResponsive)
+	syncer := setupSyncerV2(rawdb.PathScheme, nonResponsive)
 	hashes := []common.Hash{common.HexToHash("0x01")}
 
 	// Cancel after a short delay
@@ -2547,7 +2518,7 @@ func TestFetchAccessListsPeerDrop(t *testing.T) {
 	// Second peer serves correctly
 	good := newTestPeerV2("good", t, term)
 	good.accessLists = bals
-	syncer := setupSyncerV2(rawdb.HashScheme, dropped, good)
+	syncer := setupSyncerV2(rawdb.PathScheme, dropped, good)
 	results, err := syncer.fetchAccessLists(hashes, makeAccessListHeaders(bals), cancel)
 	if err != nil {
 		t.Fatalf("fetchAccessLists failed: %v", err)
@@ -2607,7 +2578,7 @@ func TestFetchAccessListsShortResponse(t *testing.T) {
 		}
 		return nil
 	}
-	syncer := setupSyncerV2(rawdb.HashScheme, shortPeer)
+	syncer := setupSyncerV2(rawdb.PathScheme, shortPeer)
 
 	// Pre-seed the rate tracker so the peer's capacity for AccessListsMsg is
 	// high enough to get all 4 hashes assigned in a single request. Without
@@ -2698,7 +2669,7 @@ func TestFetchAccessListsEmptyPlaceholder(t *testing.T) {
 	// fullPeer has all BALs
 	fullPeer := newTestPeerV2("full", t, term)
 	fullPeer.accessLists = allBALs
-	syncer := setupSyncerV2(rawdb.HashScheme, partialPeer, fullPeer)
+	syncer := setupSyncerV2(rawdb.PathScheme, partialPeer, fullPeer)
 
 	// Pre-seed capacity so partialPeer gets all 3 hashes
 	syncer.rates.Update(partialPeer.id, AccessListsMsg, time.Millisecond, 100)
@@ -2764,7 +2735,7 @@ func TestFetchAccessListsRejectsBadBAL(t *testing.T) {
 
 	peer := newTestPeerV2("liar", t, term)
 	peer.accessLists = map[common.Hash]rlp.RawValue{hash: served}
-	syncer := setupSyncerV2(rawdb.HashScheme, peer)
+	syncer := setupSyncerV2(rawdb.PathScheme, peer)
 
 	results, err := syncer.fetchAccessLists(hashes, headers, cancel)
 	if !errors.Is(err, errAccessListPeersExhausted) {
@@ -2819,7 +2790,7 @@ func TestCatchUpRetriesOnBadBAL(t *testing.T) {
 	honest := newTestPeerV2("honest", t, term)
 	honest.accessLists = map[common.Hash]rlp.RawValue{hash: good}
 
-	syncer := setupSyncerV2(rawdb.HashScheme, liar, honest)
+	syncer := setupSyncerV2(rawdb.PathScheme, liar, honest)
 	// Bias the capacity sort so the liar is asked first, exercising the
 	// reject-and-retry path rather than getting lucky on assignment order.
 	syncer.rates.Update(liar.id, AccessListsMsg, time.Millisecond, 1000)
@@ -2921,7 +2892,6 @@ func makeStateWithStorageContract(scheme string, plain []*kv, contractAddr commo
 // independent confirmation.
 func TestCatchUpAppliesStorageBALs(t *testing.T) {
 	t.Parallel()
-	testCatchUpAppliesStorageBALs(t, rawdb.HashScheme)
 	testCatchUpAppliesStorageBALs(t, rawdb.PathScheme)
 }
 
@@ -3051,7 +3021,7 @@ func testCatchUpAppliesStorageBALs(t *testing.T, scheme string) {
 	}
 	// Sanity: the generated trie for pivot A is complete and matches rootA. This
 	// also confirms the test fixture itself is internally consistent.
-	verifyTrie(scheme, db, rootA, t)
+	verifySyncedTrie(scheme, db, rootA, t)
 
 	// Sync 2: the pivot moves to A+1, exercising the BAL catch-up path.
 	{
@@ -3074,11 +3044,10 @@ func testCatchUpAppliesStorageBALs(t *testing.T, scheme string) {
 		if err := syncer.Sync(hdrB, cancel); err != nil {
 			t.Fatalf("pivot A+1 catch-up sync failed: %v", err)
 		}
-		// The freeze must re-arm on a pivot-moved cycle too, the downloader
-		// relies on it from download completion until commit, and it must
-		// point at the new pivot the catch-up rolled forward to.
-		if frozen := syncer.FrozenPivot(); frozen == nil || frozen.Hash() != hdrB.Hash() {
-			t.Fatal("pivot not frozen at the new header after catch-up sync")
+		// A pivot-moved cycle must complete too: the catch-up rolls the
+		// state forward to the new pivot and the sync reports done again.
+		if !syncer.done.Load() {
+			t.Fatal("sync not done after catch-up cycle against the moved pivot")
 		}
 		close(done)
 	}
@@ -3086,7 +3055,7 @@ func testCatchUpAppliesStorageBALs(t *testing.T, scheme string) {
 	// A successful Sync already means GenerateTrie reproduced rootB from the
 	// BAL-updated flat state (it errors on root mismatch). Re-walk the trie as
 	// an independent confirmation that rootB is fully materialized.
-	verifyTrie(scheme, db, rootB, t)
+	verifySyncedTrie(scheme, db, rootB, t)
 
 	// Spot-check each storage mutation landed in the flat snapshot in the
 	// canonical encoding.
@@ -3109,4 +3078,116 @@ func testCatchUpAppliesStorageBALs(t *testing.T, scheme string) {
 	checkSlot(slotZero, common.Hash{}, false)
 	checkSlot(slotNew, vNew, true)
 	checkSlot(slotMultiTx, vMultiFinal, true)
+}
+
+// strictReader is a trie node reader over the raw key-value store that
+// verifies every resolved node against the hash its parent references, so
+// that any inconsistency surfaces as an error instead of being papered over.
+type strictReader struct {
+	db ethdb.KeyValueReader
+}
+
+// NodeReader implements database.NodeDatabase.
+func (r *strictReader) NodeReader(root common.Hash) (database.NodeReader, error) {
+	return r, nil
+}
+
+// Node implements database.NodeReader, verifying the content hash.
+func (r *strictReader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
+	var blob []byte
+	if owner == (common.Hash{}) {
+		blob = rawdb.ReadAccountTrieNode(r.db, path)
+	} else {
+		blob = rawdb.ReadStorageTrieNode(r.db, owner, path)
+	}
+	if len(blob) == 0 {
+		return nil, fmt.Errorf("node missing at path %x", path)
+	}
+	if have := crypto.Keccak256Hash(blob); have != hash {
+		return nil, fmt.Errorf("node hash mismatch at path %x: have %x, want %x", path, have, hash)
+	}
+	return blob, nil
+}
+
+// checkTrieNodeSetEquality asserts that the on-disk trie node tables contain
+// exactly the canonical trie's nodes: nothing missing (checked by a strict,
+// hash-verified walk) and nothing extra (dangling nodes). Set equality is the
+// core invariant of the inline generation scheme — after sync, pathdb assumes
+// the on-disk path set equals the canonical trie, and nothing downstream ever
+// cleans a leftover.
+func checkTrieNodeSetEquality(t *testing.T, db ethdb.KeyValueStore, root common.Hash) {
+	t.Helper()
+
+	var (
+		reader    = &strictReader{db: db}
+		canonical = make(map[string]struct{})
+	)
+	collect := func(owner common.Hash, tr *trie.Trie) {
+		it := tr.MustNodeIterator(nil)
+		for it.Next(true) {
+			if it.Hash() == (common.Hash{}) {
+				continue // embedded in parent, not standalone
+			}
+			if owner == (common.Hash{}) {
+				canonical[string(append(bytes.Clone(rawdb.TrieNodeAccountPrefix), it.Path()...))] = struct{}{}
+			} else {
+				key := append(bytes.Clone(rawdb.TrieNodeStoragePrefix), owner.Bytes()...)
+				canonical[string(append(key, it.Path()...))] = struct{}{}
+			}
+		}
+		if err := it.Error(); err != nil {
+			t.Fatalf("canonical walk failed (owner %x): %v", owner, err)
+		}
+	}
+	accTrie, err := trie.New(trie.TrieID(root), reader)
+	if err != nil {
+		t.Fatalf("failed to open account trie: %v", err)
+	}
+	collect(common.Hash{}, accTrie)
+
+	accIt := trie.NewIterator(accTrie.MustNodeIterator(nil))
+	for accIt.Next() {
+		acc, err := types.FullAccount(accIt.Value)
+		if err != nil {
+			t.Fatalf("invalid account: %v", err)
+		}
+		if acc.Root == types.EmptyRootHash {
+			continue
+		}
+		owner := common.BytesToHash(accIt.Key)
+		storageTrie, err := trie.New(trie.StorageTrieID(root, owner, acc.Root), reader)
+		if err != nil {
+			t.Fatalf("failed to open storage trie %x: %v", owner, err)
+		}
+		collect(owner, storageTrie)
+	}
+	if err := accIt.Err; err != nil {
+		t.Fatal(err)
+	}
+	// Enumerate the on-disk node tables and flag anything non-canonical.
+	dangling := 0
+	for _, prefix := range [][]byte{rawdb.TrieNodeAccountPrefix, rawdb.TrieNodeStoragePrefix} {
+		it := db.NewIterator(prefix, nil)
+		for it.Next() {
+			if _, ok := canonical[string(it.Key())]; !ok {
+				dangling++
+				if dangling <= 10 {
+					t.Errorf("dangling trie node on disk: key %x", it.Key())
+				}
+			}
+		}
+		it.Release()
+	}
+	if dangling > 0 {
+		t.Fatalf("found %d dangling trie nodes", dangling)
+	}
+}
+
+// verifySyncedTrie runs the standard reachability check and, under the path
+// scheme, additionally asserts on-disk node-set equality with the canonical
+// trie (no dangling leftovers from the inline generation).
+func verifySyncedTrie(scheme string, db ethdb.KeyValueStore, root common.Hash, t *testing.T) {
+	t.Helper()
+	verifyTrie(scheme, db, root, t)
+	checkTrieNodeSetEquality(t, db, root)
 }

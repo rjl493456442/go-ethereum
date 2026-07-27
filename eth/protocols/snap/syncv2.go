@@ -42,7 +42,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
-	"github.com/ethereum/go-ethereum/triedb"
 )
 
 const (
@@ -124,6 +123,9 @@ type accountResponseV2 struct {
 	hashes   []common.Hash         // Account hashes in the returned range
 	accounts []*types.StateAccount // Expanded accounts in the returned range
 
+	origin common.Hash       // Origin of the requested range, for boundary bookkeeping
+	nodes  *trienode.NodeSet // Verified partial-trie nodes reconstructed from the range
+
 	cont bool // Whether the account range has a continuation
 }
 
@@ -200,6 +202,9 @@ type storageResponseV2 struct {
 
 	hashes [][]common.Hash // Storage slot hashes in the returned range
 	slots  [][][]byte      // Storage slot values in the returned range
+
+	origin common.Hash       // Origin of the last account's requested range, for boundary bookkeeping
+	nodes  *trienode.NodeSet // Verified partial-trie nodes of the last account's range
 
 	cont bool // Whether the last storage range has a continuation
 }
@@ -283,34 +288,13 @@ type storageTaskV2 struct {
 	done bool              // Flag whether the task can be removed
 }
 
-// syncPhase tracks how far a snap/2 sync has progressed for the journaled
-// pivot. The phases are strictly ordered: each one implies all previous
-// ones have finished.
-type syncPhase uint8
-
-const (
-	// phaseDownload covers the flat state (account, storage, bytecode)
-	// download. The requests target the pivot root, which remote peers
-	// only serve while it is recent, so the pivot must keep tracking the
-	// chain head (see FrozenPivot).
-	phaseDownload syncPhase = iota
-
-	// phaseGenerate covers the local trie generation after the download
-	// has completed. It targets the exact pivot root it was started with,
-	// so pivot updates are refused from here on.
-	phaseGenerate
-
-	// phaseComplete means the sync ran to completion for the pivot.
-	phaseComplete
-)
-
-// syncProgressV2 is a database entry to allow suspending and resuming a snapshot state
-// sync. Opposed to full and fast sync, there is no way to restart a suspended
+// syncProgressV2 is a database entry to allow suspending and resuming a snapshot
+// state sync. Opposed to full and fast sync, there is no way to restart a suspended
 // snap sync without prior knowledge of the suspension point.
 type syncProgressV2 struct {
 	Pivot *types.Header    // Pivot header being synced (for pivot move and reorg detection)
 	Tasks []*accountTaskV2 // The suspended account tasks (contract tasks within)
-	Phase syncPhase        // Phase is how far the sync has progressed for Pivot
+	Done  bool             // Whether the sync ran to completion for Pivot (trie whole and verified)
 
 	// Status report during syncing phase
 	AccountSynced  uint64             // Number of accounts downloaded
@@ -322,7 +306,6 @@ type syncProgressV2 struct {
 
 	AccessListSynced uint64 `json:"-"` // Block access lists fetched during catch-up
 	AccessListTotal  uint64 `json:"-"` // Total block access lists to fetch for catch-up
-	TrieGenPercent   uint64 `json:"-"` // Trie generation completion, in percent (0..100)
 }
 
 // SyncPeerV2 abstracts out the methods required for a peer to be synced against
@@ -369,10 +352,15 @@ type SyncPeerV2 interface {
 //   - The peer delivers a stale response after a previous timeout
 //   - The peer delivers a refusal to serve the requested state
 type syncerV2 struct {
-	db     ethdb.Database   // Database to store the trie nodes into (and dedup)
-	scheme string           // Node scheme used in node database
-	pivot  *types.Header    // Current pivot header being synced (lock needed)
-	phase  atomic.Uint32    // Current syncPhase; atomic so phase transitions are visible across goroutines
+	db    ethdb.Database // Database to store the trie nodes into (and dedup)
+	pivot *types.Header  // Current pivot header being synced (lock needed)
+	// done flags that the sync ran to completion for the journaled pivot:
+	// the trie is whole and verified against its root. The pivot may still
+	// move afterwards (e.g. snap sync re-enabled later): the flat state and
+	// the tries are all local, so a move is absorbed by rolling forward via
+	// BAL catch-up and re-verifying. Atomic so the flag is visible across
+	// goroutines.
+	done   atomic.Bool
 	tasks  []*accountTaskV2 // Current account task set being synced
 	update chan struct{}    // Notification channel for possible sync progression
 
@@ -403,9 +391,8 @@ type syncerV2 struct {
 	storageSynced  uint64             // Number of storage slots downloaded
 	storageBytes   common.StorageSize // Number of storage trie bytes persisted to disk
 
-	accessListSynced uint64        // Block access lists fetched so far during catch-up
-	accessListTotal  uint64        // Block access lists to fetch for the current catch-up
-	genProgress      atomic.Uint64 // The live trie-generation progress
+	accessListSynced uint64 // Block access lists fetched so far during catch-up
+	accessListTotal  uint64 // Block access lists to fetch for the current catch-up
 
 	extProgress *syncProgressV2 // progress that can be exposed to external caller.
 
@@ -421,9 +408,11 @@ type syncerV2 struct {
 // newSyncerV2 creates a new snapshot syncer to download the Ethereum state over the
 // snap protocol.
 func newSyncerV2(db ethdb.Database, scheme string) *syncerV2 {
+	if scheme != rawdb.PathScheme {
+		panic("snap/2 requires the path scheme")
+	}
 	s := &syncerV2{
-		db:     db,
-		scheme: scheme,
+		db: db,
 
 		peers:    make(map[string]SyncPeerV2),
 		peerJoin: new(event.Feed),
@@ -449,20 +438,88 @@ func newSyncerV2(db ethdb.Database, scheme string) *syncerV2 {
 		var progress syncProgressV2
 		if err := json.Unmarshal(raw[1:], &progress); err == nil {
 			s.pivot = progress.Pivot
-			s.setPhase(progress.Phase)
+			s.done.Store(progress.Done)
 		}
 	}
 	return s
 }
 
-// getPhase returns the current sync phase.
-func (s *syncerV2) getPhase() syncPhase {
-	return syncPhase(s.phase.Load())
+// trieCutoff returns the exclusive upper path bound for persisting a range's
+// trie nodes: everything at or beyond the successor of `last` belongs to the
+// neighbouring range's key space and must not be written from this one (the
+// response may overflow the range before being trimmed). Nil (no bound) is
+// returned at the trie's right edge.
+func trieCutoff(last common.Hash) []byte {
+	if last == common.MaxHash {
+		return nil
+	}
+	return hexPath(incHash(last))
 }
 
-// setPhase moves the sync to the given phase.
-func (s *syncerV2) setPhase(phase syncPhase) {
-	s.phase.Store(uint32(phase))
+// writeRangeNodes persists the verified partial-trie node set reconstructed
+// from a range response (see trie.VerifyRangeProof): the range's interior
+// nodes plus the correct, fully-populated versions of the ancestors
+// straddling the range boundaries.
+//
+// Nodes at or beyond the cutoff path are skipped: they spill over into the
+// neighbouring range's key space, whose on-disk state is managed by that
+// range's own downloads (and wiped by the per-cycle pruning).
+//
+// For every boundary chain in `edges` (the nibble paths of the range's edge
+// keys), the extension gaps between consecutive chain members are deleted:
+// the canonical trie has no nodes on the skipped paths, but an earlier
+// pivot's proof (with a different local shape) may have left some behind,
+// and boundary paths are exactly the ones the range deletes of the pruning
+// never touch.
+func writeRangeNodes(batch ethdb.Batch, owner common.Hash, set *trienode.NodeSet, cutoff []byte, edges [][]byte) {
+	if set == nil {
+		return
+	}
+	for path, n := range set.Nodes {
+		if n.IsDeleted() {
+			continue // impossible for a freshly built trie, defensive only
+		}
+		if cutoff != nil && bytes.Compare([]byte(path), cutoff) >= 0 {
+			continue
+		}
+		if owner == (common.Hash{}) {
+			rawdb.WriteAccountTrieNode(batch, []byte(path), n.Blob)
+		} else {
+			rawdb.WriteStorageTrieNode(batch, owner, []byte(path), n.Blob)
+		}
+	}
+	for _, edge := range edges {
+		var chain [][]byte
+		for path := range set.Nodes {
+			if bytes.HasPrefix(edge, []byte(path)) {
+				chain = append(chain, []byte(path))
+			}
+		}
+		sort.Slice(chain, func(i, j int) bool { return len(chain[i]) < len(chain[j]) })
+		for i := 1; i < len(chain); i++ {
+			for l := len(chain[i-1]) + 1; l < len(chain[i]); l++ {
+				if owner == (common.Hash{}) {
+					rawdb.DeleteAccountTrieNode(batch, chain[i][:l])
+				} else {
+					rawdb.DeleteStorageTrieNode(batch, owner, chain[i][:l])
+				}
+			}
+		}
+	}
+}
+
+// writeCompleteTrie regenerates a contract's complete storage trie from its
+// verified slot data and persists the nodes. The rebuild reproduces exactly
+// the trie the range proof verification hashed against the account's storage
+// root, so every emitted node is a node of the proven trie.
+func writeCompleteTrie(batch ethdb.Batch, owner common.Hash, hashes []common.Hash, slots [][]byte) {
+	tr := trie.NewStackTrie(func(path []byte, hash common.Hash, blob []byte) {
+		rawdb.WriteStorageTrieNode(batch, owner, path, blob)
+	})
+	for i, hash := range hashes {
+		tr.Update(hash[:], slots[i])
+	}
+	tr.Hash()
 }
 
 // Register injects a new data source into the syncer's peerset.
@@ -547,18 +604,16 @@ func (s *syncerV2) Sync(target *types.Header, cancel chan struct{}) error {
 	isPivotChanged := prevPivot != nil && prevPivot.Hash() != target.Hash()
 
 	// Skip if we've already finished syncing this pivot.
-	if !isPivotChanged && s.getPhase() == phaseComplete {
+	if !isPivotChanged && s.done.Load() {
 		log.Info("Snap sync already complete for this pivot", "root", root)
 		return nil
 	}
 
-	// We're committing to running this sync. Demote a completed phase so a
+	// We're committing to running this sync. Clear the done flag so a
 	// mid-run save (on cancel or error) doesn't persist a stale complete
-	// status from a prior pivot. The download remains done, only the trie
-	// generation must be redone against the new pivot.
-	if s.getPhase() == phaseComplete {
-		s.setPhase(phaseGenerate)
-	}
+	// status from a prior pivot. The download remains done; the catch-up
+	// and trie verification are redone against the new pivot.
+	s.done.Store(false)
 
 	defer func() {
 		// Whether sync completed or not, disregard any future packets
@@ -615,14 +670,6 @@ func (s *syncerV2) Sync(target *types.Header, cancel chan struct{}) error {
 				s.resetSyncState()
 				break
 			}
-			// A canonical pivot move past a frozen pivot should be impossible:
-			// the downloader both refuses moves (FrozenPivot) and resumes new
-			// cycles against the frozen header itself. Reaching this branch
-			// frozen indicates a bug on the downloader side; roll the flat
-			// state forward defensively and regenerate.
-			if s.getPhase() >= phaseGenerate {
-				log.Warn("Frozen pivot moved unexpectedly, rolling forward", "frozen", prevPivot.Number, "new", target.Number)
-			}
 			if err := s.catchUp(target, cancel); err != nil {
 				return err
 			}
@@ -638,46 +685,10 @@ func (s *syncerV2) Sync(target *types.Header, cancel chan struct{}) error {
 	}
 	log.Info("State download complete", "root", root)
 
-	// Entering the generation phase makes the downloader stop moving the
-	// pivot (see FrozenPivot) until the pivot block is committed. The phase
-	// is persisted right away so the freeze also holds across a restart,
-	// before the generation has had a chance to finish.
-	if s.getPhase() < phaseGenerate {
-		s.setPhase(phaseGenerate)
-		s.saveSyncStatus()
-	}
-
-	log.Info("Starting trie generation", "root", root)
-	batch := s.db.NewBatch()
-	s.resetTrienodes(batch)
-	if err := batch.Write(); err != nil {
-		return err
-	}
-	_, genErr := triedb.GenerateTrieWithProgress(s.db, s.scheme, root, cancel, &s.genProgress)
-	if genErr != nil {
-		return genErr
-	}
-	log.Info("Trie generation complete", "root", root)
-
 	// Mark sync complete. The deferred saveSyncStatus persists this so a
 	// follow-up Sync call for the same pivot can skip the work entirely.
-	s.setPhase(phaseComplete)
+	s.done.Store(true)
 	return nil
-}
-
-// FrozenPivot returns the pivot header the sync is bound to, or nil while
-// the pivot may still move freely. The pivot freezes once the state
-// download completes. The remaining work (trie generation) and the pivot
-// commit is purely local and targets the exact pivot root the download
-// finished with, so from that point on the downloader must neither move the
-// pivot nor start a new cycle against a different one.
-func (s *syncerV2) FrozenPivot() *types.Header {
-	if s.getPhase() < phaseGenerate {
-		return nil
-	}
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	return s.pivot
 }
 
 // download runs the bulk flat-state download. It fetches
@@ -1181,7 +1192,7 @@ func (s *syncerV2) loadSyncStatus() {
 				task.StorageCompleted = nil
 			}
 			s.pivot = progress.Pivot
-			s.setPhase(progress.Phase)
+			s.done.Store(progress.Done)
 			s.accountSynced = progress.AccountSynced
 			s.accountBytes = progress.AccountBytes
 			s.bytecodeSynced = progress.BytecodeSynced
@@ -1247,17 +1258,34 @@ func deleteKeyRange(batch ethdb.Batch, start, limit []byte) {
 	}
 }
 
-// resetTrienodes wipes all persisted trienodes if the path scheme is used.
-// It's a defensive operation, ensuring all the leftover trie nodes are cleared
-// before the new generation cycle.
+// resetTrienodes wipes all persisted trie nodes generated by the sync. It's a
+// defensive operation, ensuring all the leftover trie nodes are cleared before
+// the new generation cycle.
 func (s *syncerV2) resetTrienodes(batch ethdb.Batch) {
-	if s.scheme == rawdb.PathScheme {
-		deleteRange(batch, rawdb.TrieNodeAccountPrefix)
-		deleteRange(batch, rawdb.TrieNodeStoragePrefix)
-	}
+	deleteRange(batch, rawdb.TrieNodeAccountPrefix)
+	deleteRange(batch, rawdb.TrieNodeStoragePrefix)
 }
 
-// pruneStaleState removes any flat state the persisted journal does not cover.
+// hexPath converts a hash into its hex-nibble trie path representation (one
+// nibble per byte, no terminator). The nibble expansion preserves ordering:
+// hash order and path lexicographic order coincide, so a hash range maps to
+// a contiguous trie-node key range.
+func hexPath(h common.Hash) []byte {
+	out := make([]byte, 2*common.HashLength)
+	for i, b := range h {
+		out[2*i], out[2*i+1] = b>>4, b&0x0f
+	}
+	return out
+}
+
+// pruneStaleState removes any flat state, along with any generated trie
+// nodes, that the persisted journal does not cover.
+//
+// Note, the boundary/ancestor trie nodes lifted from range proofs live at
+// path *prefixes* of the wiped ranges and are intentionally left in place:
+// they are frontier nodes for the (now again undownloaded) key space, whose
+// staleness is tolerated and which are rewritten by the proofs of the
+// re-downloads.
 func (s *syncerV2) pruneStaleState() error {
 	var (
 		batch      = s.db.NewBatch()
@@ -1271,6 +1299,20 @@ func (s *syncerV2) pruneStaleState() error {
 			}
 			return key
 		}
+		// Trie-node table analogues of the flat keys above. The account trie
+		// key is the path expansion of the account hash; the storage trie key
+		// is the raw account hash (whole-trie granularity) optionally followed
+		// by the path expansion of a slot hash (sub-range granularity).
+		accountTrieKey = func(h common.Hash) []byte {
+			return append(bytes.Clone(rawdb.TrieNodeAccountPrefix), hexPath(h)...)
+		}
+		storageTrieKey = func(account common.Hash, slots ...common.Hash) []byte {
+			key := append(bytes.Clone(rawdb.TrieNodeStoragePrefix), account.Bytes()...)
+			for _, h := range slots {
+				key = append(key, hexPath(h)...)
+			}
+			return key
+		}
 	)
 	keyRangeLimit := func(base []byte, last common.Hash) []byte {
 		if last != common.MaxHash {
@@ -1278,9 +1320,15 @@ func (s *syncerV2) pruneStaleState() error {
 		}
 		return increaseKey(base)
 	}
+	trieKeyRangeLimit := func(base []byte, last common.Hash) []byte {
+		if last != common.MaxHash {
+			return append(base, hexPath(incHash(last))...)
+		}
+		return increaseKey(base)
+	}
 	for _, task := range s.tasks {
 		deleteKeyRange(batch, accountKey(task.Next), keyRangeLimit(bytes.Clone(rawdb.SnapshotAccountPrefix), task.Last))
-
+		deleteKeyRange(batch, accountTrieKey(task.Next), trieKeyRangeLimit(bytes.Clone(rawdb.TrieNodeAccountPrefix), task.Last))
 		protected := make([]common.Hash, 0, len(task.stateCompleted)+len(task.SubTasks))
 		for hash := range task.stateCompleted {
 			if bytes.Compare(hash[:], task.Next[:]) < 0 {
@@ -1308,15 +1356,19 @@ func (s *syncerV2) pruneStaleState() error {
 		})
 
 		start := storageKey(task.Next)
+		trieStart := storageTrieKey(task.Next)
 		for _, hash := range protected {
 			deleteKeyRange(batch, start, storageKey(hash))
 			start = increaseKey(storageKey(hash))
+			deleteKeyRange(batch, trieStart, storageTrieKey(hash))
+			trieStart = increaseKey(storageTrieKey(hash))
 		}
 		deleteKeyRange(batch, start, keyRangeLimit(bytes.Clone(rawdb.SnapshotStoragePrefix), task.Last))
-
+		deleteKeyRange(batch, trieStart, keyRangeLimit(bytes.Clone(rawdb.TrieNodeStoragePrefix), task.Last))
 		for account, subtasks := range task.SubTasks {
 			for _, sub := range subtasks {
 				deleteKeyRange(batch, storageKey(account, sub.Next), keyRangeLimit(storageKey(account), sub.Last))
+				deleteKeyRange(batch, storageTrieKey(account, sub.Next), trieKeyRangeLimit(storageTrieKey(account), sub.Last))
 			}
 		}
 	}
@@ -1339,12 +1391,11 @@ func (s *syncerV2) resetSyncState() {
 
 	s.tasks = nil
 	s.pivot = nil
-	s.setPhase(phaseDownload)
+	s.done.Store(false)
 	s.accountSynced, s.accountBytes = 0, 0
 	s.bytecodeSynced, s.bytecodeBytes = 0, 0
 	s.storageSynced, s.storageBytes = 0, 0
 	s.accessListSynced, s.accessListTotal = 0, 0
-	s.genProgress.Store(0)
 	s.refreshProgressLocked()
 
 	var next common.Hash
@@ -1372,6 +1423,11 @@ func (s *syncerV2) resetSyncState() {
 }
 
 // saveSyncStatus marshals the remaining sync tasks into db.
+//
+// Note, the trie nodes of a range are persisted when its response is
+// processed (before the flat watermark can advance past it), so at journal
+// time the node tables always cover the journaled key space and the resume
+// cleanup only ever needs to wipe the unfinished ranges.
 func (s *syncerV2) saveSyncStatus() {
 	s.saveSyncStatusWithDB(s.db)
 }
@@ -1393,7 +1449,7 @@ func (s *syncerV2) saveSyncStatusWithDB(db ethdb.KeyValueWriter) {
 	progress := &syncProgressV2{
 		Pivot:          s.pivot,
 		Tasks:          s.tasks,
-		Phase:          s.getPhase(),
+		Done:           s.done.Load(),
 		AccountSynced:  s.accountSynced,
 		AccountBytes:   s.accountBytes,
 		BytecodeSynced: s.bytecodeSynced,
@@ -1431,7 +1487,6 @@ func (s *syncerV2) Progress() *syncProgressV2 {
 	defer s.lock.Unlock()
 
 	p := *s.extProgress
-	p.TrieGenPercent = s.genProgress.Load()
 	return &p
 }
 
@@ -2053,6 +2108,27 @@ func (s *syncerV2) processAccountResponse(res *accountResponseV2) {
 	res.task.req = nil
 	res.task.res = res
 
+	// Persist the verified partial trie reconstructed from the response:
+	// the range's interior nodes plus the proof-derived boundary ancestors.
+	// Note this runs against the untrimmed response — the cutoff keeps any
+	// spillover out of the next task's key space, while the boundary chains
+	// (used for stale-shape cleanup) follow the actual proof edges.
+	if res.nodes != nil {
+		batch := ethdb.HookedBatch{
+			Batch: s.db.NewBatch(),
+			OnPut: func(key []byte, value []byte) {
+				s.accountBytes += common.StorageSize(len(key) + len(value))
+			},
+		}
+		edges := [][]byte{hexPath(res.origin)}
+		if len(res.hashes) > 0 {
+			edges = append(edges, hexPath(res.hashes[len(res.hashes)-1]))
+		}
+		writeRangeNodes(batch, common.Hash{}, res.nodes, trieCutoff(res.task.Last), edges)
+		if err := batch.Write(); err != nil {
+			log.Crit("Failed to persist account trie nodes", "err", err)
+		}
+	}
 	// Ensure that the response doesn't overflow into the subsequent task
 	lastBig := res.task.Last.Big()
 	for i, hash := range res.hashes {
@@ -2326,11 +2402,27 @@ func (s *syncerV2) processStorageResponse(res *storageResponseV2) {
 				}
 			}
 		}
-		// Iterate over all the complete contracts, reconstruct the trie nodes and
-		// push them to disk. If the contract is chunked, the trie nodes will be
-		// reconstructed later.
+		// Persist the generated trie nodes of the account's range. Every
+		// account but the last delivered its complete storage trie (root
+		// included), regenerated here from the verified slot data. The last
+		// account's range may be partial: its verification trie — the range
+		// interior plus the proof-derived boundary ancestors — was retained
+		// from the range proof check.
 		slots += len(res.hashes[i])
 
+		if i < len(res.hashes)-1 {
+			writeCompleteTrie(batch, account, res.hashes[i], res.slots[i])
+		} else if res.nodes != nil {
+			if res.subTask != nil {
+				edges := [][]byte{hexPath(res.origin)}
+				if len(res.hashes[i]) > 0 {
+					edges = append(edges, hexPath(res.hashes[i][len(res.hashes[i])-1]))
+				}
+				writeRangeNodes(batch, account, res.nodes, trieCutoff(res.subTask.Last), edges)
+			} else {
+				writeRangeNodes(batch, account, res.nodes, nil, nil)
+			}
+		}
 		// Persist the received storage segments. These flat state may be outdated
 		// during the sync, but it will be fixed by the BAL-healing.
 		for j := 0; j < len(res.hashes[i]); j++ {
@@ -2480,16 +2572,20 @@ func (s *syncerV2) OnAccounts(peer SyncPeerV2, id uint64, hashes []common.Hash, 
 	for i, key := range hashes {
 		keys[i] = common.CopyBytes(key[:])
 	}
-	nodes := make(trienode.ProofList, len(proof))
+	proofList := make(trienode.ProofList, len(proof))
 	for i, node := range proof {
-		nodes[i] = node
+		proofList[i] = node
 	}
-	cont, err := trie.VerifyRangeProof(root, req.origin[:], keys, accounts, nodes.Set())
-	if err != nil {
-		logger.Warn("Account range failed proof", "err", err)
+	proofdb := proofList.Set()
+
+	// Verify the response, reconstructing the range's verified partial trie
+	// for inline persistence along the way.
+	cont, nodeSet, verifErr := trie.VerifyRangeProof(root, req.origin[:], keys, accounts, proofdb)
+	if verifErr != nil {
+		logger.Warn("Account range failed proof", "err", verifErr)
 		// Signal this request as failed, and ready for rescheduling
 		s.scheduleRevertAccountRequest(req)
-		return err
+		return verifErr
 	}
 	accs := make([]*types.StateAccount, len(accounts))
 	for i, account := range accounts {
@@ -2503,6 +2599,8 @@ func (s *syncerV2) OnAccounts(peer SyncPeerV2, id uint64, hashes []common.Hash, 
 		task:     req.task,
 		hashes:   hashes,
 		accounts: accs,
+		origin:   req.origin,
+		nodes:    nodeSet,
 		cont:     cont,
 	}
 	select {
@@ -2697,9 +2795,15 @@ func (s *syncerV2) OnStorage(peer SyncPeerV2, id uint64, hashes [][]common.Hash,
 	}
 	s.lock.Unlock()
 
-	// Reconstruct the partial tries from the response and verify them
-	var cont bool
-
+	// Reconstruct the partial tries from the response and verify them. Only
+	// the last account's range can be partial (and hence carry a proof), so
+	// only its verified node set is retained: the preceding accounts deliver
+	// their complete storage tries, which are regenerated locally from the
+	// verified slot data at processing time.
+	var (
+		cont      bool
+		trienodes *trienode.NodeSet
+	)
 	// If a proof was attached while the response is empty, it indicates that the
 	// requested range specified with 'origin' is empty. Construct an empty state
 	// response locally to finalize the range.
@@ -2719,11 +2823,14 @@ func (s *syncerV2) OnStorage(peer SyncPeerV2, id uint64, hashes [][]common.Hash,
 				nodes = append(nodes, node)
 			}
 		}
-		var err error
+		var (
+			set *trienode.NodeSet
+			err error
+		)
 		if len(nodes) == 0 {
 			// No proof has been attached, the response must cover the entire key
 			// space and hash to the origin root.
-			_, err = trie.VerifyRangeProof(req.roots[i], nil, keys, slots[i], nil)
+			_, set, err = trie.VerifyRangeProof(req.roots[i], nil, keys, slots[i], nil)
 			if err != nil {
 				s.scheduleRevertStorageRequest(req) // reschedule request
 				logger.Warn("Storage slots failed proof", "err", err)
@@ -2732,14 +2839,15 @@ func (s *syncerV2) OnStorage(peer SyncPeerV2, id uint64, hashes [][]common.Hash,
 		} else {
 			// A proof was attached, the response is only partial, check that the
 			// returned data is indeed part of the storage trie
-			proofdb := nodes.Set()
-
-			cont, err = trie.VerifyRangeProof(req.roots[i], req.origin[:], keys, slots[i], proofdb)
+			cont, set, err = trie.VerifyRangeProof(req.roots[i], req.origin[:], keys, slots[i], nodes.Set())
 			if err != nil {
 				s.scheduleRevertStorageRequest(req) // reschedule request
 				logger.Warn("Storage range failed proof", "err", err)
 				return err
 			}
+		}
+		if i == len(hashes)-1 {
+			trienodes = set
 		}
 	}
 	// Partial tries reconstructed, send them to the scheduler for storage filling
@@ -2750,6 +2858,8 @@ func (s *syncerV2) OnStorage(peer SyncPeerV2, id uint64, hashes [][]common.Hash,
 		roots:    req.roots,
 		hashes:   hashes,
 		slots:    slots,
+		origin:   req.origin,
+		nodes:    trienodes,
 		cont:     cont,
 	}
 	select {

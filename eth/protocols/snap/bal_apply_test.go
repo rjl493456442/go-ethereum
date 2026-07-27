@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/holiman/uint256"
 )
 
@@ -98,11 +99,12 @@ func TestAccessListVerification(t *testing.T) {
 }
 
 // TestAccessListApplication verifies that applyAccessList correctly updates
-// flat state (balance, nonce, code, storage) and leaves storageRoot stale.
+// flat state (balance, nonce, code, storage) and rolls the storageRoot
+// forward to match the maintained storage trie.
 func TestAccessListApplication(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	addr := common.HexToAddress("0x01")
 	accountHash := crypto.Keccak256Hash(addr[:])
 
@@ -164,10 +166,23 @@ func TestAccessListApplication(t *testing.T) {
 		t.Errorf("storage wrong: got %x, want %x", storageVal, wantStorage)
 	}
 
-	// Verify storageRoot left stale (unchanged from original)
-	if updated.Root != original.Root {
-		t.Errorf("storageRoot should be stale: got %v, want %v", updated.Root, original.Root)
+	// Verify the storageRoot was rolled forward to the maintained storage
+	// trie: the trie tracks the applied mutations (the pre-existing flat
+	// slot was never downloaded, so it is not part of the generated trie).
+	if want := storageTrieRoot(slotHash, wantStorage); updated.Root != want {
+		t.Errorf("storageRoot not rolled forward: got %v, want %v", updated.Root, want)
 	}
+}
+
+// storageTrieRoot computes the root of a storage trie holding the given
+// slot-hash/value pairs.
+func storageTrieRoot(pairs ...any) common.Hash {
+	tr := trie.NewStackTrie(nil)
+	for i := 0; i < len(pairs); i += 2 {
+		hash := pairs[i].(common.Hash)
+		tr.Update(hash[:], pairs[i+1].([]byte))
+	}
+	return tr.Hash()
 }
 
 // TestAccessListApplicationMultiTx verifies that when an account has multiple
@@ -176,7 +191,7 @@ func TestAccessListApplication(t *testing.T) {
 func TestAccessListApplicationMultiTx(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	addr := common.HexToAddress("0x02")
 	accountHash := crypto.Keccak256Hash(addr[:])
 
@@ -220,7 +235,7 @@ func TestAccessListApplicationMultiTx(t *testing.T) {
 func TestAccessListApplicationZeroStorage(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	addr := common.HexToAddress("0x06")
 	accountHash := crypto.Keccak256Hash(addr[:])
 
@@ -253,7 +268,7 @@ func TestAccessListApplicationNewAccount(t *testing.T) {
 	t.Parallel()
 
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 
 	addr := common.HexToAddress("0x03")
 	accountHash := crypto.Keccak256Hash(addr[:])
@@ -287,15 +302,15 @@ func TestAccessListApplicationNewAccount(t *testing.T) {
 	if account.Nonce != 1 {
 		t.Errorf("nonce wrong: got %d, want 1", account.Nonce)
 	}
-	if account.Root != types.EmptyRootHash {
-		t.Errorf("root should be empty for new account: got %v", account.Root)
+	slotHash := crypto.Keccak256Hash(rawSlot[:])
+	wantStorage, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(common.HexToHash("0xff").Bytes()))
+	if want := storageTrieRoot(slotHash, wantStorage); account.Root != want {
+		t.Errorf("root not rolled forward for new account: got %v, want %v", account.Root, want)
 	}
 
 	// Verify storage was written under keccak256(rawSlot) in the canonical
 	// snapshot encoding (RLP of the value with leading zeros trimmed).
-	slotHash := crypto.Keccak256Hash(rawSlot[:])
 	storageVal := rawdb.ReadStorageSnapshot(db, accountHash, slotHash)
-	wantStorage, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(common.HexToHash("0xff").Bytes()))
 	if !bytes.Equal(storageVal, wantStorage) {
 		t.Errorf("storage wrong: got %x, want %x", storageVal, wantStorage)
 	}
@@ -307,7 +322,7 @@ func TestAccessListApplicationNewAccount(t *testing.T) {
 func TestAccessListApplicationSkipsUnfetched(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 
 	// Pick two addresses and order them by hash.
 	addrA := common.HexToAddress("0x01")
@@ -352,7 +367,7 @@ func TestAccessListApplicationSkipsUnfetched(t *testing.T) {
 func TestAccessListApplicationSkipsUnfetchedStorage(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 
 	addrA := common.HexToAddress("0x01")
 	addrB := common.HexToAddress("0x02")
@@ -396,7 +411,7 @@ func TestAccessListApplicationSkipsUnfetchedStorage(t *testing.T) {
 func TestAccessListApplicationPartialStorage(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 
 	addr := common.HexToAddress("0xc0")
 	accountHash := crypto.Keccak256Hash(addr[:])
@@ -451,7 +466,7 @@ func TestAccessListApplicationPartialStorage(t *testing.T) {
 func TestIsStorageFetched(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 
 	var (
 		fetchedAcct = common.HexToHash("0x10") // below Next
@@ -522,7 +537,7 @@ func TestIsStorageFetched(t *testing.T) {
 func TestAccessListApplicationSameTxCreateDestroy(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	addr := common.HexToAddress("0x04")
 	accountHash := crypto.Keccak256Hash(addr[:])
 
@@ -559,7 +574,7 @@ func TestAccessListApplicationSameTxCreateDestroy(t *testing.T) {
 func TestAccessListApplicationDestroyExisting(t *testing.T) {
 	t.Parallel()
 	db := rawdb.NewMemoryDatabase()
-	syncer := newSyncerV2(db, rawdb.HashScheme)
+	syncer := newSyncerV2(db, rawdb.PathScheme)
 	addr := common.HexToAddress("0x05")
 	accountHash := crypto.Keccak256Hash(addr[:])
 
