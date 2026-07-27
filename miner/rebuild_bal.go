@@ -134,6 +134,17 @@ func (miner *Miner) ReplayBlock(ctx context.Context, block *types.Block, statedb
 	env.bal.Merge(postBal)
 	miner.engine.Finalize(miner.chain, env.header, env.state, &body, uint32(env.tcount+1), env.bal)
 
+	// Mimic AssembleBlock: compute the post-transition state root before hashing
+	// the access list. IntermediateRoot triggers a final Finalise, whose
+	// recordAccessListChanges records any state changes made after the last
+	// per-transition Finalise — notably engine.Finalize's withdrawal balance
+	// changes — into s.stateAccessList. Under a shallow-copy Merge that shared
+	// state object leaks into the block-level access list, exactly as it does
+	// during real block building. Skipping this step (hashing env.bal right after
+	// Finalize) would silently produce a "clean" access list that block building
+	// never actually emits.
+	env.state.IntermediateRoot(miner.chainConfig.IsEIP158(env.header.Number))
+
 	enc := env.bal.ToEncodingObj()
 	return &ReplayResult{
 		Receipts: env.receipts,
