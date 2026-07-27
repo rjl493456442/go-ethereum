@@ -22,8 +22,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/bal"
+	"github.com/ethereum/go-ethereum/core/vm"
 )
 
 // ReplayResult holds the outputs of replaying a block through the block-building
@@ -50,9 +52,15 @@ type ReplayResult struct {
 // The replay deliberately mirrors generateWork: pre-execution system calls, then
 // each transaction in order, then post-execution system calls and Finalize, all
 // merged into a single construction access list with the same block-access index
-// (tcount+1) used for the system calls. The block's parent state must be
-// available in the chain.
-func (miner *Miner) ReplayBlock(ctx context.Context, block *types.Block) (*ReplayResult, error) {
+// (tcount+1) used for the system calls.
+//
+// The caller must supply the parent state (the state after executing the parent
+// block). Passing it in — rather than resolving it internally via makeEnv, which
+// only sees recent state — lets the caller reconstruct historic state (e.g. via
+// eth.stateAtBlock, which re-executes from a nearby snapshot) so that bad blocks
+// whose parent state is no longer live can still be replayed. The provided
+// statedb is mutated by execution; the caller owns it and its release.
+func (miner *Miner) ReplayBlock(ctx context.Context, block *types.Block, statedb *state.StateDB) (*ReplayResult, error) {
 	parent := miner.chain.GetHeader(block.ParentHash(), block.NumberU64()-1)
 	if parent == nil {
 		return nil, fmt.Errorf("parent header %#x not found", block.ParentHash())
@@ -68,11 +76,22 @@ func (miner *Miner) ReplayBlock(ctx context.Context, block *types.Block) (*Repla
 	header.RequestsHash = nil
 	header.BlockAccessListHash = nil
 
-	env, err := miner.makeEnv(parent, header, block.Coinbase(), false)
-	if err != nil {
-		return nil, err
+	// Build the sealing environment around the caller-provided state. This mirrors
+	// makeEnv, except the state is supplied instead of resolved from the chain, and
+	// no prefetcher is started (the caller owns the state lifecycle).
+	coinbase := block.Coinbase()
+	evm := vm.NewEVM(core.NewEVMBlockContext(header, miner.chain, &coinbase), statedb, miner.chainConfig, vm.Config{})
+	evm.SetJumpDestCache(miner.chain.JumpDestCache())
+	defer evm.Release()
+	env := &environment{
+		signer:   types.MakeSigner(miner.chainConfig, header.Number, header.Time),
+		state:    statedb,
+		coinbase: coinbase,
+		gasPool:  core.NewGasPool(header.GasLimit),
+		header:   header,
+		bal:      bal.NewConstructionBlockAccessList(),
+		evm:      evm,
 	}
-	defer env.discard()
 
 	// Pre-execution system calls (mirrors prepareWork's tail).
 	env.bal.Merge(core.PreExecution(ctx, header.ParentBeaconRoot, parent, miner.chainConfig, env.evm, header.Number, header.Time))

@@ -147,21 +147,28 @@ func (api *DebugAPI) ReplayBadBlock(ctx context.Context, hash common.Hash) (map[
 	if block == nil {
 		return nil, fmt.Errorf("bad block %#x not found", hash)
 	}
+	// Reconstruct the parent state, falling back to historic state regeneration
+	// (re-execution from a nearby snapshot) when it is no longer live. readOnly is
+	// false because both replay paths mutate the state.
+	parent := api.eth.blockchain.GetBlock(block.ParentHash(), block.NumberU64()-1)
+	if parent == nil {
+		return nil, fmt.Errorf("parent block %#x not found", block.ParentHash())
+	}
+	statedb, release, err := api.eth.stateAtBlock(ctx, parent, nil, false, false)
+	if err != nil {
+		return nil, fmt.Errorf("parent state unavailable: %w", err)
+	}
+	defer release()
+	// Snapshot the parent state for the import path before the build path mutates it.
+	importState := statedb.Copy()
+
 	// Build path: replay the miner's block-building.
-	build, err := api.eth.Miner().ReplayBlock(ctx, block)
+	build, err := api.eth.Miner().ReplayBlock(ctx, block, statedb)
 	if err != nil {
 		return nil, fmt.Errorf("build path: %w", err)
 	}
 	// Import path: re-execute the block through the state processor.
-	parent := api.eth.blockchain.GetHeader(block.ParentHash(), block.NumberU64()-1)
-	if parent == nil {
-		return nil, fmt.Errorf("parent header %#x not found", block.ParentHash())
-	}
-	statedb, err := api.eth.blockchain.StateAt(parent)
-	if err != nil {
-		return nil, fmt.Errorf("parent state unavailable: %w", err)
-	}
-	res, err := core.NewStateProcessor(api.eth.blockchain).Process(ctx, block, statedb, nil, vm.Config{}, nil)
+	res, err := core.NewStateProcessor(api.eth.blockchain).Process(ctx, block, importState, nil, vm.Config{}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("import path: %w", err)
 	}
