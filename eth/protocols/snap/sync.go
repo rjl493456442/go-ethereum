@@ -2136,8 +2136,9 @@ func (s *syncer) processStorageResponse(res *storageResponse) {
 		res.subTask.req = nil
 	}
 	var (
-		slots int
-		jobs  []*storageJob
+		slots    int
+		smallJob *storageJob
+		subJob   *storageJob
 	)
 	// Iterate over all the accounts and route their storage slots
 	for i, account := range res.accounts {
@@ -2147,11 +2148,13 @@ func (s *syncer) processStorageResponse(res *storageResponse) {
 			continue
 		}
 		// State was delivered, if complete mark as not needed any more, otherwise
-		// mark the account as needing healing
-		for j, hash := range res.mainTask.res.hashes {
-			if account != hash {
-				continue
-			}
+		// mark the account as needing healing. The response hashes are sorted,
+		// locate the account by binary search: with batched small-contract
+		// responses the old linear scan was quadratic and dominated the loop.
+		j := sort.Search(len(res.mainTask.res.hashes), func(k int) bool {
+			return bytes.Compare(res.mainTask.res.hashes[k][:], account[:]) >= 0
+		})
+		if j < len(res.mainTask.res.hashes) && res.mainTask.res.hashes[j] == account {
 			acc := res.mainTask.res.accounts[j]
 
 			// If the packet contains multiple contract storage slots, all
@@ -2284,23 +2287,35 @@ func (s *syncer) processStorageResponse(res *storageResponse) {
 		}
 		slots += len(res.hashes[i])
 
-		// Package the account's flat writes and trie generation into a job;
-		// jobs targeting the same subtask execute in submission order.
-		job := &storageJob{
-			account:  account,
-			hashes:   res.hashes[i],
-			slots:    res.slots[i],
-			mainTask: res.mainTask,
-		}
+		// Package the account's flat writes and trie generation into jobs.
+		// One-shot small contracts are coalesced into a single job sharing
+		// one batch (they are independent, and per-account batches would
+		// fragment the writes); the chunked-contract feed goes into its own
+		// job, keyed so that feeds of the same subtask execute in order.
 		if i == len(res.hashes)-1 && res.subTask != nil {
-			job.subTask = res.subTask
-			job.finish = res.subTask.done
+			subJob = &storageJob{
+				subTask:    res.subTask,
+				subAccount: account,
+				subHashes:  res.hashes[i],
+				subSlots:   res.slots[i],
+				finish:     res.subTask.done,
+				mainTask:   res.mainTask,
+			}
+		} else {
+			if smallJob == nil {
+				smallJob = &storageJob{mainTask: res.mainTask}
+			}
+			smallJob.accounts = append(smallJob.accounts, account)
+			smallJob.hashes = append(smallJob.hashes, res.hashes[i])
+			smallJob.slots = append(smallJob.slots, res.slots[i])
 		}
-		jobs = append(jobs, job)
 	}
 	// Hand the execution over to the workers and update the stats
-	for _, job := range jobs {
-		s.storageExec.submit(job)
+	if smallJob != nil {
+		s.storageExec.submit(smallJob)
+	}
+	if subJob != nil {
+		s.storageExec.submit(subJob)
 	}
 	s.storageSynced += uint64(slots)
 

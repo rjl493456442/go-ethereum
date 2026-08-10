@@ -34,13 +34,23 @@ const storageExecInflight = 512
 
 // storageJob is the execution part of the storage delivery: the flat-state
 // writes, the trie generation and the batch flushes.
+//
+// A response's one-shot small contracts are coalesced into one job sharing
+// a single batch; the chunked-contract feed (at most one per response) rides
+// in its own job so that feeds of the same subtask serialize.
 type storageJob struct {
-	account common.Hash
-	hashes  []common.Hash
-	slots   [][]byte
+	// One-shot small contracts, complete tries built in one pass
+	accounts []common.Hash
+	hashes   [][]common.Hash
+	slots    [][][]byte
 
-	subTask  *storageTask // chunked-contract feed if non-nil
-	finish   bool         // subtask completed by this feed
+	// Chunked-contract feed
+	subTask    *storageTask
+	subAccount common.Hash
+	subHashes  []common.Hash
+	subSlots   [][]byte
+	finish     bool // subtask completed by this feed
+
 	mainTask *accountTask // origin account task
 }
 
@@ -79,7 +89,9 @@ func newStorageExecutor(s *syncer) *storageExecutor {
 func (e *storageExecutor) submit(job *storageJob) {
 	e.inflight <- struct{}{}
 
-	var key any = job.account
+	// Coalesced small-contract jobs are independent of everything, keyed by
+	// themselves; subtask feeds serialize on their subtask.
+	var key any = job
 	if job.subTask != nil {
 		key = job.subTask
 	}
@@ -144,31 +156,34 @@ func (s *syncer) executeStorageJob(job *storageJob) {
 			s.storageBytes.Add(int64(len(key) + len(value)))
 		},
 	}
-	// One-shot small contract: reconstruct the complete storage trie
-	if job.subTask == nil {
+	// One-shot small contracts: reconstruct the complete storage tries and
+	// persist the received storage segments. The flat state maybe outdated
+	// during the sync, but it can be fixed later during the snapshot
+	// generation.
+	for k, account := range job.accounts {
 		var tr genTrie
 		if s.scheme == rawdb.HashScheme {
 			tr = newHashTrie(batch)
 		}
 		if s.scheme == rawdb.PathScheme {
 			// Keep the left boundary as it's complete
-			tr = newPathTrie(job.account, false, s.db, batch)
+			tr = newPathTrie(account, false, s.db, batch)
 		}
-		for j := 0; j < len(job.hashes); j++ {
-			tr.update(job.hashes[j][:], job.slots[j])
+		for j := 0; j < len(job.hashes[k]); j++ {
+			tr.update(job.hashes[k][j][:], job.slots[k][j])
 		}
 		tr.commit(true)
-	}
-	// Persist the received storage segments. These flat state maybe
-	// outdated during the sync, but it can be fixed later during the
-	// snapshot generation.
-	for j := 0; j < len(job.hashes); j++ {
-		rawdb.WriteStorageSnapshot(batch, job.account, job.hashes[j], job.slots[j])
 
-		// If we're storing large contracts, generate the trie nodes
-		// on the fly to not trash the gluing points
-		if job.subTask != nil {
-			job.subTask.genTrie.update(job.hashes[j][:], job.slots[j])
+		for j := 0; j < len(job.hashes[k]); j++ {
+			rawdb.WriteStorageSnapshot(batch, account, job.hashes[k][j], job.slots[k][j])
+		}
+	}
+	// Chunked contract: persist the slots and generate the trie nodes on
+	// the fly to not trash the gluing points
+	if job.subTask != nil {
+		for j := 0; j < len(job.subHashes); j++ {
+			rawdb.WriteStorageSnapshot(batch, job.subAccount, job.subHashes[j], job.subSlots[j])
+			job.subTask.genTrie.update(job.subHashes[j][:], job.subSlots[j])
 		}
 	}
 	// Large contracts could have generated new trie nodes, flush them to disk
@@ -184,10 +199,10 @@ func (s *syncer) executeStorageJob(job *storageJob) {
 
 			// If the chunk's root is an overflown but full delivery, hand the
 			// heal-skip verdict back to the runloop.
-			if root == job.subTask.root && rawdb.HasTrieNode(s.db, job.account, nil, root, s.scheme) {
+			if root == job.subTask.root && rawdb.HasTrieNode(s.db, job.subAccount, nil, root, s.scheme) {
 				s.storageExec.results <- &storageJobResult{
 					healSkip: job.mainTask,
-					account:  job.account,
+					account:  job.subAccount,
 				}
 			}
 		} else if job.subTask.genBatch.ValueSize() > batchSizeThreshold {
