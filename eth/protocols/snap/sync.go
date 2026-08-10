@@ -803,7 +803,7 @@ func (s *syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		// Periodically dump the runloop/peer timing profile.
 		if s.profLogged.IsZero() {
 			s.profLogged = time.Now()
-		} else if time.Since(s.profLogged) > 30*time.Second {
+		} else if time.Since(s.profLogged) > 60*time.Second {
 			s.profLogged = time.Now()
 			s.reportProfile()
 		}
