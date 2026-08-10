@@ -90,11 +90,12 @@ type syncProfile struct {
 	process    [profKinds]profStat // runloop handling one response (including persistence)
 	commit     [profKinds]profStat // batch writes within the response handlers
 	healCommit profStat            // healer scheduler commits (shared by both heal kinds)
+	exec       profStat            // storage job execution on the worker pool
 }
 
 // reportProfile dumps the accumulated statistics.
 func (s *syncer) reportProfile() {
-	log.Info("Sync loop profile", "idle", s.prof.idle.String(), "schedule", s.prof.schedule.String(), "healcommit", s.prof.healCommit.String())
+	log.Info("Sync loop profile", "idle", s.prof.idle.String(), "schedule", s.prof.schedule.String(), "storageexec", s.prof.exec.String(), "healcommit", s.prof.healCommit.String())
 	for i, name := range profKindNames {
 		log.Info("Sync loop profile: "+name, "deliverwait", s.prof.deliver[i].String(), "process", s.prof.process[i].String(), "commit", s.prof.commit[i].String())
 	}
