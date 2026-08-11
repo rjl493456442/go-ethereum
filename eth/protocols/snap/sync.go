@@ -467,7 +467,7 @@ type syncer struct {
 	storageReqs  map[uint64]*storageRequest  // Storage requests currently running
 
 	accountSynced  uint64             // Number of accounts downloaded
-	accountBytes   common.StorageSize // Number of account trie bytes persisted to disk
+	accountBytes   atomic.Int64       // Number of account trie bytes persisted to disk
 	bytecodeSynced uint64             // Number of bytecodes downloaded
 	bytecodeBytes  common.StorageSize // Number of bytecode bytes downloaded
 	storageSynced  uint64             // Number of storage slots downloaded
@@ -737,7 +737,7 @@ func (s *syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		s.lock.Lock()
 		s.extProgress = &syncProgress{
 			AccountSynced:      s.accountSynced,
-			AccountBytes:       s.accountBytes,
+			AccountBytes:       common.StorageSize(s.accountBytes.Load()),
 			BytecodeSynced:     s.bytecodeSynced,
 			BytecodeBytes:      s.bytecodeBytes,
 			StorageSynced:      s.storageSynced,
@@ -848,7 +848,7 @@ func (s *syncer) loadSyncStatus() {
 				task.genBatch = ethdb.HookedBatch{
 					Batch: s.db.NewBatch(),
 					OnPut: func(key []byte, value []byte) {
-						s.accountBytes += common.StorageSize(len(key) + len(value))
+						s.accountBytes.Add(int64(len(key) + len(value)))
 					},
 				}
 				if s.scheme == rawdb.HashScheme {
@@ -881,7 +881,7 @@ func (s *syncer) loadSyncStatus() {
 			s.snapped = len(s.tasks) == 0
 
 			s.accountSynced = progress.AccountSynced
-			s.accountBytes = progress.AccountBytes
+			s.accountBytes.Store(int64(progress.AccountBytes))
 			s.bytecodeSynced = progress.BytecodeSynced
 			s.bytecodeBytes = progress.BytecodeBytes
 			s.storageSynced = progress.StorageSynced
@@ -898,7 +898,8 @@ func (s *syncer) loadSyncStatus() {
 	// Start a fresh sync by chunking up the account range and scheduling
 	// them for retrieval.
 	s.tasks = nil
-	s.accountSynced, s.accountBytes = 0, 0
+	s.accountSynced = 0
+	s.accountBytes.Store(0)
 	s.bytecodeSynced, s.bytecodeBytes = 0, 0
 	s.storageSynced = 0
 	s.storageBytes.Store(0)
@@ -921,7 +922,7 @@ func (s *syncer) loadSyncStatus() {
 		batch := ethdb.HookedBatch{
 			Batch: s.db.NewBatch(),
 			OnPut: func(key []byte, value []byte) {
-				s.accountBytes += common.StorageSize(len(key) + len(value))
+				s.accountBytes.Add(int64(len(key) + len(value)))
 			},
 		}
 		var tr genTrie
@@ -982,7 +983,7 @@ func (s *syncer) saveSyncStatus() {
 	progress := &syncProgress{
 		Tasks:              s.tasks,
 		AccountSynced:      s.accountSynced,
-		AccountBytes:       s.accountBytes,
+		AccountBytes:       common.StorageSize(s.accountBytes.Load()),
 		BytecodeSynced:     s.bytecodeSynced,
 		BytecodeBytes:      s.bytecodeBytes,
 		StorageSynced:      s.storageSynced,
@@ -2310,12 +2311,16 @@ func (s *syncer) processStorageResponse(res *storageResponse) {
 			smallJob.slots = append(smallJob.slots, res.slots[i])
 		}
 	}
-	// Hand the execution over to the workers and update the stats
+	// Hand the execution over to the workers and update the stats. The
+	// coalesced small-contract job is independent of everything, keyed by
+	// itself; subtask feeds serialize on their subtask.
 	if smallJob != nil {
-		s.storageExec.submit(smallJob)
+		job := smallJob
+		s.storageExec.submit(job, func() { s.executeStorageJob(job) })
 	}
 	if subJob != nil {
-		s.storageExec.submit(subJob)
+		job := subJob
+		s.storageExec.submit(job.subTask, func() { s.executeStorageJob(job) })
 	}
 	s.storageSynced += uint64(slots)
 
@@ -2466,55 +2471,16 @@ func (s *syncer) forwardAccountTask(task *accountTask) {
 	}
 	task.res = nil
 
-	// Persist the received account segments. These flat state maybe
-	// outdated during the sync, but it can be fixed later during the
-	// snapshot generation.
-	oldAccountBytes := s.accountBytes
-
-	batch := ethdb.HookedBatch{
-		Batch: s.db.NewBatch(),
-		OnPut: func(key []byte, value []byte) {
-			s.accountBytes += common.StorageSize(len(key) + len(value))
-		},
-	}
-	for i, hash := range res.hashes {
+	// Determine the consecutive prefix of complete accounts and push the
+	// chunk marker forward over them.
+	upTo := len(res.hashes)
+	for i := range res.hashes {
 		if task.needCode[i] || task.needState[i] {
+			upTo = i
 			break
 		}
-		slim := types.SlimAccountRLP(*res.accounts[i])
-		rawdb.WriteAccountSnapshot(batch, hash, slim)
-
-		if !task.needHeal[i] {
-			// If the storage task is complete, drop it into the stack trie
-			// to generate account trie nodes for it
-			full, err := types.FullAccountRLP(slim) // TODO(karalabe): Slim parsing can be omitted
-			if err != nil {
-				panic(err) // Really shouldn't ever happen
-			}
-			task.genTrie.update(hash[:], full)
-		} else {
-			// If the storage task is incomplete, explicitly delete the corresponding
-			// account item from the account trie to ensure that all nodes along the
-			// path to the incomplete storage trie are cleaned up.
-			if err := task.genTrie.delete(hash[:]); err != nil {
-				panic(err) // Really shouldn't ever happen
-			}
-		}
 	}
-	// Flush anything written just now and update the stats
-	commitStart := time.Now()
-	if err := batch.Write(); err != nil {
-		log.Crit("Failed to persist accounts", "err", err)
-	}
-	s.prof.commit[profAccount].observe(time.Since(commitStart))
-	s.accountSynced += uint64(len(res.accounts))
-
-	// Task filling persisted, push it the chunk marker forward to the first
-	// account still missing data.
-	for i, hash := range res.hashes {
-		if task.needCode[i] || task.needState[i] {
-			return
-		}
+	for _, hash := range res.hashes[:upTo] {
 		task.Next = incHash(hash)
 
 		// Remove the completion flag once the account range is pushed
@@ -2522,34 +2488,35 @@ func (s *syncer) forwardAccountTask(task *accountTask) {
 		// cycle.
 		delete(task.stateCompleted, hash)
 	}
-	// All accounts marked as complete, track if the entire task is done
-	task.done = !res.cont
+	if upTo == len(res.hashes) {
+		// All accounts marked as complete, track if the entire task is done
+		task.done = !res.cont
 
-	// Error out if there is any leftover completion flag.
-	if task.done && len(task.stateCompleted) != 0 {
-		panic(fmt.Errorf("storage completion flags should be emptied, %d left", len(task.stateCompleted)))
-	}
-	// Stack trie could have generated trie nodes, push them to disk (we need to
-	// flush after finalizing task.done. It's fine even if we crash and lose this
-	// write as it will only cause more data to be downloaded during heal.
-	if task.done {
-		task.genTrie.commit(task.Last == common.MaxHash)
-		gbStart := time.Now()
-		if err := task.genBatch.Write(); err != nil {
-			log.Error("Failed to persist stack account", "err", err)
+		// Error out if there is any leftover completion flag.
+		if task.done && len(task.stateCompleted) != 0 {
+			panic(fmt.Errorf("storage completion flags should be emptied, %d left", len(task.stateCompleted)))
 		}
-		s.prof.commit[profAccount].observe(time.Since(gbStart))
-		task.genBatch.Reset()
-	} else if task.genBatch.ValueSize() > batchSizeThreshold {
-		task.genTrie.commit(false)
-		gbStart := time.Now()
-		if err := task.genBatch.Write(); err != nil {
-			log.Error("Failed to persist stack account", "err", err)
-		}
-		s.prof.commit[profAccount].observe(time.Since(gbStart))
-		task.genBatch.Reset()
 	}
-	log.Debug("Persisted range of accounts", "accounts", len(res.accounts), "bytes", s.accountBytes-oldAccountBytes)
+	s.accountSynced += uint64(len(res.accounts))
+
+	if upTo == 0 && !task.done {
+		return // nothing to persist
+	}
+	// Package the persistence and the trie generation into a job, keyed on
+	// the task so successive forwards feed the account trie in order. The
+	// needHeal flags are snapshotted: late heal-skip verdicts are dropped
+	// anyway once res is consumed.
+	needHeal := make([]bool, upTo)
+	copy(needHeal, task.needHeal[:upTo])
+
+	job := &accountJob{
+		task:     task,
+		hashes:   res.hashes[:upTo],
+		accounts: res.accounts[:upTo],
+		needHeal: needHeal,
+		finish:   task.done,
+	}
+	s.storageExec.submit(task, func() { s.executeAccountJob(job) })
 }
 
 // OnAccounts is a callback method to invoke when a range of accounts are
@@ -3173,7 +3140,7 @@ func (s *syncer) reportSyncProgress(force bool) {
 		return
 	}
 	// Don't report anything until we have a meaningful progress
-	synced := s.accountBytes + s.bytecodeBytes + common.StorageSize(s.storageBytes.Load())
+	synced := common.StorageSize(s.accountBytes.Load()) + s.bytecodeBytes + common.StorageSize(s.storageBytes.Load())
 	if synced == 0 {
 		return
 	}
@@ -3204,7 +3171,7 @@ func (s *syncer) reportSyncProgress(force bool) {
 	// Create a mega progress report
 	var (
 		progress = fmt.Sprintf("%.2f%%", float64(synced)*100/estBytes)
-		accounts = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.accountSynced), s.accountBytes.TerminalString())
+		accounts = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.accountSynced), common.StorageSize(s.accountBytes.Load()).TerminalString())
 		storage  = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.storageSynced), common.StorageSize(s.storageBytes.Load()).TerminalString())
 		bytecode = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.bytecodeSynced), s.bytecodeBytes.TerminalString())
 	)

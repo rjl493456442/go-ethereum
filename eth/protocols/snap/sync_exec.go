@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -60,14 +61,14 @@ type storageJobResult struct {
 	account  common.Hash  // account the heal-skip verdict applies to
 }
 
-// storageExecutor runs storage jobs on a bounded worker pool. Jobs sharing a
-// key (the same subtask) execute in submission order; different keys run in
-// parallel.
+// storageExecutor runs sync jobs (storage deliveries and account forwards)
+// on a bounded worker pool. Jobs sharing a key (the same subtask, the same
+// account task) execute in submission order; different keys run in parallel.
 type storageExecutor struct {
 	s *syncer
 
 	lock   sync.Mutex
-	queues map[any][]*storageJob
+	queues map[any][]func()
 	wg     sync.WaitGroup
 
 	tokens   chan struct{}
@@ -78,7 +79,7 @@ type storageExecutor struct {
 func newStorageExecutor(s *syncer) *storageExecutor {
 	return &storageExecutor{
 		s:        s,
-		queues:   make(map[any][]*storageJob),
+		queues:   make(map[any][]func()),
 		tokens:   make(chan struct{}, runtime.GOMAXPROCS(0)),
 		inflight: make(chan struct{}, storageExecInflight),
 		results:  make(chan *storageJobResult, storageExecInflight),
@@ -86,17 +87,12 @@ func newStorageExecutor(s *syncer) *storageExecutor {
 }
 
 // submit queues a job for execution, blocking when too many are in flight.
-func (e *storageExecutor) submit(job *storageJob) {
+// Jobs sharing a key execute in submission order.
+func (e *storageExecutor) submit(key any, run func()) {
 	e.inflight <- struct{}{}
 
-	// Coalesced small-contract jobs are independent of everything, keyed by
-	// themselves; subtask feeds serialize on their subtask.
-	var key any = job
-	if job.subTask != nil {
-		key = job.subTask
-	}
 	e.lock.Lock()
-	e.queues[key] = append(e.queues[key], job)
+	e.queues[key] = append(e.queues[key], run)
 	if len(e.queues[key]) > 1 {
 		e.lock.Unlock() // drainer already active on this key
 		return
@@ -112,11 +108,11 @@ func (e *storageExecutor) drain(key any) {
 	defer e.wg.Done()
 	for {
 		e.lock.Lock()
-		job := e.queues[key][0]
+		run := e.queues[key][0]
 		e.lock.Unlock()
 
 		e.tokens <- struct{}{}
-		e.s.executeStorageJob(job)
+		run()
 		<-e.tokens
 
 		e.lock.Lock()
@@ -221,6 +217,78 @@ func (s *syncer) executeStorageJob(job *storageJob) {
 		log.Crit("Failed to persist storage slots", "err", err)
 	}
 	s.prof.commit[profStorage].observe(time.Since(commitStart))
+	s.prof.exec.observe(time.Since(start))
+}
+
+// accountJob is the execution part of an account-task forward: the flat
+// account writes and the account-trie generation. The needHeal flags are
+// snapshotted at packaging time, so late heal-skip verdicts cannot race the
+// worker.
+type accountJob struct {
+	task     *accountTask
+	hashes   []common.Hash
+	accounts []*types.StateAccount
+	needHeal []bool
+	finish   bool // task fully done by this forward: commit the trie boundary
+}
+
+// executeAccountJob runs one account-forward job on a worker thread.
+func (s *syncer) executeAccountJob(job *accountJob) {
+	start := time.Now()
+	batch := ethdb.HookedBatch{
+		Batch: s.db.NewBatch(),
+		OnPut: func(key []byte, value []byte) {
+			s.accountBytes.Add(int64(len(key) + len(value)))
+		},
+	}
+	for i, hash := range job.hashes {
+		slim := types.SlimAccountRLP(*job.accounts[i])
+		rawdb.WriteAccountSnapshot(batch, hash, slim)
+
+		if !job.needHeal[i] {
+			// If the storage task is complete, drop it into the stack trie
+			// to generate account trie nodes for it
+			full, err := types.FullAccountRLP(slim) // TODO(karalabe): Slim parsing can be omitted
+			if err != nil {
+				panic(err) // Really shouldn't ever happen
+			}
+			job.task.genTrie.update(hash[:], full)
+		} else {
+			// If the storage task is incomplete, explicitly delete the corresponding
+			// account item from the account trie to ensure that all nodes along the
+			// path to the incomplete storage trie are cleaned up.
+			if err := job.task.genTrie.delete(hash[:]); err != nil {
+				panic(err) // Really shouldn't ever happen
+			}
+		}
+	}
+	// Flush anything written just now
+	commitStart := time.Now()
+	if err := batch.Write(); err != nil {
+		log.Crit("Failed to persist accounts", "err", err)
+	}
+	s.prof.commit[profAccount].observe(time.Since(commitStart))
+
+	// Stack trie could have generated trie nodes, push them to disk. It's fine
+	// even if we crash and lose this write as it will only cause more data to
+	// be downloaded during heal.
+	if job.finish {
+		job.task.genTrie.commit(job.task.Last == common.MaxHash)
+		gbStart := time.Now()
+		if err := job.task.genBatch.Write(); err != nil {
+			log.Error("Failed to persist stack account", "err", err)
+		}
+		s.prof.commit[profAccount].observe(time.Since(gbStart))
+		job.task.genBatch.Reset()
+	} else if job.task.genBatch.ValueSize() > batchSizeThreshold {
+		job.task.genTrie.commit(false)
+		gbStart := time.Now()
+		if err := job.task.genBatch.Write(); err != nil {
+			log.Error("Failed to persist stack account", "err", err)
+		}
+		s.prof.commit[profAccount].observe(time.Since(gbStart))
+		job.task.genBatch.Reset()
+	}
 	s.prof.exec.observe(time.Since(start))
 }
 
