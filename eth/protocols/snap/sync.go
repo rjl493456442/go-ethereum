@@ -96,6 +96,12 @@ const (
 
 	// batchSizeThreshold is the maximum size allowed for gentrie batch.
 	batchSizeThreshold = 8 * 1024 * 1024
+
+	// codeSeenLimit caps the code-presence cache at roughly 512MB, assuming
+	// ~64 bytes per entry (32-byte key plus map overhead). On overflow the
+	// cache is wholesale reset; the hot code hashes re-accumulate within a
+	// few responses.
+	codeSeenLimit = 512 * 1024 * 1024 / 64
 )
 
 var (
@@ -474,7 +480,16 @@ type syncer struct {
 	storageBytes   atomic.Int64 // Number of storage trie bytes persisted to disk
 
 	storageExec *storageExecutor // Worker pool executing storage jobs off the runloop
-	extProgress *syncProgress    // progress that can be exposed to external caller.
+
+	// codeSeen caches the code hashes known to be present in the database
+	// (verified by a read or delivered by a peer), deduplicating the per-
+	// contract presence checks: contracts share few distinct bytecodes, so
+	// the checks are massively repetitive. Runloop-only, no locking. The
+	// cache must never claim presence of an absent code: a wrongly skipped
+	// fetch would go entirely unnoticed and leave the state corrupted.
+	codeSeen    map[common.Hash]struct{}
+	codeSkips   uint64        // Number of presence checks answered by the cache
+	extProgress *syncProgress // progress that can be exposed to external caller.
 
 	// Request tracking during healing phase
 	trienodeHealIdlers map[string]struct{} // Peers that aren't serving trie node requests
@@ -723,6 +738,10 @@ func (s *syncer) Sync(root common.Hash, cancel chan struct{}) error {
 			if s.healStartTime.IsZero() {
 				s.healStartTime = time.Now()
 			}
+			// The account download is over, the presence cache has no
+			// further use; release the memory.
+			s.codeSeen = nil
+
 			// Healing walks the tries written by the storage jobs: hold the
 			// heal assignment back until everything queued has hit disk.
 			// Non-blocking on purpose, the runloop must keep serving revert
@@ -2000,13 +2019,20 @@ func (s *syncer) processAccountResponse(res *accountResponse) {
 	for i, account := range res.accounts {
 		// Check if the account is a contract with an unknown code
 		if !bytes.Equal(account.CodeHash, types.EmptyCodeHash.Bytes()) {
-			crStart := time.Now()
-			have := rawdb.HasCodeWithPrefix(s.db, common.BytesToHash(account.CodeHash))
-			s.prof.codeRead.observe(time.Since(crStart))
-			if !have {
-				res.task.codeTasks[common.BytesToHash(account.CodeHash)] = struct{}{}
-				res.task.needCode[i] = true
-				res.task.pend++
+			codeHash := common.BytesToHash(account.CodeHash)
+			if _, ok := s.codeSeen[codeHash]; ok {
+				s.codeSkips++
+			} else {
+				crStart := time.Now()
+				have := rawdb.HasCodeWithPrefix(s.db, codeHash)
+				s.prof.codeRead.observe(time.Since(crStart))
+				if have {
+					s.markCodeSeen(codeHash)
+				} else {
+					res.task.codeTasks[codeHash] = struct{}{}
+					res.task.needCode[i] = true
+					res.task.pend++
+				}
 			}
 		}
 		// Check if the account is a contract with an unknown storage trie
@@ -2108,10 +2134,12 @@ func (s *syncer) processBytecodeResponse(res *bytecodeResponse) {
 				res.task.pend--
 			}
 		}
-		// Collect the bytecode for asynchronous persistence
+		// Collect the bytecode for asynchronous persistence and remember it
+		// as present right away, before the write has landed.
 		codes++
 		hashes = append(hashes, hash)
 		blobs = append(blobs, code)
+		s.markCodeSeen(hash)
 	}
 	s.bytecodeSynced += codes
 
@@ -2469,6 +2497,15 @@ func (s *syncer) processBytecodeHealResponse(res *bytecodeHealResponse) {
 // forwardAccountTask takes a filled account task and persists anything available
 // into the database, after which it forwards the next account marker so that the
 // task's next chunk may be filled.
+// markCodeSeen remembers a bytecode as present in the database, resetting
+// the cache wholesale when it outgrows its memory budget.
+func (s *syncer) markCodeSeen(hash common.Hash) {
+	if s.codeSeen == nil || len(s.codeSeen) >= codeSeenLimit {
+		s.codeSeen = make(map[common.Hash]struct{})
+	}
+	s.codeSeen[hash] = struct{}{}
+}
+
 func (s *syncer) forwardAccountTask(task *accountTask) {
 	// Remove any pending delivery
 	res := task.res

@@ -961,7 +961,10 @@ func checkStall(t *testing.T, term func()) chan struct{} {
 	testDone := make(chan struct{})
 	go func() {
 		select {
-		case <-time.After(time.Minute): // TODO(karalabe): Make tests smaller, this is too much
+		// TODO(karalabe): Make tests smaller, this is too much. Two minutes
+		// instead of one: the capped/starved-peer tests exceed a minute on
+		// their own under the race detector with the full suite in parallel.
+		case <-time.After(2 * time.Minute):
 			t.Log("Sync stalled")
 			term()
 		case <-testDone:
