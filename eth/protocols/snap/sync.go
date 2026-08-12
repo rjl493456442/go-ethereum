@@ -1106,6 +1106,12 @@ func (s *syncer) cleanStorageTasks() {
 func (s *syncer) assignAccountTasks(success chan *accountResponse, fail chan *accountRequest, cancel chan struct{}) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	// Hold new requests back while the executor is saturated: the database
+	// is not digesting the existing backlog, more data would only pile up.
+	// Assignment resumes on the next loop event once the queues drain.
+	if s.storageExec.saturated() {
+		return
+	}
 
 	// Sort the peers by download capacity to use faster ones if many available
 	idlers := &capacitySort{
@@ -1203,6 +1209,12 @@ func (s *syncer) assignAccountTasks(success chan *accountResponse, fail chan *ac
 func (s *syncer) assignBytecodeTasks(success chan *bytecodeResponse, fail chan *bytecodeRequest, cancel chan struct{}) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	// Hold new requests back while the executor is saturated: the database
+	// is not digesting the existing backlog, more data would only pile up.
+	// Assignment resumes on the next loop event once the queues drain.
+	if s.storageExec.saturated() {
+		return
+	}
 
 	// Sort the peers by download capacity to use faster ones if many available
 	idlers := &capacitySort{
@@ -1306,6 +1318,12 @@ func (s *syncer) assignBytecodeTasks(success chan *bytecodeResponse, fail chan *
 func (s *syncer) assignStorageTasks(success chan *storageResponse, fail chan *storageRequest, cancel chan struct{}) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	// Hold new requests back while the executor is saturated: the database
+	// is not digesting the existing backlog, more data would only pile up.
+	// Assignment resumes on the next loop event once the queues drain.
+	if s.storageExec.saturated() {
+		return
+	}
 
 	// Sort the peers by download capacity to use faster ones if many available
 	idlers := &capacitySort{

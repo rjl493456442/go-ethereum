@@ -78,9 +78,12 @@ type storageExecutor struct {
 
 func newStorageExecutor(s *syncer) *storageExecutor {
 	return &storageExecutor{
-		s:        s,
-		queues:   make(map[any][]func()),
-		tokens:   make(chan struct{}, runtime.GOMAXPROCS(0)),
+		s:      s,
+		queues: make(map[any][]func()),
+		// The jobs spend most of their time waiting in batch writes, so
+		// overcommit the worker pool beyond the core count to keep the
+		// database's commit pipeline fed.
+		tokens:   make(chan struct{}, 3*runtime.GOMAXPROCS(0)),
 		inflight: make(chan struct{}, storageExecInflight),
 		results:  make(chan *storageJobResult, storageExecInflight),
 	}
@@ -136,6 +139,15 @@ func (e *storageExecutor) drain(key any) {
 			return
 		}
 	}
+}
+
+// saturated reports whether the executor is running out of in-flight
+// slots. The task assigners use it to hold new requests back while the
+// database digests the backlog: the backpressure then shows up as idle
+// peers instead of a runloop frozen inside submit, keeping deliveries,
+// reverts and timeouts serviced throughout a write stall.
+func (e *storageExecutor) saturated() bool {
+	return len(e.inflight) >= cap(e.inflight)*3/4
 }
 
 // pending reports whether any jobs are queued or executing.
