@@ -466,12 +466,12 @@ type syncer struct {
 	bytecodeReqs map[uint64]*bytecodeRequest // Bytecode requests currently running
 	storageReqs  map[uint64]*storageRequest  // Storage requests currently running
 
-	accountSynced  uint64             // Number of accounts downloaded
-	accountBytes   atomic.Int64       // Number of account trie bytes persisted to disk
-	bytecodeSynced uint64             // Number of bytecodes downloaded
-	bytecodeBytes  common.StorageSize // Number of bytecode bytes downloaded
-	storageSynced  uint64             // Number of storage slots downloaded
-	storageBytes   atomic.Int64       // Number of storage trie bytes persisted to disk
+	accountSynced  uint64       // Number of accounts downloaded
+	accountBytes   atomic.Int64 // Number of account trie bytes persisted to disk
+	bytecodeSynced uint64       // Number of bytecodes downloaded
+	bytecodeBytes  atomic.Int64 // Number of bytecode bytes downloaded
+	storageSynced  uint64       // Number of storage slots downloaded
+	storageBytes   atomic.Int64 // Number of storage trie bytes persisted to disk
 
 	storageExec *storageExecutor // Worker pool executing storage jobs off the runloop
 	extProgress *syncProgress    // progress that can be exposed to external caller.
@@ -739,7 +739,7 @@ func (s *syncer) Sync(root common.Hash, cancel chan struct{}) error {
 			AccountSynced:      s.accountSynced,
 			AccountBytes:       common.StorageSize(s.accountBytes.Load()),
 			BytecodeSynced:     s.bytecodeSynced,
-			BytecodeBytes:      s.bytecodeBytes,
+			BytecodeBytes:      common.StorageSize(s.bytecodeBytes.Load()),
 			StorageSynced:      s.storageSynced,
 			StorageBytes:       common.StorageSize(s.storageBytes.Load()),
 			TrienodeHealSynced: s.trienodeHealSynced,
@@ -883,7 +883,7 @@ func (s *syncer) loadSyncStatus() {
 			s.accountSynced = progress.AccountSynced
 			s.accountBytes.Store(int64(progress.AccountBytes))
 			s.bytecodeSynced = progress.BytecodeSynced
-			s.bytecodeBytes = progress.BytecodeBytes
+			s.bytecodeBytes.Store(int64(progress.BytecodeBytes))
 			s.storageSynced = progress.StorageSynced
 			s.storageBytes.Store(int64(progress.StorageBytes))
 
@@ -900,7 +900,8 @@ func (s *syncer) loadSyncStatus() {
 	s.tasks = nil
 	s.accountSynced = 0
 	s.accountBytes.Store(0)
-	s.bytecodeSynced, s.bytecodeBytes = 0, 0
+	s.bytecodeSynced = 0
+	s.bytecodeBytes.Store(0)
 	s.storageSynced = 0
 	s.storageBytes.Store(0)
 	s.trienodeHealSynced, s.trienodeHealBytes = 0, 0
@@ -985,7 +986,7 @@ func (s *syncer) saveSyncStatus() {
 		AccountSynced:      s.accountSynced,
 		AccountBytes:       common.StorageSize(s.accountBytes.Load()),
 		BytecodeSynced:     s.bytecodeSynced,
-		BytecodeBytes:      s.bytecodeBytes,
+		BytecodeBytes:      common.StorageSize(s.bytecodeBytes.Load()),
 		StorageSynced:      s.storageSynced,
 		StorageBytes:       common.StorageSize(s.storageBytes.Load()),
 		TrienodeHealSynced: s.trienodeHealSynced,
@@ -1999,7 +2000,10 @@ func (s *syncer) processAccountResponse(res *accountResponse) {
 	for i, account := range res.accounts {
 		// Check if the account is a contract with an unknown code
 		if !bytes.Equal(account.CodeHash, types.EmptyCodeHash.Bytes()) {
-			if !rawdb.HasCodeWithPrefix(s.db, common.BytesToHash(account.CodeHash)) {
+			crStart := time.Now()
+			have := rawdb.HasCodeWithPrefix(s.db, common.BytesToHash(account.CodeHash))
+			s.prof.codeRead.observe(time.Since(crStart))
+			if !have {
 				res.task.codeTasks[common.BytesToHash(account.CodeHash)] = struct{}{}
 				res.task.needCode[i] = true
 				res.task.pend++
@@ -2084,9 +2088,11 @@ func (s *syncer) processAccountResponse(res *accountResponse) {
 // processBytecodeResponse integrates an already validated bytecode response
 // into the account tasks.
 func (s *syncer) processBytecodeResponse(res *bytecodeResponse) {
-	batch := s.db.NewBatch()
-
-	var codes uint64
+	var (
+		codes  uint64
+		hashes []common.Hash
+		blobs  [][]byte
+	)
 	for i, hash := range res.hashes {
 		code := res.codes[i]
 
@@ -2102,20 +2108,20 @@ func (s *syncer) processBytecodeResponse(res *bytecodeResponse) {
 				res.task.pend--
 			}
 		}
-		// Push the bytecode into a database batch
+		// Collect the bytecode for asynchronous persistence
 		codes++
-		rawdb.WriteCode(batch, hash, code)
+		hashes = append(hashes, hash)
+		blobs = append(blobs, code)
 	}
-	bytes := common.StorageSize(batch.ValueSize())
-	commitStart := time.Now()
-	if err := batch.Write(); err != nil {
-		log.Crit("Failed to persist bytecodes", "err", err)
-	}
-	s.prof.commit[profBytecode].observe(time.Since(commitStart))
 	s.bytecodeSynced += codes
-	s.bytecodeBytes += bytes
 
-	log.Debug("Persisted set of bytecodes", "count", codes, "bytes", bytes)
+	// Bytecodes are content addressed with no ordering constraints, hand the
+	// writes over to the workers keyed by the job itself (fully parallel).
+	if len(hashes) > 0 {
+		job := &bytecodeJob{hashes: hashes, codes: blobs}
+		s.storageExec.submit(job, func() { s.executeBytecodeJob(job) })
+	}
+	log.Debug("Queued set of bytecodes", "count", codes)
 
 	// If this delivery completed the last pending task, forward the account task
 	// to the next chunk
@@ -2470,6 +2476,9 @@ func (s *syncer) forwardAccountTask(task *accountTask) {
 		return // nothing to forward
 	}
 	task.res = nil
+
+	fwStart := time.Now()
+	defer func() { s.prof.forward.observe(time.Since(fwStart)) }()
 
 	// Determine the consecutive prefix of complete accounts and push the
 	// chunk marker forward over them.
@@ -3140,7 +3149,7 @@ func (s *syncer) reportSyncProgress(force bool) {
 		return
 	}
 	// Don't report anything until we have a meaningful progress
-	synced := common.StorageSize(s.accountBytes.Load()) + s.bytecodeBytes + common.StorageSize(s.storageBytes.Load())
+	synced := common.StorageSize(s.accountBytes.Load() + s.bytecodeBytes.Load() + s.storageBytes.Load())
 	if synced == 0 {
 		return
 	}
@@ -3173,7 +3182,7 @@ func (s *syncer) reportSyncProgress(force bool) {
 		progress = fmt.Sprintf("%.2f%%", float64(synced)*100/estBytes)
 		accounts = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.accountSynced), common.StorageSize(s.accountBytes.Load()).TerminalString())
 		storage  = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.storageSynced), common.StorageSize(s.storageBytes.Load()).TerminalString())
-		bytecode = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.bytecodeSynced), s.bytecodeBytes.TerminalString())
+		bytecode = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(s.bytecodeSynced), common.StorageSize(s.bytecodeBytes.Load()).TerminalString())
 	)
 	log.Info("Syncing: state download in progress", "synced", progress, "state", synced,
 		"accounts", accounts, "slots", storage, "codes", bytecode, "eta", common.PrettyDuration(estTime-elapsed))

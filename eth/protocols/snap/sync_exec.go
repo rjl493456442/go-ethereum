@@ -89,7 +89,9 @@ func newStorageExecutor(s *syncer) *storageExecutor {
 // submit queues a job for execution, blocking when too many are in flight.
 // Jobs sharing a key execute in submission order.
 func (e *storageExecutor) submit(key any, run func()) {
+	waitStart := time.Now()
 	e.inflight <- struct{}{}
+	e.s.prof.submitWait.observe(time.Since(waitStart))
 
 	e.lock.Lock()
 	e.queues[key] = append(e.queues[key], run)
@@ -289,6 +291,30 @@ func (s *syncer) executeAccountJob(job *accountJob) {
 		s.prof.commit[profAccount].observe(time.Since(gbStart))
 		job.task.genBatch.Reset()
 	}
+	s.prof.exec.observe(time.Since(start))
+}
+
+// bytecodeJob is the execution part of a bytecode delivery: the code writes
+// are content addressed and carry no ordering constraints.
+type bytecodeJob struct {
+	hashes []common.Hash
+	codes  [][]byte
+}
+
+// executeBytecodeJob runs one bytecode-persistence job on a worker thread.
+func (s *syncer) executeBytecodeJob(job *bytecodeJob) {
+	start := time.Now()
+	batch := s.db.NewBatch()
+	for i, hash := range job.hashes {
+		rawdb.WriteCode(batch, hash, job.codes[i])
+	}
+	s.bytecodeBytes.Add(int64(batch.ValueSize()))
+
+	commitStart := time.Now()
+	if err := batch.Write(); err != nil {
+		log.Crit("Failed to persist bytecodes", "err", err)
+	}
+	s.prof.commit[profBytecode].observe(time.Since(commitStart))
 	s.prof.exec.observe(time.Since(start))
 }
 
