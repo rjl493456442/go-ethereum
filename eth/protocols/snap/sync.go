@@ -647,6 +647,13 @@ func (s *syncer) Sync(root common.Hash, cancel chan struct{}) error {
 		log.Debug("Snapshot sync already completed")
 		return nil
 	}
+	// Warm the code-presence cache from the database, making it the single
+	// authority for bytecode presence checks during the download: a fresh
+	// sync scans an empty table, a resumed one re-learns the previously
+	// downloaded codes instead of point-reading them one by one.
+	if len(s.tasks) > 0 && s.codeSeen == nil {
+		s.preloadCodeSeen()
+	}
 	defer func() { // Persist any progress, independent of failure
 		for _, task := range s.tasks {
 			s.forwardAccountTask(task)
@@ -2017,22 +2024,17 @@ func (s *syncer) processAccountResponse(res *accountResponse) {
 
 	res.task.pend = 0
 	for i, account := range res.accounts {
-		// Check if the account is a contract with an unknown code
+		// Check if the account is a contract with an unknown code. The cache
+		// is authoritative: it was preloaded from the database and tracks
+		// every delivered code, so a miss means the code is genuinely absent.
 		if !bytes.Equal(account.CodeHash, types.EmptyCodeHash.Bytes()) {
 			codeHash := common.BytesToHash(account.CodeHash)
 			if _, ok := s.codeSeen[codeHash]; ok {
 				s.codeSkips++
 			} else {
-				crStart := time.Now()
-				have := rawdb.HasCodeWithPrefix(s.db, codeHash)
-				s.prof.codeRead.observe(time.Since(crStart))
-				if have {
-					s.markCodeSeen(codeHash)
-				} else {
-					res.task.codeTasks[codeHash] = struct{}{}
-					res.task.needCode[i] = true
-					res.task.pend++
-				}
+				res.task.codeTasks[codeHash] = struct{}{}
+				res.task.needCode[i] = true
+				res.task.pend++
 			}
 		}
 		// Check if the account is a contract with an unknown storage trie
@@ -2497,6 +2499,25 @@ func (s *syncer) processBytecodeHealResponse(res *bytecodeHealResponse) {
 // forwardAccountTask takes a filled account task and persists anything available
 // into the database, after which it forwards the next account marker so that the
 // task's next chunk may be filled.
+// preloadCodeSeen scans the bytecode table and marks every stored code as
+// present, making the in-memory cache the single authority for presence
+// checks during the download: a cache miss then means the code is genuinely
+// absent and can be scheduled for retrieval without touching the database.
+func (s *syncer) preloadCodeSeen() {
+	start := time.Now()
+	it := s.db.NewIterator(rawdb.CodePrefix, nil)
+	defer it.Release()
+
+	for it.Next() {
+		key := it.Key()
+		if len(key) != len(rawdb.CodePrefix)+common.HashLength {
+			continue
+		}
+		s.markCodeSeen(common.BytesToHash(key[len(rawdb.CodePrefix):]))
+	}
+	log.Info("Preloaded bytecode presence cache", "codes", len(s.codeSeen), "elapsed", common.PrettyDuration(time.Since(start)))
+}
+
 // markCodeSeen remembers a bytecode as present in the database, resetting
 // the cache wholesale when it outgrows its memory budget.
 func (s *syncer) markCodeSeen(hash common.Hash) {

@@ -92,7 +92,6 @@ type syncProfile struct {
 	healCommit profStat            // healer scheduler commits (shared by both heal kinds)
 	exec       profStat            // job execution on the worker pool
 
-	codeRead   profStat // HasCodeWithPrefix point reads in processAccountResponse
 	submitWait profStat // runloop blocked acquiring an in-flight slot on job submission
 	forward    profStat // forwardAccountTask total (bookkeeping + snapshot + submit)
 }
@@ -100,7 +99,7 @@ type syncProfile struct {
 // reportProfile dumps the accumulated statistics.
 func (s *syncer) reportProfile() {
 	log.Info("Sync loop profile", "idle", s.prof.idle.String(), "schedule", s.prof.schedule.String(), "storageexec", s.prof.exec.String(), "healcommit", s.prof.healCommit.String())
-	log.Info("Sync loop profile: account internals", "coderead", s.prof.codeRead.String(), "codeskips", s.codeSkips, "codeseen", len(s.codeSeen), "submitwait", s.prof.submitWait.String(), "forward", s.prof.forward.String())
+	log.Info("Sync loop profile: account internals", "codeskips", s.codeSkips, "codeseen", len(s.codeSeen), "submitwait", s.prof.submitWait.String(), "forward", s.prof.forward.String())
 	for i, name := range profKindNames {
 		log.Info("Sync loop profile: "+name, "deliverwait", s.prof.deliver[i].String(), "process", s.prof.process[i].String(), "commit", s.prof.commit[i].String())
 	}
