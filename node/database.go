@@ -42,8 +42,9 @@ type DatabaseOptions struct {
 }
 
 type internalOpenOptions struct {
-	directory string
-	dbEngine  string // "leveldb" | "pebble"
+	directory    string
+	dbEngine     string // "leveldb" | "pebble"
+	dbWriteHeavy bool   // if true, tune pebble for the bulk sync write load
 	DatabaseOptions
 }
 
@@ -90,7 +91,7 @@ func openKeyValueDatabase(o internalOpenOptions) (ethdb.KeyValueStore, error) {
 	}
 	if o.dbEngine == rawdb.DBPebble || existingDb == rawdb.DBPebble {
 		log.Info("Using pebble as the backing database")
-		return newPebbleDBDatabase(o.directory, o.Cache, o.Handles, o.MetricsNamespace, o.ReadOnly)
+		return newPebbleDBDatabase(o.directory, o.Cache, o.Handles, o.MetricsNamespace, o.ReadOnly, o.dbWriteHeavy)
 	}
 	if o.dbEngine == rawdb.DBLeveldb || existingDb == rawdb.DBLeveldb {
 		log.Info("Using leveldb as the backing database")
@@ -98,7 +99,7 @@ func openKeyValueDatabase(o internalOpenOptions) (ethdb.KeyValueStore, error) {
 	}
 	// No pre-existing database, no user-requested one either. Default to Pebble.
 	log.Info("Defaulting to pebble as the backing database")
-	return newPebbleDBDatabase(o.directory, o.Cache, o.Handles, o.MetricsNamespace, o.ReadOnly)
+	return newPebbleDBDatabase(o.directory, o.Cache, o.Handles, o.MetricsNamespace, o.ReadOnly, o.dbWriteHeavy)
 }
 
 // newLevelDBDatabase creates a persistent key-value database without a freezer
@@ -118,7 +119,7 @@ func newLevelDBDatabase(file string, cache int, handles int, namespace string, r
 // If the database already exists with a legacy pebble v1 format, it is opened
 // using pebble v1 for backward compatibility and a warning is logged directing
 // the user to upgrade offline. New databases use pebble v2.
-func newPebbleDBDatabase(file string, cache int, handles int, namespace string, readonly bool) (ethdb.KeyValueStore, error) {
+func newPebbleDBDatabase(file string, cache int, handles int, namespace string, readonly bool, writeHeavy bool) (ethdb.KeyValueStore, error) {
 	if pebble.NeedsV1(file) {
 		log.Warn("Pebble database uses legacy v1 format; upgrade offline with 'geth db pebble-upgrade'")
 		db, err := pebble.NewV1(file, cache, handles, namespace, readonly)
@@ -127,7 +128,7 @@ func newPebbleDBDatabase(file string, cache int, handles int, namespace string, 
 		}
 		return db, nil
 	}
-	db, err := pebble.New(file, cache, handles, namespace, readonly)
+	db, err := pebble.New(file, cache, handles, namespace, readonly, writeHeavy)
 	if err != nil {
 		return nil, err
 	}

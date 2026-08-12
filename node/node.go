@@ -712,6 +712,7 @@ func (n *Node) OpenDatabaseWithOptions(name string, opt DatabaseOptions) (ethdb.
 		db, err = openDatabase(internalOpenOptions{
 			directory:       n.ResolvePath(name),
 			dbEngine:        n.config.DBEngine,
+			dbWriteHeavy:    n.config.DBWriteHeavy,
 			DatabaseOptions: opt,
 		})
 	}

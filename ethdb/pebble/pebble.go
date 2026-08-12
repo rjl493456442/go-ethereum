@@ -178,7 +178,7 @@ func (l panicLogger) Fatalf(format string, args ...interface{}) {
 
 // New returns a wrapped pebble DB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
-func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
+func New(file string, cache int, handles int, namespace string, readonly bool, writeHeavy bool) (*Database, error) {
 	// Ensure we have some minimal caching and file guarantees
 	if cache < minCache {
 		cache = minCache
@@ -319,6 +319,25 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// bridge point: a v1 database can be ratcheted up to FormatFlushableIngest
 		// using pebble v1, and then pebble v2 can open it since that's its minimum.
 		FormatMajorVersion: formatMinV2,
+	}
+	// Experimental write-heavy tuning for the initial state sync. The bulk
+	// download writes randomly-keyed data at a rate the default thresholds
+	// interpret as an emergency:
+	//
+	//   - L0StopWritesThreshold defaults to 12 sublevels, hard-stopping the
+	//     writers long before the hardware is saturated; raise it and let
+	//     the compaction concurrency scaling absorb the backlog instead.
+	//   - MemTableStopWritesThreshold is likewise raised to soak up flush
+	//     bursts while L0 is busy.
+	//
+	// The cost is read amplification while the backlog persists, which the
+	// sync barely notices (reads are served from in-memory caches). Not
+	// meant for regular operation: restart without the option after the
+	// sync completes.
+	if writeHeavy {
+		opt.L0StopWritesThreshold = 64
+		opt.MemTableStopWritesThreshold = memTableNumber * 4
+		log.Warn("Pebble write-heavy tuning enabled", "l0stop", 64, "memtablestop", memTableNumber*4)
 	}
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.

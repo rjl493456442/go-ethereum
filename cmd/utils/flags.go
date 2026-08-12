@@ -105,6 +105,11 @@ var (
 		Value:    node.DefaultConfig.DBEngine,
 		Category: flags.EthCategory,
 	}
+	DBWriteHeavyFlag = &cli.BoolFlag{
+		Name:     "db.writeheavy",
+		Usage:    "Tune the pebble database for the bulk sync write load (experimental, restart without it after the sync completes)",
+		Category: flags.EthCategory,
+	}
 	AncientFlag = &flags.DirectoryFlag{
 		Name:     "datadir.ancient",
 		Usage:    "Root directory for ancient data (default = inside chaindata)",
@@ -1172,6 +1177,7 @@ var (
 		EraFlag,
 		RemoteDBFlag,
 		DBEngineFlag,
+		DBWriteHeavyFlag,
 		StateSchemeFlag,
 		HttpHeaderFlag,
 	}
@@ -1573,6 +1579,9 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		}
 		log.Info(fmt.Sprintf("Using %s as db engine", dbEngine))
 		cfg.DBEngine = dbEngine
+	}
+	if ctx.IsSet(DBWriteHeavyFlag.Name) {
+		cfg.DBWriteHeavy = ctx.Bool(DBWriteHeavyFlag.Name)
 	}
 }
 

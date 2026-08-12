@@ -210,6 +210,11 @@ type Config struct {
 	// Configures database engine used by the node.
 	DBEngine string `toml:",omitempty"`
 
+	// DBWriteHeavy tunes the pebble database for the bulk sync write load
+	// (relaxed write-stall thresholds). Experimental; not meant for regular
+	// operation.
+	DBWriteHeavy bool `toml:",omitempty"`
+
 	// Configures OpenTelemetry reporting.
 	OpenTelemetry OpenTelemetryConfig `toml:",omitempty"`
 
