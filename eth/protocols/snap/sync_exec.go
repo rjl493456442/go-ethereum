@@ -129,13 +129,17 @@ func (e *storageExecutor) drain(key any) {
 		e.lock.Unlock()
 
 		<-e.inflight
+
+		// Nudge the runloop on every completed job: the dispatch gating and
+		// the heal-phase entry both poll the executor state and must be
+		// woken once the backlog subsides. The send is non-blocking and
+		// coalesces in the buffered update channel, so the cost is one
+		// (batched) loop iteration per completion at most.
+		select {
+		case e.s.update <- struct{}{}:
+		default:
+		}
 		if empty {
-			// Nudge the runloop: heal-phase entry may be gated on the
-			// executor draining.
-			select {
-			case e.s.update <- struct{}{}:
-			default:
-			}
 			return
 		}
 	}

@@ -336,8 +336,8 @@ func New(file string, cache int, handles int, namespace string, readonly bool, w
 	// sync completes.
 	if writeHeavy {
 		opt.L0StopWritesThreshold = 64
-		opt.MemTableStopWritesThreshold = memTableNumber * 4
-		log.Warn("Pebble write-heavy tuning enabled", "l0stop", 64, "memtablestop", memTableNumber*4)
+		opt.MemTableStopWritesThreshold = memTableNumber * 8
+		log.Warn("Pebble write-heavy tuning enabled", "l0stop", 64, "memtablestop", memTableNumber*8)
 	}
 	// Disable seek compaction explicitly. Check https://github.com/ethereum/go-ethereum/pull/20130
 	// for more details.
