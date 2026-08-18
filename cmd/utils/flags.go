@@ -297,6 +297,12 @@ var (
 		Usage:    "Scheme to use for storing ethereum state ('hash' or 'path')",
 		Category: flags.StateCategory,
 	}
+	DatabaseWriteHeavyFlag = &cli.BoolFlag{
+		Name: "db.write-heavy",
+		Usage: "Tune pebble for a write-dominated phase such as a snap sync, trading read " +
+			"performance for less write amplification (restart without it once synced)",
+		Category: flags.StateCategory,
+	}
 	SnapV2Flag = &cli.BoolFlag{
 		Name:     "snap.v2",
 		Usage:    "Enable the experimental snap/2 (EIP-8189, BAL-based) sync protocol (advertises and syncs via snap/2; not safe on public networks)",
@@ -1968,6 +1974,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		} else {
 			cfg.EthDiscoveryURLs = SplitAndTrim(urls)
 		}
+	}
+	if ctx.IsSet(DatabaseWriteHeavyFlag.Name) {
+		cfg.DatabaseWriteHeavy = ctx.Bool(DatabaseWriteHeavyFlag.Name)
 	}
 	if ctx.IsSet(SnapV2Flag.Name) {
 		cfg.SnapV2 = ctx.Bool(SnapV2Flag.Name)

@@ -149,6 +149,7 @@ type Config struct {
 	DatabaseCache      int
 	DatabaseFreezer    string
 	DatabaseEra        string
+	DatabaseWriteHeavy bool // Re-tune pebble for a write-dominated phase such as snap sync
 
 	TrieCleanCache int
 	TrieDirtyCache int

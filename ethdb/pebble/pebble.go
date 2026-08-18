@@ -87,6 +87,11 @@ type Database struct {
 	liveCompSizeGauge      *metrics.Gauge   // Gauge for tracking the size of in-progress compactions
 	liveIterGauge          *metrics.Gauge   // Gauge for tracking the number of live database iterators
 	levelsGauge            []*metrics.Gauge // Gauge for tracking the number of tables in levels
+	levelSizesGauge        []*metrics.Gauge // Gauge for tracking the size of each level
+
+	writeAmpGauge    *metrics.GaugeFloat64 // Gauge for the write amplification of the whole LSM
+	bytesInGauge     *metrics.Gauge        // Gauge for the user bytes admitted into the LSM
+	l0SublevelsGauge *metrics.Gauge        // Gauge for the number of L0 sublevels
 
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
@@ -178,7 +183,17 @@ func (l panicLogger) Fatalf(format string, args ...interface{}) {
 
 // New returns a wrapped pebble DB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
-func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
+// maxMemTableSize is the upper bound on a memtable, limited by the uint32
+// offsets stored in internal/arenaskl.node, DeferredBatchOp and
+// flushableBatchEntry:
+//
+//   - MaxUint32 on 64-bit platforms;
+//   - MaxInt on 32-bit platforms.
+//
+// Taken from https://github.com/cockroachdb/pebble/blob/master/internal/constants/constants.go
+const maxMemTableSize = (1<<31)<<(^uint(0)>>63) - 1
+
+func New(file string, cache int, handles int, namespace string, readonly bool, writeHeavy bool) (*Database, error) {
 	// Ensure we have some minimal caching and file guarantees
 	if cache < minCache {
 		cache = minCache
@@ -188,18 +203,6 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	}
 	logger := log.New("database", file)
 	logger.Info("Allocated cache and file handles", "cache", common.StorageSize(cache*1024*1024), "handles", handles, "version", "v2")
-
-	// The max memtable size is limited by the uint32 offsets stored in
-	// internal/arenaskl.node, DeferredBatchOp, and flushableBatchEntry.
-	//
-	// - MaxUint32 on 64-bit platforms;
-	// - MaxInt on 32-bit platforms.
-	//
-	// It is used when slices are limited to Uint32 on 64-bit platforms (the
-	// length limit for slices is naturally MaxInt on 32-bit platforms).
-	//
-	// Taken from https://github.com/cockroachdb/pebble/blob/master/internal/constants/constants.go
-	maxMemTableSize := (1<<31)<<(^uint(0)>>63) - 1
 
 	// Four memory tables are configured, each with a default size of 256 MB.
 	// Having multiple smaller memory tables while keeping the total memory
@@ -334,6 +337,10 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	opt.Experimental.L0CompactionConcurrency = 1
 	opt.Experimental.CompactionDebtConcurrency = 1 << 28 // 256MB
 
+	if writeHeavy {
+		applyWriteHeavy(opt, cache)
+		logger.Warn("Pebble configured for write-heavy operation", "cache", common.StorageSize(float64(opt.Cache.MaxSize())))
+	}
 	// Open the db and recover any potential corruptions
 	innerDB, err := pebble.Open(file, opt)
 	if err != nil {
@@ -366,6 +373,9 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.liveCompGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/count", nil)
 	db.liveCompSizeGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/size", nil)
 	db.liveIterGauge = metrics.GetOrRegisterGauge(namespace+"iter/count", nil)
+	db.writeAmpGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"compact/writeamp", nil)
+	db.bytesInGauge = metrics.GetOrRegisterGauge(namespace+"compact/bytesin", nil)
+	db.l0SublevelsGauge = metrics.GetOrRegisterGauge(namespace+"tables/level0/sublevels", nil)
 
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
@@ -634,12 +644,31 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		d.filterHitGauge.Update(stats.Filter.Hits)
 		d.filterMissGauge.Update(stats.Filter.Misses)
 
+		// Pebble derives the overall write amplification itself: everything the
+		// LSM wrote out over the user bytes that went in. This is the headline
+		// number for a write-dominated phase, whose goal is to merge the same
+		// data as few times as possible.
+		total := stats.Total()
+		d.writeAmpGauge.Update(total.WriteAmp())
+		d.bytesInGauge.Update(int64(total.TableBytesIn))
+
+		// The L0 sublevel count shows whether L0 is accumulating as intended and
+		// how much room is left before the stop-writes ceiling.
+		d.l0SublevelsGauge.Update(int64(stats.Levels[0].Sublevels))
+
 		for i, level := range stats.Levels {
 			// Append metrics for additional layers
 			if i >= len(d.levelsGauge) {
 				d.levelsGauge = append(d.levelsGauge, metrics.GetOrRegisterGauge(namespace+fmt.Sprintf("tables/level%v", i), nil))
 			}
 			d.levelsGauge[i].Update(level.TablesCount)
+
+			// The size of each level shows where the base level ended up and how
+			// the pyramid is shaped, which is what LBaseMaxBytes governs.
+			if i >= len(d.levelSizesGauge) {
+				d.levelSizesGauge = append(d.levelSizesGauge, metrics.GetOrRegisterGauge(namespace+fmt.Sprintf("tables/level%v/size", i), nil))
+			}
+			d.levelSizesGauge[i].Update(level.TablesSize)
 		}
 
 		// Sleep a bit, then repeat the stats collection
