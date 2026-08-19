@@ -24,6 +24,7 @@ import (
 	"reflect"
 	"sync/atomic"
 
+	gokzg4844 "github.com/crate-crypto/go-eth-kzg"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
@@ -256,13 +257,23 @@ func ComputeCells(blobs []Blob) ([]Cell, error) {
 	return gokzgComputeCells(blobs)
 }
 
-// RecoverBlobs recovers blobs from the given cells and cell indices.
+// RecoverBlobs recovers blobs from the given cells and cell indices. When all data
+// cells are present, blobs are recovered by concatenating them directly. Otherwise,
+// recovery falls back to KZG erasure decoding. In either case, cell elements must be
+// canonical BLS field elements.
+//
 // In order to successfully recover, at least DataPerBlob (64) cells must be provided.
 //
 // For the layout of cells and cellIndices, please see [VerifyCells].
 func RecoverBlobs(cells []Cell, cellIndices []uint64) ([]Blob, error) {
 	if err := validateCellIndices(cells, cellIndices); err != nil {
 		return nil, err
+	}
+	if blobs, ok := blobsFromDataCells(cells, cellIndices); ok {
+		if err := validateCanonicalCells(cells); err != nil {
+			return nil, err
+		}
+		return blobs, nil
 	}
 	if useCKZG.Load() {
 		return ckzgRecoverBlobs(cells, cellIndices)
@@ -310,22 +321,32 @@ func blobsFromDataCells(cells []Cell, cellIndices []uint64) ([]Blob, bool) {
 	return blobs, true
 }
 
-// RecoverBlobsUnchecked is RecoverBlobs for callers that have already
-// established the cells' authenticity (e.g. via VerifyCells at ingest): when the
-// data cells are all present, the blobs are returned as their concatenation,
-// skipping the KZG erasure decode. The result is byte-identical to RecoverBlobs.
-//
-// "Unchecked" refers to the cell contents: the concatenation validates nothing,
-// not even field-element canonicalness -- the one check RecoverBlobs performs
-// (neither verifies cell proofs or the commitment). Pass only cells whose
-// authenticity is already assured.
-//
-// For the layout of cells and cellIndices, see RecoverBlobs.
-func RecoverBlobsUnchecked(cells []Cell, cellIndices []uint64) ([]Blob, error) {
-	if blobs, ok := blobsFromDataCells(cells, cellIndices); ok {
-		return blobs, nil
+// validateCanonicalCells checks that all cell elements are valid BLS field
+// elements. This is normally done by the KZG erasure decoder, which the fast
+// concatenation path in RecoverBlobs skips.
+func validateCanonicalCells(cells []Cell) error {
+	for _, cell := range cells {
+		for offset := 0; offset < len(cell); offset += len(gokzg4844.BlsModulus) {
+			if !isCanonicalFieldElement(cell[offset : offset+len(gokzg4844.BlsModulus)]) {
+				return errors.New("non-canonical field element")
+			}
+		}
 	}
-	return RecoverBlobs(cells, cellIndices)
+	return nil
+}
+
+// isCanonicalFieldElement reports whether element is smaller than the BLS
+// scalar field modulus. Field elements are encoded as big-endian integers.
+func isCanonicalFieldElement(element []byte) bool {
+	for i, b := range element {
+		if b < gokzg4844.BlsModulus[i] {
+			return true
+		}
+		if b > gokzg4844.BlsModulus[i] {
+			return false
+		}
+	}
+	return false
 }
 
 func validateCellIndices(cells []Cell, cellIndices []uint64) error {

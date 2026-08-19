@@ -173,7 +173,7 @@ func (ptx *BlobTxForPool) sidecar() (*types.BlobTxSidecar, error) {
 	// The pooled cells were verified at ingest, so recovery may take the KZG-free
 	// fast path when the data cells are present (the common case), reconstructing
 	// the blobs by concatenation instead of a full erasure decode.
-	blobs, err := kzg4844.RecoverBlobsUnchecked(sidecar.Cells, sidecar.Custody.Indices())
+	blobs, err := kzg4844.RecoverBlobs(sidecar.Cells, sidecar.Custody.Indices())
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,7 @@ func encodeForNetwork(storedRLP []byte, version uint) ([]byte, error) {
 		if err := rlp.DecodeBytes(sidecarElems[4], &custody); err != nil {
 			return nil, fmt.Errorf("invalid custody RLP: %w", err)
 		}
-		blobs, err := kzg4844.RecoverBlobsUnchecked(cells, custody.Indices())
+		blobs, err := kzg4844.RecoverBlobs(cells, custody.Indices())
 		if err != nil {
 			return nil, fmt.Errorf("failed to recover blobs: %w", err)
 		}

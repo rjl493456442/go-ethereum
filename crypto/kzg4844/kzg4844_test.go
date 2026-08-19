@@ -487,6 +487,13 @@ func testBlobsFromDataCells(t *testing.T, ckzg bool) {
 	}
 	assertRecovers("data-only", dataIndices)
 
+	// RecoverBlobs itself takes the concatenation path for complete data cells.
+	invalid := collect(dataIndices)
+	copy(invalid[0][:len(gokzg4844.BlsModulus)], gokzg4844.BlsModulus[:])
+	if _, err := RecoverBlobs(invalid, dataIndices); err == nil {
+		t.Fatalf("non-canonical field element: expected error, got none")
+	}
+
 	// Full custody: all cells present, data cells plus extension cells.
 	allIndices := make([]uint64, CellsPerBlob)
 	for i := range allIndices {
@@ -562,13 +569,13 @@ func testBlobsFromDataCells(t *testing.T, ckzg bool) {
 	}
 }
 
-func TestCKZGRecoverBlobsUnchecked(t *testing.T)  { testRecoverBlobsUnchecked(t, true) }
-func TestGoKZGRecoverBlobsUnchecked(t *testing.T) { testRecoverBlobsUnchecked(t, false) }
+func TestCKZGRecoverBlobsFast(t *testing.T)  { testRecoverBlobsFast(t, true) }
+func TestGoKZGRecoverBlobsFast(t *testing.T) { testRecoverBlobsFast(t, false) }
 
-// testRecoverBlobsUnchecked checks that the unchecked recovery takes the
-// KZG-free fast path when the data cells are present and falls back to full
-// erasure recovery otherwise, matching the original blobs in both cases.
-func testRecoverBlobsUnchecked(t *testing.T, ckzg bool) {
+// testRecoverBlobsFast checks that the fast recovery takes the KZG-free fast
+// path when the data cells are present and falls back to full erasure recovery
+// otherwise, matching the original blobs in both cases.
+func testRecoverBlobsFast(t *testing.T, ckzg bool) {
 	defer switchBackend(t, ckzg)()
 
 	const blobCount = 3
@@ -588,7 +595,7 @@ func testRecoverBlobsUnchecked(t *testing.T, ckzg bool) {
 	// and matches the original blobs.
 	assertRecovers := func(name string, indices []uint64) {
 		t.Helper()
-		blobs, err := RecoverBlobsUnchecked(collect(indices), indices)
+		blobs, err := RecoverBlobs(collect(indices), indices)
 		if err != nil {
 			t.Fatalf("%s: recovery failed: %v", name, err)
 		}
@@ -621,7 +628,14 @@ func testRecoverBlobsUnchecked(t *testing.T, ckzg bool) {
 
 	// Insufficient cells: recovery must error, like RecoverBlobs.
 	short := dataIndices[:DataPerBlob-1]
-	if _, err := RecoverBlobsUnchecked(collect(short), short); err == nil {
+	if _, err := RecoverBlobs(collect(short), short); err == nil {
 		t.Fatalf("insufficient: expected error, got none")
+	}
+
+	// The compatibility wrapper retains RecoverBlobs' field-element canonicalness check.
+	invalid := collect(dataIndices)
+	copy(invalid[0][:len(gokzg4844.BlsModulus)], gokzg4844.BlsModulus[:])
+	if _, err := RecoverBlobs(invalid, dataIndices); err == nil {
+		t.Fatalf("non-canonical field element: expected error, got none")
 	}
 }
