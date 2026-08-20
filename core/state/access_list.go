@@ -30,13 +30,11 @@ type accessList struct {
 	slots     []map[common.Hash]struct{}
 
 	// Precompiles are warm in every transaction, so they are held here for the
-	// fork instead of being re-inserted above on every one. The sender, the
-	// destination and the coinbase stay in the map, one address each, which leaves
-	// AddSlot's journalling alone. precompileSrc records the slice the map was
-	// built from, and reset replaces the map rather than mutating it, which is
-	// what lets Copy share it.
-	precompileSrc []common.Address
-	precompiles   map[common.Address]struct{}
+	// fork instead of being re-inserted above on every one, which keeps them out
+	// of the journal. The sender, the destination and the coinbase stay in the
+	// map, one address each, which leaves AddSlot's journalling alone. reset
+	// replaces the map rather than mutating it, which is what lets Copy share it.
+	precompiles map[common.Address]struct{}
 }
 
 // prewarmed reports whether the address is a precompile, which EIP-2929 keeps warm
@@ -53,14 +51,11 @@ func (al *accessList) reset(precompiles []common.Address) {
 	clear(al.addresses)
 	al.slots = al.slots[:0]
 
-	// ActivePrecompiles returns the same package level slice for a given fork, so
-	// equal pointers mean the map still stands. The length test also keeps the
-	// indexing below from panicking on the nil the system calls pass.
-	if len(al.precompileSrc) == len(precompiles) &&
-		(len(precompiles) == 0 || &al.precompileSrc[0] == &precompiles[0]) {
-		return
-	}
-	al.precompileSrc = precompiles
+	// The set is small and reset runs a handful of times per block rather than
+	// once per transaction, since the system calls pass no precompiles at all
+	// while the transactions between them pass the set for the fork. Rebuilding
+	// it costs well under a microsecond, which is not worth caching against the
+	// identity of the slice the caller happened to pass.
 	al.precompiles = make(map[common.Address]struct{}, len(precompiles))
 	for _, addr := range precompiles {
 		al.precompiles[addr] = struct{}{}
