@@ -210,6 +210,12 @@ type Config struct {
 	// Configures database engine used by the node.
 	DBEngine string `toml:",omitempty"`
 
+	// PebbleWriteHeavy re-tunes the pebble backend for a write-dominated burst
+	// such as snap sync's state download (less write amplification, no write
+	// stalls) at the cost of read performance and disk space. It is a burst
+	// setting: disable it and restart once the sync is done. Ignored by leveldb.
+	PebbleWriteHeavy bool `toml:",omitempty"`
+
 	// Configures OpenTelemetry reporting.
 	OpenTelemetry OpenTelemetryConfig `toml:",omitempty"`
 

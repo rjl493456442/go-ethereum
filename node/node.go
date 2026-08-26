@@ -709,6 +709,8 @@ func (n *Node) OpenDatabaseWithOptions(name string, opt DatabaseOptions) (ethdb.
 		})
 	} else {
 		opt.AncientsDirectory = n.ResolveAncient(name, opt.AncientsDirectory)
+		// Honor the node-wide pebble write-heavy tuning (e.g. for snap sync).
+		opt.WriteHeavy = opt.WriteHeavy || n.config.PebbleWriteHeavy
 		db, err = openDatabase(internalOpenOptions{
 			directory:       n.ResolvePath(name),
 			dbEngine:        n.config.DBEngine,

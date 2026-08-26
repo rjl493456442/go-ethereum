@@ -178,7 +178,25 @@ func (l panicLogger) Fatalf(format string, args ...interface{}) {
 
 // New returns a wrapped pebble DB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
-func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
+// Option customizes how the pebble database is opened.
+type Option func(*openConfig)
+
+// openConfig holds the resolved open-time options.
+type openConfig struct {
+	writeHeavy bool
+}
+
+// WithWriteHeavy re-tunes pebble for a write-dominated burst such as snap sync's
+// state download. See applyWriteHeavyProfile for what it changes and the caveats.
+func WithWriteHeavy() Option {
+	return func(c *openConfig) { c.writeHeavy = true }
+}
+
+func New(file string, cache int, handles int, namespace string, readonly bool, opts ...Option) (*Database, error) {
+	var oc openConfig
+	for _, opt := range opts {
+		opt(&oc)
+	}
 	// Ensure we have some minimal caching and file guarantees
 	if cache < minCache {
 		cache = minCache
@@ -334,6 +352,12 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	opt.Experimental.L0CompactionConcurrency = 1
 	opt.Experimental.CompactionDebtConcurrency = 1 << 28 // 256MB
 
+	// Optionally re-tune for a write-dominated burst such as snap sync's state
+	// download. Opt-in via WithWriteHeavy and reversible; see applyWriteHeavyProfile.
+	if oc.writeHeavy {
+		applyWriteHeavyProfile(opt, logger)
+	}
+
 	// Open the db and recover any potential corruptions
 	innerDB, err := pebble.Open(file, opt)
 	if err != nil {
@@ -370,6 +394,38 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	// Start up the metrics gathering and return
 	go db.meter(metricsGatheringInterval, namespace)
 	return db, nil
+}
+
+// applyWriteHeavyProfile re-tunes the pebble options for a write-dominated burst
+// such as snap sync's state download, which is overwhelmingly composed of keys
+// never seen before and read almost not at all. It trades read performance and
+// disk space for far less write amplification and, in practice, the elimination
+// of write stalls.
+//
+// The knobs are coupled and only pay off together (validated by ablation):
+//   - a deep base level so a byte crosses fewer levels on its way down;
+//   - a tall L0 (accumulate 24 sublevels, stop at 96) so the eventual base-level
+//     rewrite is amortised over a large batch and writers rarely stall;
+//   - fat 64MB L0 files (with a matching flush split) — the linchpin: without
+//     them the 24 sublevels hold too few bytes and the deep base is rewritten
+//     constantly, making write amplification worse than the default.
+//
+// Bloom filters are intentionally left on L0..L5 (go-ethereum's default) so the
+// tables written during the burst are read-ready once the profile is turned off.
+//
+// IMPORTANT: this is a burst profile, not a resting state. It leaves a large L0
+// backlog (hundreds of GB at mainnet scale); reads and disk usage stay degraded
+// until the profile is disabled and geth restarted, at which point the backlog
+// drains under the regular settings.
+func applyWriteHeavyProfile(opt *pebble.Options, logger log.Logger) {
+	opt.LBaseMaxBytes = 32 << 30      // deep base (~L5 for a mainnet-sized state)
+	opt.L0CompactionThreshold = 24    // let L0 accumulate before compacting to base
+	opt.L0StopWritesThreshold = 96    // headroom above the threshold so writes don't stall
+	opt.TargetFileSizes[0] = 64 << 20 // fat L0 files: fat sublevels, not a shower of small files
+	opt.FlushSplitBytes = 64 << 20    // align flush output to the same 64MB granularity
+
+	logger.Warn("Pebble write-heavy profile enabled for a write burst (e.g. snap sync); " +
+		"reads and disk usage are degraded until it is disabled and geth restarted")
 }
 
 // Close stops the metrics collection, flushes any pending data to disk and closes

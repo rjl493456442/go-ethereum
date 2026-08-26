@@ -105,6 +105,13 @@ var (
 		Value:    node.DefaultConfig.DBEngine,
 		Category: flags.EthCategory,
 	}
+	DBPebbleWriteHeavyFlag = &cli.BoolFlag{
+		Name: "db.pebble.writeheavy",
+		Usage: "Re-tune the pebble backend for a write-dominated burst such as snap sync " +
+			"(less write amplification and no write stalls, at the cost of read performance " +
+			"and disk space). Disable and restart once syncing is done.",
+		Category: flags.EthCategory,
+	}
 	AncientFlag = &flags.DirectoryFlag{
 		Name:     "datadir.ancient",
 		Usage:    "Root directory for ancient data (default = inside chaindata)",
@@ -1166,6 +1173,7 @@ var (
 		EraFlag,
 		RemoteDBFlag,
 		DBEngineFlag,
+		DBPebbleWriteHeavyFlag,
 		StateSchemeFlag,
 		HttpHeaderFlag,
 	}
@@ -1567,6 +1575,9 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		}
 		log.Info(fmt.Sprintf("Using %s as db engine", dbEngine))
 		cfg.DBEngine = dbEngine
+	}
+	if ctx.IsSet(DBPebbleWriteHeavyFlag.Name) {
+		cfg.PebbleWriteHeavy = ctx.Bool(DBPebbleWriteHeavyFlag.Name)
 	}
 }
 
