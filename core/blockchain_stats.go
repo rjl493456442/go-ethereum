@@ -53,6 +53,10 @@ type ExecuteStats struct {
 	Validation      time.Duration // Time spent on the block validation
 	CrossValidation time.Duration // Optional, time spent on the block cross validation
 	DatabaseCommit  time.Duration // Time spent on database commit
+	CodeCommit      time.Duration // Time spent on writing the dirty contract code
+	StateEncode     time.Duration // Time spent on encoding the state update
+	SnapshotCommit  time.Duration // Time spent on updating and capping the snapshot
+	TriedbCommit    time.Duration // Time spent inside the trie database
 	BlockWrite      time.Duration // Time spent on block write
 	TotalTime       time.Duration // The total time spent on block execution
 	MgasPerSecond   float64       // The million gas processed per second
@@ -144,6 +148,13 @@ type slowBlockTime struct {
 	TriedbCommitMs  float64 `json:"triedb_commit_ms"`
 	BlockWriteMs    float64 `json:"block_write_ms"`
 
+	// Breakdown of TriedbCommitMs, which covers everything the state database
+	// does to persist an update, not just the trie database itself.
+	CodeCommitMs     float64 `json:"code_commit_ms"`
+	StateEncodeMs    float64 `json:"state_encode_ms"`
+	SnapshotCommitMs float64 `json:"snapshot_commit_ms"`
+	PathdbCommitMs   float64 `json:"pathdb_commit_ms"`
+
 	// Breakdown of StateHashMs.
 	AccountHashMs   float64 `json:"account_hash_ms"`
 	AccountUpdateMs float64 `json:"account_update_ms"`
@@ -231,6 +242,11 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 			StorageCommitMs: durationToMs(s.StorageCommits),
 			TriedbCommitMs:  durationToMs(s.DatabaseCommit),
 			BlockWriteMs:    durationToMs(s.BlockWrite),
+
+			CodeCommitMs:     durationToMs(s.CodeCommit),
+			StateEncodeMs:    durationToMs(s.StateEncode),
+			SnapshotCommitMs: durationToMs(s.SnapshotCommit),
+			PathdbCommitMs:   durationToMs(s.TriedbCommit),
 
 			AccountHashMs:   durationToMs(s.AccountHashes),
 			AccountUpdateMs: durationToMs(s.AccountUpdates),

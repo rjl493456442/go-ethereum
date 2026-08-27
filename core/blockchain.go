@@ -2385,6 +2385,10 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 		stats.AccountCommits = statedb.AccountCommits  // Account commits are complete, we can mark them
 		stats.StorageCommits = statedb.StorageCommits  // Storage commits are complete, we can mark them
 		stats.DatabaseCommit = statedb.DatabaseCommits // Database commits are complete, we can mark them
+		stats.CodeCommit = statedb.CodeCommits         // Breakdown of the database commit
+		stats.StateEncode = statedb.StateEncodes
+		stats.SnapshotCommit = statedb.SnapshotCommits
+		stats.TriedbCommit = statedb.TriedbCommits
 		stats.BlockWrite = time.Since(wstart) - max(statedb.AccountCommits, statedb.StorageCommits) /* concurrent */ - statedb.DatabaseCommits
 	}
 	elapsed := time.Since(startTime) + 1 // prevent zero division

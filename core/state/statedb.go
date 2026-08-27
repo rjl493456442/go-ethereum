@@ -154,6 +154,12 @@ type StateDB struct {
 	StorageUpdates  time.Duration
 	StorageCommits  time.Duration
 	DatabaseCommits time.Duration
+
+	// Breakdown of DatabaseCommits.
+	CodeCommits     time.Duration
+	StateEncodes    time.Duration
+	SnapshotCommits time.Duration
+	TriedbCommits   time.Duration
 	CodeReads       time.Duration
 
 	AccountLoaded  int          // Number of accounts retrieved from the database during the state transition
@@ -1437,11 +1443,18 @@ func (s *StateDB) commitAndFlush(rules params.Rules, block uint64, deriveCodeFie
 			return nil, err
 		}
 	}
-	start := time.Now()
-	if err := s.db.Commit(ret); err != nil {
+	var (
+		start = time.Now()
+		stats CommitStats
+	)
+	if err := s.db.Commit(ret, &stats); err != nil {
 		return nil, err
 	}
 	s.DatabaseCommits = time.Since(start)
+	s.CodeCommits = stats.CodeWrite
+	s.StateEncodes = stats.Encode
+	s.SnapshotCommits = stats.Snapshot
+	s.TriedbCommits = stats.TrieDB
 
 	// The reader update must be performed as the final step, otherwise,
 	// the new state would not be visible before db.commit.

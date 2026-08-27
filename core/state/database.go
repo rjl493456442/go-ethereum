@@ -18,6 +18,7 @@ package state
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -70,7 +71,46 @@ type Database interface {
 	// Commit flushes all pending writes and finalizes the state transition,
 	// committing the changes to the underlying storage. It returns an error
 	// if the commit fails.
-	Commit(update *StateUpdate) error
+	//
+	// The stats are optional; a nil pointer discards them.
+	Commit(update *StateUpdate, stats *CommitStats) error
+}
+
+// CommitStats breaks down the time a state database spends persisting a single
+// state update. The aggregate is already reported as chain/triedb/commits, which
+// says nothing about the share taken by the steps preceding the trie database.
+//
+// It must be safe to use a nil pointer, so that the callers which do not report
+// the breakdown pay nothing for it.
+type CommitStats struct {
+	CodeWrite time.Duration // writing the dirty contract code
+	Encode    time.Duration // converting the update into the backend's format
+	Snapshot  time.Duration // updating and capping the snapshot tree
+	TrieDB    time.Duration // handing the mutations to the trie database
+}
+
+func (s *CommitStats) codeWrite(start time.Time) {
+	if s != nil {
+		s.CodeWrite += time.Since(start)
+	}
+}
+
+func (s *CommitStats) encode(start time.Time) {
+	if s != nil {
+		s.Encode += time.Since(start)
+	}
+}
+
+func (s *CommitStats) snapshot(start time.Time) {
+	if s != nil {
+		s.Snapshot += time.Since(start)
+	}
+}
+
+func (s *CommitStats) trieDB(start time.Time) {
+	if s != nil {
+		s.TrieDB += time.Since(start)
+	}
 }
 
 // Trie is a Ethereum Merkle Patricia trie.

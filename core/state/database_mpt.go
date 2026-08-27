@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb"
+	"time"
 )
 
 // MPTDatabase is an implementation of Database interface for Merkle Patricia Tries.
@@ -140,13 +141,14 @@ func (db *MPTDatabase) TrieDB() *triedb.Database {
 // Commit flushes all pending writes and finalizes the state transition,
 // committing the changes to the underlying storage. It returns an error
 // if the commit fails.
-func (db *MPTDatabase) Commit(update *StateUpdate) error {
+func (db *MPTDatabase) Commit(update *StateUpdate, stats *CommitStats) error {
 	// Short circuit if nothing to commit
 	if update.Empty() {
 		return nil
 	}
 	// Commit dirty contract code if any exists
 	if len(update.Codes) > 0 {
+		start := time.Now()
 		batch := db.codedb.NewBatchWithSize(len(update.Codes))
 		for _, code := range update.Codes {
 			batch.Put(code.Hash, code.Blob)
@@ -154,11 +156,15 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 		if err := batch.Commit(); err != nil {
 			return err
 		}
+		stats.codeWrite(start)
 	}
 	// Encode the state mutations in the MPT format
+	encodeStart := time.Now()
 	accounts, accountOrigin, storages, storageOrigin := update.EncodeMPTState()
+	stats.encode(encodeStart)
 
 	// If snapshotting is enabled, update the snapshot tree with this new version
+	snapStart := time.Now()
 	if db.snap != nil && db.snap.Snapshot(update.OriginRoot) != nil {
 		if err := db.snap.Update(update.Root, update.OriginRoot, accounts, storages); err != nil {
 			log.Warn("Failed to update snapshot tree", "from", update.OriginRoot, "to", update.Root, "err", err)
@@ -171,6 +177,11 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 			log.Warn("Failed to cap snapshot tree", "root", update.Root, "layers", TriesInMemory, "err", err)
 		}
 	}
+	stats.snapshot(snapStart)
+
+	trieStart := time.Now()
+	defer func() { stats.trieDB(trieStart) }()
+
 	return db.triedb.Update(update.Root, update.OriginRoot, update.BlockNumber, update.Nodes, &triedb.StateSet{
 		Accounts:       accounts,
 		AccountsOrigin: accountOrigin,

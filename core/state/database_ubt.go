@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/ethereum/go-ethereum/triedb"
+	"time"
 )
 
 // UBTDatabase is an implementation of Database interface for Unified Binary Trie.
@@ -136,13 +137,14 @@ func (db *UBTDatabase) TrieDB() *triedb.Database {
 // Commit flushes all pending writes and finalizes the state transition,
 // committing the changes to the underlying storage. It returns an error
 // if the commit fails.
-func (db *UBTDatabase) Commit(update *StateUpdate) error {
+func (db *UBTDatabase) Commit(update *StateUpdate, stats *CommitStats) error {
 	// Short circuit if nothing to commit
 	if update.Empty() {
 		return nil
 	}
 	// Commit dirty contract code if any exists
 	if len(update.Codes) > 0 {
+		start := time.Now()
 		batch := db.codedb.NewBatchWithSize(len(update.Codes))
 		for _, code := range update.Codes {
 			batch.Put(code.Hash, code.Blob)
@@ -150,9 +152,15 @@ func (db *UBTDatabase) Commit(update *StateUpdate) error {
 		if err := batch.Commit(); err != nil {
 			return err
 		}
+		stats.codeWrite(start)
 	}
 	// Encode the state mutations in the UBT format
+	encodeStart := time.Now()
 	accounts, accountOrigin, storages, storageOrigin := update.EncodeUBTState()
+	stats.encode(encodeStart)
+
+	trieStart := time.Now()
+	defer func() { stats.trieDB(trieStart) }()
 
 	return db.triedb.Update(update.Root, update.OriginRoot, update.BlockNumber, update.Nodes, &triedb.StateSet{
 		Accounts:       accounts,
