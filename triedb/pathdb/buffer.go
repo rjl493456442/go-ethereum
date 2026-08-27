@@ -29,6 +29,13 @@ import (
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
+// overwriteFactor scales the flush threshold to compensate for the tracked size
+// running ahead of the real one: merging charges every entry in full, so
+// whatever a layer overwrites inside the buffer is counted twice. A factor of 1
+// flushes slightly early, which is the safe direction. Raise it once
+// pathdb/buffer/overwrite has been observed on a real workload.
+const overwriteFactor = 1.0
+
 // buffer is a collection of modified states along with the modified trie nodes.
 // They are cached here to aggregate the disk write. The content of the buffer
 // must be checked before diving into disk (since it basically is not yet written
@@ -80,10 +87,16 @@ func (b *buffer) node(owner common.Hash, path []byte) (*trienode.Node, bool) {
 }
 
 // commit merges the provided states and trie nodes into the buffer.
-func (b *buffer) commit(nodes *nodeSet, states *stateSet) *buffer {
+func (b *buffer) commit(nodes *nodeSet, states *stateSet, stats *commitStats) *buffer {
 	b.layers++
+
+	nodeStart := time.Now()
 	b.nodes.merge(nodes)
+	stats.record(phaseNodeMerge, nodeStart)
+
+	stateStart := time.Now()
 	b.states.merge(states)
+	stats.record(phaseStateMerge, stateStart)
 	return b
 }
 
@@ -122,7 +135,29 @@ func (b *buffer) empty() bool {
 // full returns an indicator if the size of accumulated content exceeds the
 // configured threshold.
 func (b *buffer) full() bool {
-	return b.size() > b.limit
+	return b.size() > uint64(float64(b.limit)*overwriteFactor)
+}
+
+// reportOverwrite measures how far the tracked size has run ahead of the real
+// one. The gap is the volume overwritten inside the buffer, which merging
+// charges twice and which never reaches disk. It is what overwriteFactor has to
+// compensate for, so it is sampled on every flush.
+//
+// Only safe to call on a frozen buffer, which is no longer being merged into.
+func (b *buffer) reportOverwrite() {
+	var (
+		nodes  = b.nodes.exactSize()
+		states = b.states.check()
+	)
+	if gc := b.nodes.size - nodes; gc > 0 && b.nodes.size > nodes {
+		gcTrieNodeBytesMeter.Mark(int64(gc))
+	}
+	if gc := b.states.size - states; gc > 0 && b.states.size > states {
+		gcStateBytesMeter.Mark(int64(gc))
+	}
+	if approx := b.size(); approx > nodes+states {
+		bufferOverwriteGauge.Update(int64((approx - nodes - states) * 1000 / approx))
+	}
 }
 
 // size returns the approximate memory size of the held content.
@@ -169,6 +204,8 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, freezers []ethd
 			b.flushErr = err
 			return
 		}
+		b.reportOverwrite()
+
 		nodes := b.nodes.write(batch, nodesCache)
 		accounts, slots := b.states.write(batch, progress, statesCache)
 		rawdb.WritePersistentStateID(batch, id)

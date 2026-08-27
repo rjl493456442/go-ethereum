@@ -460,9 +460,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool, stats *commitStats) (
 
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
-	mergeStart := time.Now()
-	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet)
-	stats.record(phaseBufferMerge, mergeStart)
+	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet, stats)
 	stats.setSizes(bottom.size(), combined.size())
 
 	// Terminate the background state snapshot generation before mutating the

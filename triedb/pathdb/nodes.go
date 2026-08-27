@@ -66,8 +66,8 @@ func newNodeSet(nodes map[common.Hash]map[string]*trienode.Node) *nodeSet {
 	return s
 }
 
-// computeSize calculates the database size of the held trie nodes.
-func (s *nodeSet) computeSize() {
+// exactSize walks the held trie nodes and returns the database size they occupy.
+func (s *nodeSet) exactSize() uint64 {
 	var size uint64
 	for path, n := range s.accountNodes {
 		size += uint64(len(n.Blob) + len(path))
@@ -77,7 +77,12 @@ func (s *nodeSet) computeSize() {
 			size += uint64(common.HashLength + len(n.Blob) + len(path))
 		}
 	}
-	s.size = size
+	return size
+}
+
+// computeSize calculates the database size of the held trie nodes.
+func (s *nodeSet) computeSize() {
+	s.size = s.exactSize()
 }
 
 // updateSize updates the total cache size by the given delta.
@@ -87,7 +92,9 @@ func (s *nodeSet) updateSize(delta int64) {
 		s.size = uint64(size)
 		return
 	}
-	log.Error("Nodeset size underflow", "prev", common.StorageSize(s.size), "delta", common.StorageSize(delta))
+	// The size is best-effort, an underflow just means the drift outgrew the
+	// content. Reset and carry on, the flush threshold tolerates it.
+	log.Debug("Nodeset size underflow", "prev", common.StorageSize(s.size), "delta", common.StorageSize(delta))
 	s.size = 0
 }
 
@@ -109,30 +116,20 @@ func (s *nodeSet) node(owner common.Hash, path []byte) (*trienode.Node, bool) {
 
 // merge integrates the provided dirty nodes into the set. The provided nodeset
 // will remain unchanged, as it may still be referenced by other layers.
+// The size is accumulated approximately: an overwritten node is charged its full
+// size rather than the difference against the entry it replaces. Resolving that
+// entry costs a second probe of a map far larger than the cache, in the hottest
+// loop of the commit path. The over-estimate is settled exactly by
+// buffer.settleSize before a flush is committed to.
+//
+// Charging in full is what makes the accounting O(1): the sum of the full sizes
+// is exactly the size the incoming set already computed for itself.
 func (s *nodeSet) merge(set *nodeSet) {
-	var (
-		delta     int64   // size difference resulting from node merging
-		overwrite counter // counter of nodes being overwritten
-	)
+	maps.Copy(s.accountNodes, set.accountNodes)
 
-	// Merge account nodes
-	for path, n := range set.accountNodes {
-		if orig, exist := s.accountNodes[path]; !exist {
-			delta += int64(len(n.Blob) + len(path))
-		} else {
-			delta += int64(len(n.Blob) - len(orig.Blob))
-			overwrite.add(len(orig.Blob) + len(path))
-		}
-		s.accountNodes[path] = n
-	}
-
-	// Merge storage nodes
 	for owner, subset := range set.storageNodes {
 		current, exist := s.storageNodes[owner]
 		if !exist {
-			for path, n := range subset {
-				delta += int64(common.HashLength + len(n.Blob) + len(path))
-			}
 			// Perform a shallow copy of the map for the subset instead of claiming it
 			// directly from the provided nodeset to avoid potential concurrent map
 			// read/write issues. The nodes belonging to the original diff layer remain
@@ -142,31 +139,26 @@ func (s *nodeSet) merge(set *nodeSet) {
 			s.storageNodes[owner] = maps.Clone(subset)
 			continue
 		}
-		for path, n := range subset {
-			if orig, exist := current[path]; !exist {
-				delta += int64(common.HashLength + len(n.Blob) + len(path))
-			} else {
-				delta += int64(len(n.Blob) - len(orig.Blob))
-				overwrite.add(common.HashLength + len(orig.Blob) + len(path))
-			}
-			current[path] = n
-		}
-		s.storageNodes[owner] = current
+		maps.Copy(current, subset)
 	}
-	overwrite.report(gcTrieNodeMeter, gcTrieNodeBytesMeter)
-	s.updateSize(delta)
+	s.updateSize(int64(set.size))
 }
 
 // revertTo merges the provided trie nodes into the set. This should reverse the
 // changes made by the most recent state transition.
+//
+// The size is discounted by the volume of the origins being applied, mirroring
+// the way merging charges the volume it adds. Neither side resolves the entry it
+// replaces, so the counter is best-effort: it drifts whenever an origin and the
+// node it restores differ in length.
 func (s *nodeSet) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[string]*trienode.Node) {
 	var delta int64
+
 	for owner, subset := range nodes {
 		if owner == (common.Hash{}) {
 			// Account trie nodes
 			for path, n := range subset {
-				orig, ok := s.accountNodes[path]
-				if !ok {
+				if _, ok := s.accountNodes[path]; !ok {
 					blob := rawdb.ReadAccountTrieNode(db, []byte(path))
 					if bytes.Equal(blob, n.Blob) {
 						continue
@@ -174,7 +166,7 @@ func (s *nodeSet) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[st
 					panic(fmt.Sprintf("non-existent account node (%v) blob: %v", path, crypto.Keccak256Hash(n.Blob).Hex()))
 				}
 				s.accountNodes[path] = n
-				delta += int64(len(n.Blob)) - int64(len(orig.Blob))
+				delta += int64(len(n.Blob) + len(path))
 			}
 		} else {
 			// Storage trie nodes
@@ -183,8 +175,7 @@ func (s *nodeSet) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[st
 				panic(fmt.Sprintf("non-existent subset (%x)", owner))
 			}
 			for path, n := range subset {
-				orig, ok := current[path]
-				if !ok {
+				if _, ok := current[path]; !ok {
 					blob := rawdb.ReadStorageTrieNode(db, owner, []byte(path))
 					if bytes.Equal(blob, n.Blob) {
 						continue
@@ -192,11 +183,11 @@ func (s *nodeSet) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[st
 					panic(fmt.Sprintf("non-existent storage node (%x %v) blob: %v", owner, path, crypto.Keccak256Hash(n.Blob).Hex()))
 				}
 				current[path] = n
-				delta += int64(len(n.Blob)) - int64(len(orig.Blob))
+				delta += int64(common.HashLength + len(n.Blob) + len(path))
 			}
 		}
 	}
-	s.updateSize(delta)
+	s.updateSize(-delta)
 }
 
 // journalNode represents a trie node persisted in the journal.

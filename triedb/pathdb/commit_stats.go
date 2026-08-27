@@ -32,7 +32,8 @@ const (
 	phaseLookupRemove                    // unindexing the stale layers from the lookup set
 	phaseStateHistory                    // writing and indexing the state history
 	phaseNodeHistory                     // writing and indexing the trienode history
-	phaseBufferMerge                     // merging the diff layer into the write buffer
+	phaseNodeMerge                       // merging the trie nodes into the write buffer
+	phaseStateMerge                      // merging the flat states into the write buffer
 	phaseFlushWait                       // blocking on the previous background flush
 	phaseCount
 )
@@ -44,7 +45,8 @@ var commitPhaseNames = [phaseCount]string{
 	phaseLookupRemove: "lookupremove",
 	phaseStateHistory: "statehistory",
 	phaseNodeHistory:  "nodehistory",
-	phaseBufferMerge:  "buffermerge",
+	phaseNodeMerge:    "nodemerge",
+	phaseStateMerge:   "statemerge",
 	phaseFlushWait:    "flushwait",
 }
 
