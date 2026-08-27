@@ -59,6 +59,10 @@ var commitPhaseNames = [phaseCount]string{
 type commitStats struct {
 	phases [phaseCount]time.Duration
 
+	nodes    int // trie nodes in the flattened diff layer
+	accounts int // accounts in the flattened diff layer
+	slots    int // storage slots in the flattened diff layer
+
 	diffSize   uint64 // byte size of the flattened diff layer
 	bufferSize uint64 // write buffer occupancy after the merge
 	flushed    bool   // whether a buffer flush was triggered
@@ -72,12 +76,15 @@ func (s *commitStats) record(phase commitPhase, start time.Time) {
 	s.phases[phase] += time.Since(start)
 }
 
-// setSizes records the size of the layer being flattened and of the write
-// buffer it was merged into.
-func (s *commitStats) setSizes(diff, buffer uint64) {
+// setLayer records the shape of the layer being flattened and the occupancy of
+// the write buffer it was merged into. Merging costs one map operation per
+// entry, so the entry counts are what the timings have to be normalized by; the
+// byte sizes alone are not comparable across layers.
+func (s *commitStats) setLayer(nodes, accounts, slots int, diff, buffer uint64) {
 	if s == nil {
 		return
 	}
+	s.nodes, s.accounts, s.slots = nodes, accounts, slots
 	s.diffSize, s.bufferSize = diff, buffer
 }
 
@@ -103,6 +110,9 @@ func (s *commitStats) log(total time.Duration, root common.Hash, block uint64) {
 	}
 	ctx = append(ctx,
 		"other", common.PrettyDuration(other),
+		"nodes", s.nodes,
+		"accounts", s.accounts,
+		"slots", s.slots,
 		"diff", common.StorageSize(s.diffSize),
 		"buffer", common.StorageSize(s.bufferSize),
 		"flushed", s.flushed,

@@ -461,7 +461,8 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool, stats *commitStats) (
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
 	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet, stats)
-	stats.setSizes(bottom.size(), combined.size())
+	accounts, slots := bottom.states.stateSet.counts()
+	stats.setLayer(bottom.nodes.nodeSet.count(), accounts, slots, bottom.size(), combined.size())
 
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.

@@ -66,6 +66,16 @@ func newNodeSet(nodes map[common.Hash]map[string]*trienode.Node) *nodeSet {
 	return s
 }
 
+// count returns the number of trie nodes held in the set. It walks the owners,
+// not the nodes, so it stays cheap enough for the commit path.
+func (s *nodeSet) count() int {
+	count := len(s.accountNodes)
+	for _, subset := range s.storageNodes {
+		count += len(subset)
+	}
+	return count
+}
+
 // exactSize walks the held trie nodes and returns the database size they occupy.
 func (s *nodeSet) exactSize() uint64 {
 	var size uint64

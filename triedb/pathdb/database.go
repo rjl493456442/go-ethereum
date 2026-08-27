@@ -301,10 +301,15 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 	if err := db.modifyAllowed(); err != nil {
 		return err
 	}
+	// Collecting the breakdown is only worth its own overhead when it can be
+	// reported; a nil commitStats discards every sample.
 	var (
-		start = time.Now()
-		stats = new(commitStats)
+		start time.Time
+		stats *commitStats
 	)
+	if db.config.SlowCommitThreshold > 0 {
+		start, stats = time.Now(), new(commitStats)
+	}
 	var nodesWithOrigins *nodeSetWithOrigin
 	if db.config.TrienodeHistory >= 0 {
 		nodesWithOrigins = NewNodeSetWithOrigin(nodes.NodeAndOrigins())
@@ -323,8 +328,10 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 	if err := db.tree.cap(root, maxDiffLayers, stats); err != nil {
 		return err
 	}
-	if elapsed := time.Since(start); db.config.SlowCommitThreshold > 0 && elapsed > db.config.SlowCommitThreshold {
-		stats.log(elapsed, root, block)
+	if stats != nil {
+		if elapsed := time.Since(start); elapsed > db.config.SlowCommitThreshold {
+			stats.log(elapsed, root, block)
+		}
 	}
 	return nil
 }

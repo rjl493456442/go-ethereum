@@ -120,6 +120,17 @@ func (s *stateSet) mustStorage(accountHash, storageHash common.Hash) ([]byte, er
 	return nil, fmt.Errorf("storage slot is not found, %x %x", accountHash, storageHash)
 }
 
+// counts returns the number of accounts and storage slots held in the set. It
+// walks the accounts, not the slots, so it stays cheap enough for the commit
+// path.
+func (s *stateSet) counts() (accounts int, slots int) {
+	accounts = len(s.accountData)
+	for _, storage := range s.storageData {
+		slots += len(storage)
+	}
+	return accounts, slots
+}
+
 // check sanitizes accounts and storage slots to ensure the data validity.
 // Additionally, it computes the total memory size occupied by the maps.
 func (s *stateSet) check() uint64 {
