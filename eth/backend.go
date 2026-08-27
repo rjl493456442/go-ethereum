@@ -259,6 +259,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			// - DATADIR/triedb/verkle.journal
 			TrieJournalDirectory: stack.ResolvePath("triedb"),
 			SlowBlockThreshold:   config.SlowBlockThreshold,
+			SlowCommitThreshold:  config.SlowCommitThreshold,
 
 			StatelessSelfValidation: config.StatelessSelfValidation,
 			EnableWitnessStats:      config.EnableWitnessStats,

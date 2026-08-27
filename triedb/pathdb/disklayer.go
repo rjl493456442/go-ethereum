@@ -420,25 +420,29 @@ func (dl *diskLayer) writeHistory(typ historyType, diff *diffLayer) (bool, error
 // commit merges the given bottom-most diff layer into the node buffer
 // and returns a newly constructed disk layer. Note the current disk
 // layer must be tagged as stale first to prevent re-access.
-func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
+func (dl *diskLayer) commit(bottom *diffLayer, force bool, stats *commitStats) (*diskLayer, error) {
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
 
 	// Construct and store the state history first. If crash happens after storing
 	// the state history but without flushing the corresponding states(journal),
 	// the stored state history will be truncated from head in the next restart.
+	histStart := time.Now()
 	flushA, err := dl.writeHistory(typeStateHistory, bottom)
 	if err != nil {
 		return nil, err
 	}
+	stats.record(phaseStateHistory, histStart)
 	// Construct and store the trienode history first. If crash happens after
 	// storing the trienode history but without flushing the corresponding
 	// states(journal), the stored trienode history will be truncated from head
 	// in the next restart.
+	histStart = time.Now()
 	flushB, err := dl.writeHistory(typeTrienodeHistory, bottom)
 	if err != nil {
 		return nil, err
 	}
+	stats.record(phaseNodeHistory, histStart)
 	// Since the state history and trienode history may be configured with different
 	// lengths, the buffer will be flushed once either of them meets its threshold.
 	flush := flushA || flushB
@@ -456,16 +460,23 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
+	mergeStart := time.Now()
 	combined := dl.buffer.commit(bottom.nodes.nodeSet, bottom.states.stateSet)
+	stats.record(phaseBufferMerge, mergeStart)
+	stats.setSizes(bottom.size(), combined.size())
 
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
 	if combined.full() || force || flush {
+		stats.markFlushed()
+
 		// Wait until the previous frozen buffer is fully flushed
 		if dl.frozen != nil {
+			waitStart := time.Now()
 			if err := dl.frozen.waitFlush(); err != nil {
 				return nil, err
 			}
+			stats.record(phaseFlushWait, waitStart)
 		}
 		// Release the frozen buffer and the internally referenced maps will
 		// be reclaimed by GC.

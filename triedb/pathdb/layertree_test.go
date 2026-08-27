@@ -44,9 +44,9 @@ func TestLayerCap(t *testing.T) {
 			//   C1->C2->C3->C4 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			// Chain:
@@ -65,9 +65,9 @@ func TestLayerCap(t *testing.T) {
 			//   C1->C2->C3->C4 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			// Chain:
@@ -85,9 +85,9 @@ func TestLayerCap(t *testing.T) {
 			//   C1->C2->C3->C4 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			// Chain:
@@ -105,12 +105,12 @@ func TestLayerCap(t *testing.T) {
 			//     ->C2'->C3'->C4'
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			// Chain:
@@ -130,12 +130,12 @@ func TestLayerCap(t *testing.T) {
 			//     ->C2'->C3'->C4'
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			// Chain:
@@ -154,11 +154,11 @@ func TestLayerCap(t *testing.T) {
 			//         ->C3'->C4'
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3a}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3b}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3a}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3b}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			// Chain:
@@ -178,7 +178,7 @@ func TestLayerCap(t *testing.T) {
 	}
 	for _, c := range cases {
 		tr := c.init()
-		if err := tr.cap(c.head, c.layers); err != nil {
+		if err := tr.cap(c.head, c.layers, nil); err != nil {
 			t.Fatalf("Failed to cap the layer tree %v", err)
 		}
 		if tr.bottom().root != c.base {
@@ -212,8 +212,8 @@ func TestBaseLayer(t *testing.T) {
 		//   C1->C2->C3 (HEAD)
 		{
 			func() {
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 			},
 			common.Hash{0x1},
 		},
@@ -221,7 +221,7 @@ func TestBaseLayer(t *testing.T) {
 		//   C3 (HEAD)
 		{
 			func() {
-				tr.cap(common.Hash{0x3}, 0)
+				tr.cap(common.Hash{0x3}, 0, nil)
 			},
 			common.Hash{0x3},
 		},
@@ -229,10 +229,10 @@ func TestBaseLayer(t *testing.T) {
 		//   C4->C5->C6 (HEAD)
 		{
 			func() {
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x5}, common.Hash{0x4}, 4, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x6}, common.Hash{0x5}, 5, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.cap(common.Hash{0x6}, 2)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x5}, common.Hash{0x4}, 4, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x6}, common.Hash{0x5}, 5, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.cap(common.Hash{0x6}, 2, nil)
 			},
 			common.Hash{0x4},
 		},
@@ -257,7 +257,7 @@ func TestDescendant(t *testing.T) {
 			//   C1->C2 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -268,7 +268,7 @@ func TestDescendant(t *testing.T) {
 			// Chain:
 			//   C1->C2->C3 (HEAD)
 			op: func(tr *layerTree) {
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{
 				{0x1}: {
@@ -285,9 +285,9 @@ func TestDescendant(t *testing.T) {
 			//   C1->C2->C3->C4 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -307,7 +307,7 @@ func TestDescendant(t *testing.T) {
 			// Chain:
 			//   C2->C3->C4 (HEAD)
 			op: func(tr *layerTree) {
-				tr.cap(common.Hash{0x4}, 2)
+				tr.cap(common.Hash{0x4}, 2, nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{
 				{0x2}: {
@@ -324,9 +324,9 @@ func TestDescendant(t *testing.T) {
 			//   C1->C2->C3->C4 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -346,7 +346,7 @@ func TestDescendant(t *testing.T) {
 			// Chain:
 			//   C3->C4 (HEAD)
 			op: func(tr *layerTree) {
-				tr.cap(common.Hash{0x4}, 1)
+				tr.cap(common.Hash{0x4}, 1, nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{
 				{0x3}: {
@@ -359,9 +359,9 @@ func TestDescendant(t *testing.T) {
 			//   C1->C2->C3->C4 (HEAD)
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -381,7 +381,7 @@ func TestDescendant(t *testing.T) {
 			// Chain:
 			//   C4 (HEAD)
 			op: func(tr *layerTree) {
-				tr.cap(common.Hash{0x4}, 0)
+				tr.cap(common.Hash{0x4}, 0, nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{},
 		},
@@ -391,12 +391,12 @@ func TestDescendant(t *testing.T) {
 			//     ->C2'->C3'->C4'
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -426,7 +426,7 @@ func TestDescendant(t *testing.T) {
 			// Chain:
 			//   C2->C3->C4 (HEAD)
 			op: func(tr *layerTree) {
-				tr.cap(common.Hash{0x4a}, 2)
+				tr.cap(common.Hash{0x4a}, 2, nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{
 				{0x2a}: {
@@ -444,12 +444,12 @@ func TestDescendant(t *testing.T) {
 			//     ->C2'->C3'->C4'
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2a}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3a}, common.Hash{0x2a}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x2b}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3b}, common.Hash{0x2b}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -479,7 +479,7 @@ func TestDescendant(t *testing.T) {
 			// Chain:
 			//   C3->C4 (HEAD)
 			op: func(tr *layerTree) {
-				tr.cap(common.Hash{0x4a}, 1)
+				tr.cap(common.Hash{0x4a}, 1, nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{
 				{0x3a}: {
@@ -493,11 +493,11 @@ func TestDescendant(t *testing.T) {
 			//         ->C3'->C4'
 			init: func() *layerTree {
 				tr := newTestLayerTree()
-				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3a}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x3b}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
-				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false))
+				tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3a}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4a}, common.Hash{0x3a}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x3b}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
+				tr.add(common.Hash{0x4b}, common.Hash{0x3b}, 3, NewNodeSetWithOrigin(nil, nil), NewStateSetWithOrigin(nil, nil, nil, nil, false), nil)
 				return tr
 			},
 			snapshotA: map[common.Hash]map[common.Hash]struct{}{
@@ -525,7 +525,7 @@ func TestDescendant(t *testing.T) {
 			//   C2->C3->C4 (HEAD)
 			//     ->C3'->C4'
 			op: func(tr *layerTree) {
-				tr.cap(common.Hash{0x4a}, 2)
+				tr.cap(common.Hash{0x4a}, 2, nil)
 			},
 			snapshotB: map[common.Hash]map[common.Hash]struct{}{
 				{0x2}: {
@@ -580,14 +580,14 @@ func TestDuplicateRootLookup(t *testing.T) {
 	//   C1->C2->C3 (HEAD)
 	tr := newTestLayerTree() // base = 0x1
 	tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false), nil)
 	tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false), nil)
 
 	// A fork block with the same state root as C2; inserting it must not
 	// pollute the lookup history for the canonical descendant C3.
 	tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false), nil)
 	if n := tr.len(); n != 3 {
 		t.Fatalf("duplicate root insert changed layer count, got %d, want 3", n)
 	}
@@ -614,11 +614,11 @@ func TestAccountLookup(t *testing.T) {
 	//   C1->C2->C3->C4 (HEAD)
 	tr := newTestLayerTree() // base = 0x1
 	tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), nil, nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), nil, nil, nil, false), nil)
 	tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xb"), nil, nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xb"), nil, nil, nil, false), nil)
 	tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa", "0xc"), nil, nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa", "0xc"), nil, nil, nil, false), nil)
 
 	var cases = []struct {
 		account common.Hash
@@ -687,7 +687,7 @@ func TestAccountLookup(t *testing.T) {
 
 	// Chain:
 	//   C3->C4 (HEAD)
-	tr.cap(common.Hash{0x4}, 1)
+	tr.cap(common.Hash{0x4}, 1, nil)
 
 	cases2 := []struct {
 		account   common.Hash
@@ -768,11 +768,11 @@ func TestStorageLookup(t *testing.T) {
 	//   C1->C2->C3->C4 (HEAD)
 	tr := newTestLayerTree() // base = 0x1
 	tr.add(common.Hash{0x2}, common.Hash{0x1}, 1, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil), nil, nil, false), nil)
 	tr.add(common.Hash{0x3}, common.Hash{0x2}, 2, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x2"}}, nil), nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x2"}}, nil), nil, nil, false), nil)
 	tr.add(common.Hash{0x4}, common.Hash{0x3}, 3, NewNodeSetWithOrigin(nil, nil),
-		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1", "0x3"}}, nil), nil, nil, false))
+		NewStateSetWithOrigin(randomAccountSet("0xa"), randomStorageSet([]string{"0xa"}, [][]string{{"0x1", "0x3"}}, nil), nil, nil, false), nil)
 
 	var cases = []struct {
 		storage common.Hash
@@ -841,7 +841,7 @@ func TestStorageLookup(t *testing.T) {
 
 	// Chain:
 	//   C3->C4 (HEAD)
-	tr.cap(common.Hash{0x4}, 1)
+	tr.cap(common.Hash{0x4}, 1, nil)
 
 	cases2 := []struct {
 		storage   common.Hash
@@ -966,6 +966,7 @@ func TestLookupZeroBaseRootFallback(t *testing.T) {
 			randomAccountSet("0xa"),
 			randomStorageSet([]string{"0xa"}, [][]string{{"0x1"}}, nil),
 			nil, nil, false),
+		nil,
 	); err != nil {
 		t.Fatalf("add first diff layer: %v", err)
 	}
@@ -976,6 +977,7 @@ func TestLookupZeroBaseRootFallback(t *testing.T) {
 		NewStateSetWithOrigin(
 			randomAccountSet("0xb"),
 			nil, nil, nil, false),
+		nil,
 	); err != nil {
 		t.Fatalf("add second diff layer: %v", err)
 	}

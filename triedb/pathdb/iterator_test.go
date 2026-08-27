@@ -285,7 +285,7 @@ func TestAccountIteratorTraversal(t *testing.T) {
 
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	db.tree.cap(common.HexToHash("0x04"), 2)
+	db.tree.cap(common.HexToHash("0x04"), 2, nil)
 
 	head = db.tree.get(common.HexToHash("0x04"))
 	verifyIterator(t, 7, head.(*diffLayer).newBinaryAccountIterator(common.Hash{}), verifyAccount)
@@ -328,7 +328,7 @@ func TestStorageIteratorTraversal(t *testing.T) {
 
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	db.tree.cap(common.HexToHash("0x04"), 2)
+	db.tree.cap(common.HexToHash("0x04"), 2, nil)
 	verifyIterator(t, 6, head.(*diffLayer).newBinaryStorageIterator(common.HexToHash("0xaa"), common.Hash{}), verifyStorage)
 
 	it, _ = db.StorageIterator(common.HexToHash("0x04"), common.HexToHash("0xaa"), common.Hash{})
@@ -421,7 +421,7 @@ func TestAccountIteratorTraversalValues(t *testing.T) {
 
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	db.tree.cap(common.HexToHash("0x09"), 2)
+	db.tree.cap(common.HexToHash("0x09"), 2, nil)
 
 	// binaryIterator
 	head = db.tree.get(common.HexToHash("0x09"))
@@ -541,7 +541,7 @@ func TestStorageIteratorTraversalValues(t *testing.T) {
 
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	db.tree.cap(common.HexToHash("0x09"), 2)
+	db.tree.cap(common.HexToHash("0x09"), 2, nil)
 
 	// binaryIterator
 	head = db.tree.get(common.HexToHash("0x09"))
@@ -610,7 +610,7 @@ func TestAccountIteratorLargeTraversal(t *testing.T) {
 
 	// Test after persist some bottom-most layers into the disk,
 	// the functionalities still work.
-	db.tree.cap(common.HexToHash("0x80"), 2)
+	db.tree.cap(common.HexToHash("0x80"), 2, nil)
 
 	verifyIterator(t, 200, head.(*diffLayer).newBinaryAccountIterator(common.Hash{}), verifyAccount)
 
@@ -649,7 +649,7 @@ func TestAccountIteratorFlattening(t *testing.T) {
 	fit, _ := db.AccountIterator(common.HexToHash("0x04"), common.Hash{})
 	defer fit.Release()
 
-	if err := db.tree.cap(common.HexToHash("0x04"), 1); err != nil {
+	if err := db.tree.cap(common.HexToHash("0x04"), 1, nil); err != nil {
 		t.Fatalf("failed to flatten snapshot stack: %v", err)
 	}
 	verifyIterator(t, 7, bit, verifyAccount)
@@ -989,7 +989,7 @@ func testStaleIterator(t *testing.T, newIter func(db *Database, hash common.Hash
 		NewStateSetWithOrigin(randomAccountSet("0xaa"), randomStorageSet([]string{"0xaa"}, [][]string{{"0x01"}}, nil), nil, nil, false))
 	db.Update(common.HexToHash("0x03"), common.HexToHash("0x02"), 2, trienode.NewMergedNodeSet(),
 		NewStateSetWithOrigin(randomAccountSet("0xaa"), randomStorageSet([]string{"0xaa"}, [][]string{{"0x02"}}, nil), nil, nil, false))
-	db.tree.cap(common.HexToHash("0x03"), 1)
+	db.tree.cap(common.HexToHash("0x03"), 1, nil)
 
 	// [02 (disk), 03, 04]
 	db.Update(common.HexToHash("0x04"), common.HexToHash("0x03"), 3, trienode.NewMergedNodeSet(),
@@ -999,7 +999,7 @@ func testStaleIterator(t *testing.T, newIter func(db *Database, hash common.Hash
 	// [04 (disk), 05]
 	db.Update(common.HexToHash("0x05"), common.HexToHash("0x04"), 3, trienode.NewMergedNodeSet(),
 		NewStateSetWithOrigin(randomAccountSet("0xaa"), randomStorageSet([]string{"0xaa"}, [][]string{{"0x04"}}, nil), nil, nil, false))
-	db.tree.cap(common.HexToHash("0x05"), 1)
+	db.tree.cap(common.HexToHash("0x05"), 1, nil)
 
 	// Iterator can't finish the traversal as the layer 02 has becoming stale.
 	for iter.Next() {

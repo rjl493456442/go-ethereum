@@ -79,6 +79,7 @@ var Defaults = Config{
 	TxSyncDefaultTimeout:    20 * time.Second,
 	TxSyncMaxTimeout:        1 * time.Minute,
 	SlowBlockThreshold:      -1, // Disabled by default; set via --debug.logslowblock flag
+	SlowCommitThreshold:     -1, // Disabled by default; set via --debug.logslowcommit flag
 	RangeLimit:              0,
 }
 
@@ -142,6 +143,10 @@ type Config struct {
 	// detailed statistics are logged. Negative means disabled (default), zero
 	// logs all blocks, positive filters by execution time.
 	SlowBlockThreshold time.Duration `toml:",omitempty"`
+
+	// SlowCommitThreshold is the trie database commit time threshold beyond
+	// which a per-phase breakdown of the commit is logged.
+	SlowCommitThreshold time.Duration `toml:",omitempty"`
 
 	// Database options
 	SkipBcVersionCheck bool `toml:"-"`

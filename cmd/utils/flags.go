@@ -739,6 +739,12 @@ var (
 		Value:    ethconfig.Defaults.SlowBlockThreshold,
 		Category: flags.LoggingCategory,
 	}
+	LogSlowCommitFlag = &cli.DurationFlag{
+		Name:     "debug.logslowcommit",
+		Usage:    "Trie database commit time threshold beyond which the breakdown will be logged (0 logs all commits, negative means disable)",
+		Value:    ethconfig.Defaults.SlowCommitThreshold,
+		Category: flags.LoggingCategory,
+	}
 
 	// MISC settings
 	SyncTargetFlag = &cli.StringFlag{
@@ -1881,6 +1887,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if ctx.IsSet(LogSlowBlockFlag.Name) {
 		cfg.SlowBlockThreshold = ctx.Duration(LogSlowBlockFlag.Name)
 	}
+	if ctx.IsSet(LogSlowCommitFlag.Name) {
+		cfg.SlowCommitThreshold = ctx.Duration(LogSlowCommitFlag.Name)
+	}
 	if ctx.IsSet(LogExportCheckpointsFlag.Name) {
 		cfg.LogExportCheckpoints = ctx.String(LogExportCheckpointsFlag.Name)
 	}
@@ -2487,11 +2496,15 @@ func MakeChain(ctx *cli.Context, stack *node.Node, readonly bool) (*core.BlockCh
 		TrieJournalDirectory: stack.ResolvePath("triedb"),
 
 		// Configure the slow block statistic logger (disabled by default)
-		SlowBlockThreshold: ethconfig.Defaults.SlowBlockThreshold,
+		SlowBlockThreshold:  ethconfig.Defaults.SlowBlockThreshold,
+		SlowCommitThreshold: ethconfig.Defaults.SlowCommitThreshold,
 	}
 	// Only enable slow block logging if the flag was explicitly set
 	if ctx.IsSet(LogSlowBlockFlag.Name) {
 		options.SlowBlockThreshold = ctx.Duration(LogSlowBlockFlag.Name)
+	}
+	if ctx.IsSet(LogSlowCommitFlag.Name) {
+		options.SlowCommitThreshold = ctx.Duration(LogSlowCommitFlag.Name)
 	}
 	if options.ArchiveMode && !options.Preimages {
 		options.Preimages = true

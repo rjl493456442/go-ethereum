@@ -18,6 +18,7 @@ package pathdb
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -103,6 +104,10 @@ type Config struct {
 	TrienodeHistory     int64  // Number of recent blocks to maintain trienode history for, 0: full chain, negative: disable
 	EnableStateIndexing bool   // Whether to enable state history indexing for external state access
 	FullValueCheckpoint uint32 // The rate at which trie nodes are encoded in full-value format
+
+	// SlowCommitThreshold is the commit duration beyond which a per-phase
+	// breakdown is logged. Zero or negative disables the reporting.
+	SlowCommitThreshold time.Duration
 
 	// Testing configurations
 	SnapshotNoBuild     bool // Flag Whether the state generation is disabled

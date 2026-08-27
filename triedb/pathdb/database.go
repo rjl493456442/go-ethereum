@@ -301,21 +301,32 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 	if err := db.modifyAllowed(); err != nil {
 		return err
 	}
+	var (
+		start = time.Now()
+		stats = new(commitStats)
+	)
 	var nodesWithOrigins *nodeSetWithOrigin
 	if db.config.TrienodeHistory >= 0 {
 		nodesWithOrigins = NewNodeSetWithOrigin(nodes.NodeAndOrigins())
 	} else {
 		nodesWithOrigins = NewNodeSetWithOrigin(nodes.Nodes(), nil)
 	}
-	if err := db.tree.add(root, parentRoot, block, nodesWithOrigins, states); err != nil {
+	if err := db.tree.add(root, parentRoot, block, nodesWithOrigins, states, stats); err != nil {
 		return err
 	}
+
 	// Keep 128 diff layers in the memory, persistent layer is 129th.
 	// - head layer is paired with HEAD state
 	// - head-1 layer is paired with HEAD-1 state
 	// - head-127 layer(bottom-most diff layer) is paired with HEAD-127 state
 	// - head-128 layer(disk layer) is paired with HEAD-128 state
-	return db.tree.cap(root, maxDiffLayers)
+	if err := db.tree.cap(root, maxDiffLayers, stats); err != nil {
+		return err
+	}
+	if elapsed := time.Since(start); db.config.SlowCommitThreshold > 0 && elapsed > db.config.SlowCommitThreshold {
+		stats.log(elapsed, root, block)
+	}
+	return nil
 }
 
 // Commit traverses downwards the layer tree from a specified layer with the
@@ -330,7 +341,7 @@ func (db *Database) Commit(root common.Hash, report bool) error {
 	if err := db.modifyAllowed(); err != nil {
 		return err
 	}
-	return db.tree.cap(root, 0)
+	return db.tree.cap(root, 0, nil)
 }
 
 // Disable deactivates the database and invalidates all available state layers

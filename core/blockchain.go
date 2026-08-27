@@ -173,6 +173,7 @@ type BlockChainConfig struct {
 	TrieDirtyLimit       int           // Memory limit (MB) at which to start flushing dirty trie nodes to disk
 	TrieTimeLimit        time.Duration // Time limit after which to flush the current in-memory trie to disk
 	TrieNoAsyncFlush     bool          // Whether the asynchronous buffer flushing is disallowed
+	SlowCommitThreshold  time.Duration // Trie database commit time beyond which a phase breakdown is logged
 	TrieJournalDirectory string        // Directory path to the journal used for persisting trie data across node restarts
 
 	Preimages         bool   // Whether to store preimage of trie key to the disk
@@ -287,6 +288,8 @@ func (cfg *BlockChainConfig) triedbConfig(isUBT bool) *triedb.Config {
 			TrienodeHistory:     cfg.TrienodeHistory,
 			EnableStateIndexing: cfg.ArchiveMode,
 			FullValueCheckpoint: cfg.NodeFullValueCheckpoint,
+
+			SlowCommitThreshold: cfg.SlowCommitThreshold,
 
 			// Testing configurations
 			NoAsyncFlush: cfg.TrieNoAsyncFlush,

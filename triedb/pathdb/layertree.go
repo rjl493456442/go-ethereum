@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -141,7 +142,7 @@ func (tree *layerTree) len() int {
 }
 
 // add inserts a new layer into the tree if it can be linked to an existing old parent.
-func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint64, nodes *nodeSetWithOrigin, states *StateSetWithOrigin) error {
+func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint64, nodes *nodeSetWithOrigin, states *StateSetWithOrigin, stats *commitStats) error {
 	// Reject noop updates to avoid self-loops. This is a special case that can
 	// happen for clique networks and proof-of-stake networks where empty blocks
 	// don't modify the state (0 block subsidy).
@@ -164,6 +165,7 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	if parent == nil {
 		return fmt.Errorf("triedb parent [%#x] layer missing", parentRoot)
 	}
+	linkStart := time.Now()
 	l := parent.update(root, parent.stateID()+1, block, nodes, states)
 
 	tree.lock.Lock()
@@ -174,15 +176,18 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 
 	// Link the given layer into its ancestors (up to the current disk layer)
 	tree.fillAncestors(l)
+	stats.record(phaseLayerAdd, linkStart)
 
 	// Link the given layer into the state mutation history
+	lookupStart := time.Now()
 	tree.lookup.addLayer(l)
+	stats.record(phaseLookupAdd, lookupStart)
 	return nil
 }
 
 // cap traverses downwards the diff tree until the number of allowed diff layers
 // are crossed. All diffs beyond the permitted number are flattened downwards.
-func (tree *layerTree) cap(root common.Hash, layers int) error {
+func (tree *layerTree) cap(root common.Hash, layers int, stats *commitStats) error {
 	// Retrieve the head layer to cap from
 	l := tree.get(root)
 	if l == nil {
@@ -197,7 +202,7 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 
 	// If full commit was requested, flatten the diffs and merge onto disk
 	if layers == 0 {
-		base, err := diff.persist(true)
+		base, err := diff.persist(true, stats)
 		if err != nil {
 			return err
 		}
@@ -257,7 +262,7 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		//		        ->C2'->C3'->C4'
 		// The original C3 is replaced by the new base (with root C3)
 		// Dangling layers in (b) will be removed later
-		newBase, err = parent.persist(false)
+		newBase, err = parent.persist(false, stats)
 		if err != nil {
 			diff.lock.Unlock()
 			return err
@@ -284,7 +289,9 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		if !ok {
 			return
 		}
+		start := time.Now()
 		tree.lookup.removeLayer(diff)
+		stats.record(phaseLookupRemove, start)
 	}
 	var remove func(root common.Hash)
 	remove = func(root common.Hash) {
