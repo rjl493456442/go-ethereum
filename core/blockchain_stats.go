@@ -134,6 +134,20 @@ type slowBlockTime struct {
 	StateHashMs float64 `json:"state_hash_ms"`
 	CommitMs    float64 `json:"commit_ms"`
 	TotalMs     float64 `json:"total_ms"`
+
+	// Breakdown of CommitMs. The two trie commits run concurrently, so only the
+	// slower of the two is charged to it:
+	//
+	//	commit_ms = max(account_commit_ms, storage_commit_ms) + triedb_commit_ms + block_write_ms
+	AccountCommitMs float64 `json:"account_commit_ms"`
+	StorageCommitMs float64 `json:"storage_commit_ms"`
+	TriedbCommitMs  float64 `json:"triedb_commit_ms"`
+	BlockWriteMs    float64 `json:"block_write_ms"`
+
+	// Breakdown of StateHashMs.
+	AccountHashMs   float64 `json:"account_hash_ms"`
+	AccountUpdateMs float64 `json:"account_update_ms"`
+	StorageUpdateMs float64 `json:"storage_update_ms"`
 }
 
 type slowBlockThru struct {
@@ -212,6 +226,15 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 			StateHashMs: durationToMs(s.AccountHashes + s.AccountUpdates + s.StorageUpdates),
 			CommitMs:    durationToMs(max(s.AccountCommits, s.StorageCommits) + s.DatabaseCommit + s.BlockWrite),
 			TotalMs:     durationToMs(s.TotalTime),
+
+			AccountCommitMs: durationToMs(s.AccountCommits),
+			StorageCommitMs: durationToMs(s.StorageCommits),
+			TriedbCommitMs:  durationToMs(s.DatabaseCommit),
+			BlockWriteMs:    durationToMs(s.BlockWrite),
+
+			AccountHashMs:   durationToMs(s.AccountHashes),
+			AccountUpdateMs: durationToMs(s.AccountUpdates),
+			StorageUpdateMs: durationToMs(s.StorageUpdates),
 		},
 		Throughput: slowBlockThru{
 			MgasPerSec: s.MgasPerSecond,

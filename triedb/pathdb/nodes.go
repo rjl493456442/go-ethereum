@@ -24,6 +24,8 @@ import (
 	"hash/fnv"
 	"io"
 	"maps"
+	"runtime"
+	"sync"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
@@ -40,9 +42,79 @@ import (
 // transition, typically corresponding to a block execution. It can also represent
 // the combined trie node set from several aggregated state transitions.
 type nodeSet struct {
-	size         uint64                                    // aggregated size of the trie node
-	accountNodes map[string]*trienode.Node                 // account trie nodes, mapped by path
+	size uint64 // aggregated size of the trie node
+
+	// accountNodes holds the account trie nodes, mapped by path and spread over
+	// a fixed set of shards. The storage nodes are already partitioned by owner,
+	// which keeps every subset small; the account trie has no such split, and a
+	// single map for it grows well past any cache. Sharding lets a merge fill
+	// the shards concurrently, which is what the growth of those maps, rather
+	// than the probing, actually costs.
+	//
+	// A set built for a single state transition keeps the single map it was
+	// handed; only the aggregated buffer set is spread out, since it is the one
+	// that grows past the cache. shardMask selects between the two, and is zero
+	// for an unsharded set so that every path resolves to the only shard.
+	//
+	// The sharding is an in-memory layout only. The journal keeps encoding the
+	// account nodes as one flat list, so its format is unchanged.
+	accountNodes []map[string]*trienode.Node
+	shardMask    uint32
+
 	storageNodes map[common.Hash]map[string]*trienode.Node // storage trie nodes, mapped by owner and path
+}
+
+// accountNodeShards is the number of maps the account trie nodes are spread
+// over. Measured on a buffer-scale set, the fan-out saturates well before this,
+// so there is nothing to gain from more shards and each one adds a map to walk
+// on every encode and flush.
+const accountNodeShards = 16
+
+// accountShard selects the shard an account trie node belongs to. Trie paths are
+// hex nibbles, so the leading ones already spread evenly; hashing a few of them
+// is enough and keeps the cost off the critical path.
+func accountShard(path string) uint32 {
+	h := uint32(2166136261)
+	for i := 0; i < len(path) && i < 4; i++ {
+		h ^= uint32(path[i])
+		h *= 16777619
+	}
+	return h
+}
+
+// shardAccountNodes spreads the account trie nodes over accountNodeShards. It is
+// applied to the aggregated buffer set, which merges are hot on, and not to the
+// per-transition sets, which would pay to distribute nodes they may never merge.
+func (s *nodeSet) shardAccountNodes() {
+	if len(s.accountNodes) == accountNodeShards {
+		return
+	}
+	shards := make([]map[string]*trienode.Node, accountNodeShards)
+	for i := range shards {
+		shards[i] = make(map[string]*trienode.Node)
+	}
+	for _, prev := range s.accountNodes {
+		for path, n := range prev {
+			shards[accountShard(path)&(accountNodeShards-1)][path] = n
+		}
+	}
+	s.accountNodes, s.shardMask = shards, accountNodeShards-1
+}
+
+// resetAccountNodes empties the account shards, allocating the single unsharded
+// one if the set was never constructed through newNodeSet.
+func (s *nodeSet) resetAccountNodes() {
+	if len(s.accountNodes) == 0 {
+		s.accountNodes = make([]map[string]*trienode.Node, 1)
+	}
+	for i := range s.accountNodes {
+		s.accountNodes[i] = make(map[string]*trienode.Node)
+	}
+}
+
+// accountShardOf returns the shard the given path resolves to in this set.
+func (s *nodeSet) accountShardOf(path string) map[string]*trienode.Node {
+	return s.accountNodes[accountShard(path)&s.shardMask]
 }
 
 // newNodeSet constructs the set with the provided dirty trie nodes.
@@ -51,14 +123,16 @@ func newNodeSet(nodes map[common.Hash]map[string]*trienode.Node) *nodeSet {
 	if nodes == nil {
 		nodes = make(map[common.Hash]map[string]*trienode.Node)
 	}
+	accounts := nodes[common.Hash{}]
+	if accounts == nil {
+		accounts = make(map[string]*trienode.Node)
+	}
 	s := &nodeSet{
-		accountNodes: make(map[string]*trienode.Node),
+		accountNodes: []map[string]*trienode.Node{accounts},
 		storageNodes: make(map[common.Hash]map[string]*trienode.Node),
 	}
 	for owner, subset := range nodes {
-		if owner == (common.Hash{}) {
-			s.accountNodes = subset
-		} else {
+		if owner != (common.Hash{}) {
 			s.storageNodes[owner] = subset
 		}
 	}
@@ -69,7 +143,10 @@ func newNodeSet(nodes map[common.Hash]map[string]*trienode.Node) *nodeSet {
 // count returns the number of trie nodes held in the set. It walks the owners,
 // not the nodes, so it stays cheap enough for the commit path.
 func (s *nodeSet) count() int {
-	count := len(s.accountNodes)
+	var count int
+	for _, shard := range s.accountNodes {
+		count += len(shard)
+	}
 	for _, subset := range s.storageNodes {
 		count += len(subset)
 	}
@@ -79,8 +156,10 @@ func (s *nodeSet) count() int {
 // exactSize walks the held trie nodes and returns the database size they occupy.
 func (s *nodeSet) exactSize() uint64 {
 	var size uint64
-	for path, n := range s.accountNodes {
-		size += uint64(len(n.Blob) + len(path))
+	for _, shard := range s.accountNodes {
+		for path, n := range shard {
+			size += uint64(len(n.Blob) + len(path))
+		}
 	}
 	for _, subset := range s.storageNodes {
 		for path, n := range subset {
@@ -112,7 +191,7 @@ func (s *nodeSet) updateSize(delta int64) {
 func (s *nodeSet) node(owner common.Hash, path []byte) (*trienode.Node, bool) {
 	// Account trie node
 	if owner == (common.Hash{}) {
-		n, ok := s.accountNodes[string(path)]
+		n, ok := s.accountShardOf(string(path))[string(path)]
 		return n, ok
 	}
 	// Storage trie node
@@ -126,16 +205,17 @@ func (s *nodeSet) node(owner common.Hash, path []byte) (*trienode.Node, bool) {
 
 // merge integrates the provided dirty nodes into the set. The provided nodeset
 // will remain unchanged, as it may still be referenced by other layers.
+//
 // The size is accumulated approximately: an overwritten node is charged its full
 // size rather than the difference against the entry it replaces. Resolving that
 // entry costs a second probe of a map far larger than the cache, in the hottest
-// loop of the commit path. The over-estimate is settled exactly by
-// buffer.settleSize before a flush is committed to.
+// loop of the commit path. The over-estimate is compensated for by
+// overwriteFactor when deciding to flush.
 //
 // Charging in full is what makes the accounting O(1): the sum of the full sizes
 // is exactly the size the incoming set already computed for itself.
 func (s *nodeSet) merge(set *nodeSet) {
-	maps.Copy(s.accountNodes, set.accountNodes)
+	s.mergeAccountNodes(set)
 
 	for owner, subset := range set.storageNodes {
 		current, exist := s.storageNodes[owner]
@@ -154,6 +234,69 @@ func (s *nodeSet) merge(set *nodeSet) {
 	s.updateSize(int64(set.size))
 }
 
+// accountMergeParallelThreshold is the number of account trie nodes below which
+// merging on a single goroutine beats paying for the fan-out.
+const accountMergeParallelThreshold = 1024
+
+// accountNode is a trie node paired with its path, used to stage a merge.
+type accountNode struct {
+	path string
+	node *trienode.Node
+}
+
+// mergeAccountNodes folds the account trie nodes of the given set into this one.
+//
+// The incoming nodes are first bucketed by destination shard, which costs an
+// append each, and only then inserted, which costs a map write each. Bucketing
+// into the shards directly would double the map writes, by far the more
+// expensive half. Once bucketed the shards are disjoint and can be filled
+// concurrently, and that parallelism is what pays: the bulk of the cost is
+// growing the maps, which is real allocation work, rather than probing them,
+// which the processor already overlaps on its own.
+func (s *nodeSet) mergeAccountNodes(set *nodeSet) {
+	var nodes int
+	for _, shard := range set.accountNodes {
+		nodes += len(shard)
+	}
+	if s.shardMask == 0 || nodes < accountMergeParallelThreshold {
+		for _, shard := range set.accountNodes {
+			for path, n := range shard {
+				s.accountShardOf(path)[path] = n
+			}
+		}
+		return
+	}
+	staged := make([][]accountNode, len(s.accountNodes))
+	for i := range staged {
+		staged[i] = make([]accountNode, 0, nodes/len(staged)+8)
+	}
+	for _, shard := range set.accountNodes {
+		for path, n := range shard {
+			i := accountShard(path) & s.shardMask
+			staged[i] = append(staged[i], accountNode{path: path, node: n})
+		}
+	}
+	var (
+		workers = min(runtime.GOMAXPROCS(0), len(staged))
+		chunk   = (len(staged) + workers - 1) / workers
+		wg      sync.WaitGroup
+	)
+	for start := 0; start < len(staged); start += chunk {
+		end := min(start+chunk, len(staged))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := start; i < end; i++ {
+				dst := s.accountNodes[i]
+				for _, n := range staged[i] {
+					dst[n.path] = n.node
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // revertTo merges the provided trie nodes into the set. This should reverse the
 // changes made by the most recent state transition.
 //
@@ -168,14 +311,15 @@ func (s *nodeSet) revertTo(db ethdb.KeyValueReader, nodes map[common.Hash]map[st
 		if owner == (common.Hash{}) {
 			// Account trie nodes
 			for path, n := range subset {
-				if _, ok := s.accountNodes[path]; !ok {
+				shard := s.accountShardOf(path)
+				if _, ok := shard[path]; !ok {
 					blob := rawdb.ReadAccountTrieNode(db, []byte(path))
 					if bytes.Equal(blob, n.Blob) {
 						continue
 					}
 					panic(fmt.Sprintf("non-existent account node (%v) blob: %v", path, crypto.Keccak256Hash(n.Blob).Hex()))
 				}
-				s.accountNodes[path] = n
+				shard[path] = n
 				delta += int64(len(n.Blob) + len(path))
 			}
 		} else {
@@ -218,14 +362,18 @@ func (s *nodeSet) encode(w io.Writer) error {
 	nodes := make([]journalNodes, 0, len(s.storageNodes)+1)
 
 	// Encode account nodes
-	if len(s.accountNodes) > 0 {
-		entry := journalNodes{Owner: common.Hash{}}
-		for path, node := range s.accountNodes {
+	// The shards are flattened back into a single list, keeping the journal
+	// format independent of the in-memory layout.
+	entry := journalNodes{Owner: common.Hash{}}
+	for _, shard := range s.accountNodes {
+		for path, node := range shard {
 			entry.Nodes = append(entry.Nodes, journalNode{
 				Path: []byte(path),
 				Blob: node.Blob,
 			})
 		}
+	}
+	if len(entry.Nodes) > 0 {
 		nodes = append(nodes, entry)
 	}
 	// Encode storage nodes
@@ -248,7 +396,7 @@ func (s *nodeSet) decode(r *rlp.Stream) error {
 	if err := r.Decode(&encoded); err != nil {
 		return fmt.Errorf("load nodes: %v", err)
 	}
-	s.accountNodes = make(map[string]*trienode.Node)
+	s.resetAccountNodes()
 	s.storageNodes = make(map[common.Hash]map[string]*trienode.Node)
 
 	for _, entry := range encoded {
@@ -256,9 +404,9 @@ func (s *nodeSet) decode(r *rlp.Stream) error {
 			// Account nodes
 			for _, n := range entry.Nodes {
 				if len(n.Blob) > 0 {
-					s.accountNodes[string(n.Path)] = trienode.New(crypto.Keccak256Hash(n.Blob), n.Blob)
+					s.accountShardOf(string(n.Path))[string(n.Path)] = trienode.New(crypto.Keccak256Hash(n.Blob), n.Blob)
 				} else {
-					s.accountNodes[string(n.Path)] = trienode.NewDeleted()
+					s.accountShardOf(string(n.Path))[string(n.Path)] = trienode.NewDeleted()
 				}
 			}
 		} else {
@@ -280,19 +428,19 @@ func (s *nodeSet) decode(r *rlp.Stream) error {
 
 // write flushes nodes into the provided database batch as a whole.
 func (s *nodeSet) write(batch ethdb.Batch, clean *fastcache.Cache) int {
-	nodes := make(map[common.Hash]map[string]*trienode.Node, len(s.storageNodes)+1)
-	if len(s.accountNodes) > 0 {
-		nodes[common.Hash{}] = s.accountNodes
+	var total int
+	for _, shard := range s.accountNodes {
+		total += writeNodeSubset(batch, common.Hash{}, shard, clean)
 	}
 	for owner, subset := range s.storageNodes {
-		nodes[owner] = subset
+		total += writeNodeSubset(batch, owner, subset, clean)
 	}
-	return writeNodes(batch, nodes, clean)
+	return total
 }
 
 // reset clears all cached trie node data.
 func (s *nodeSet) reset() {
-	s.accountNodes = make(map[string]*trienode.Node)
+	s.resetAccountNodes()
 	s.storageNodes = make(map[common.Hash]map[string]*trienode.Node)
 	s.size = 0
 }
@@ -300,7 +448,9 @@ func (s *nodeSet) reset() {
 // dbsize returns the approximate size of db write.
 func (s *nodeSet) dbsize() int {
 	var m int
-	m += len(s.accountNodes) * len(rawdb.TrieNodeAccountPrefix) // database key prefix
+	for _, shard := range s.accountNodes {
+		m += len(shard) * len(rawdb.TrieNodeAccountPrefix) // database key prefix
+	}
 	for _, nodes := range s.storageNodes {
 		m += len(nodes) * (len(rawdb.TrieNodeStoragePrefix)) // database key prefix
 	}
@@ -647,16 +797,13 @@ func (s *nodeSetWithOrigin) encodeNodeHistory(root common.Hash, rate uint32) (ma
 		}
 	)
 	for owner, origins := range s.nodeOrigin {
-		var posts map[string]*trienode.Node
-		if owner == (common.Hash{}) {
-			posts = s.nodeSet.accountNodes
-		} else {
-			posts = s.nodeSet.storageNodes[owner]
+		post := func(path string) (*trienode.Node, bool) {
+			return s.nodeSet.node(owner, []byte(path))
 		}
 		nodes[owner] = make(map[string][]byte)
 
 		for path, oldvalue := range origins {
-			n, exists := posts[path]
+			n, exists := post(path)
 			if !exists {
 				// something not expected
 				return nil, fmt.Errorf("node with origin is not found, %x-%v", owner, []byte(path))

@@ -63,6 +63,9 @@ func newBuffer(limit int, nodes *nodeSet, states *stateSet, layers uint64) *buff
 	if states == nil {
 		states = newStates(nil, nil, false)
 	}
+	// The buffer is the set merges are hot on, and the only one large enough for
+	// the account nodes to be worth spreading out.
+	nodes.shardAccountNodes()
 	return &buffer{
 		layers: layers,
 		limit:  uint64(limit),

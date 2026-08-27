@@ -40,30 +40,36 @@ func nodeCacheKey(owner common.Hash, path []byte) []byte {
 // into clean cache.
 func writeNodes(batch ethdb.Batch, nodes map[common.Hash]map[string]*trienode.Node, clean *fastcache.Cache) (total int) {
 	for owner, subset := range nodes {
-		for path, n := range subset {
-			if n.IsDeleted() {
-				if owner == (common.Hash{}) {
-					rawdb.DeleteAccountTrieNode(batch, []byte(path))
-				} else {
-					rawdb.DeleteStorageTrieNode(batch, owner, []byte(path))
-				}
-				if clean != nil {
-					clean.Del(nodeCacheKey(owner, []byte(path)))
-				}
-			} else {
-				if owner == (common.Hash{}) {
-					rawdb.WriteAccountTrieNode(batch, []byte(path), n.Blob)
-				} else {
-					rawdb.WriteStorageTrieNode(batch, owner, []byte(path), n.Blob)
-				}
-				if clean != nil {
-					clean.Set(nodeCacheKey(owner, []byte(path)), n.Blob)
-				}
-			}
-		}
-		total += len(subset)
+		total += writeNodeSubset(batch, owner, subset, clean)
 	}
 	return total
+}
+
+// writeNodeSubset flushes the trie nodes of a single owner into the batch. The
+// account trie nodes are held in shards, each of which is one such subset.
+func writeNodeSubset(batch ethdb.Batch, owner common.Hash, subset map[string]*trienode.Node, clean *fastcache.Cache) int {
+	for path, n := range subset {
+		if n.IsDeleted() {
+			if owner == (common.Hash{}) {
+				rawdb.DeleteAccountTrieNode(batch, []byte(path))
+			} else {
+				rawdb.DeleteStorageTrieNode(batch, owner, []byte(path))
+			}
+			if clean != nil {
+				clean.Del(nodeCacheKey(owner, []byte(path)))
+			}
+		} else {
+			if owner == (common.Hash{}) {
+				rawdb.WriteAccountTrieNode(batch, []byte(path), n.Blob)
+			} else {
+				rawdb.WriteStorageTrieNode(batch, owner, []byte(path), n.Blob)
+			}
+			if clean != nil {
+				clean.Set(nodeCacheKey(owner, []byte(path)), n.Blob)
+			}
+		}
+	}
+	return len(subset)
 }
 
 // writeStates flushes state mutations into the provided database batch as a whole.
