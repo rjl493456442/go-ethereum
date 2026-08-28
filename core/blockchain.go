@@ -1513,9 +1513,9 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 		size += writeSize
 
 		// Sync the ancient store explicitly to ensure all data has been flushed to disk.
-		if err := bc.db.SyncAncient(); err != nil {
-			return 0, err
-		}
+		//if err := bc.db.SyncAncient(); err != nil {
+		//	return 0, err
+		//}
 		// Write hash to number mappings
 		batch := bc.db.NewBatch()
 		for _, block := range blockChain {
