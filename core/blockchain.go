@@ -3008,9 +3008,9 @@ func (bc *BlockChain) InsertHeadersBeforeCutoff(headers []*types.Header) (int, e
 		return 0, err
 	}
 	// Sync the ancient store explicitly to ensure all data has been flushed to disk.
-	if err := bc.db.SyncAncient(); err != nil {
-		return 0, err
-	}
+	//if err := bc.db.SyncAncient(); err != nil {
+	//	return 0, err
+	//}
 	// Write hash to number mappings
 	batch := bc.db.NewBatch()
 	for _, header := range headers {
