@@ -1279,23 +1279,25 @@ func (d *Downloader) reportSnapSyncProgress(force bool) {
 		headerBytes, _  = d.stateDB.AncientSize(rawdb.ChainFreezerHeaderTable)
 		bodyBytes, _    = d.stateDB.AncientSize(rawdb.ChainFreezerBodiesTable)
 		receiptBytes, _ = d.stateDB.AncientSize(rawdb.ChainFreezerReceiptTable)
-	)
-	syncedBytes := common.StorageSize(headerBytes + bodyBytes + receiptBytes)
-	if syncedBytes == 0 {
-		return
-	}
-	var (
+
 		header = d.blockchain.CurrentHeader()
 		block  = d.blockchain.CurrentSnapBlock()
 	)
+	syncedBytes := common.StorageSize(headerBytes + bodyBytes + receiptBytes)
+	if syncedBytes == 0 {
+		d.reportChainSyncPending("no chain data written yet", "header", header.Number)
+		return
+	}
 	// Prevent reporting if nothing has been synchronized yet
 	if block.Number.Uint64() <= d.syncStartBlock {
+		d.reportChainSyncPending("no blocks synced yet", "header", header.Number, "block", block.Number, "start", d.syncStartBlock)
 		return
 	}
 	// Prevent reporting noise if the actual chain synchronization (headers
 	// and bodies) hasn't started yet. Inserting the ancient header chain is
 	// fast enough and would introduce significant bias if included in the count.
 	if d.chainCutoffNumber != 0 && block.Number.Uint64() <= d.chainCutoffNumber {
+		d.reportChainSyncPending("bodies not past the history cutoff", "header", header.Number, "block", block.Number, "cutoff", d.chainCutoffNumber)
 		return
 	}
 	fetchedBlocks := block.Number.Uint64() - d.syncStartBlock
@@ -1326,5 +1328,16 @@ func (d *Downloader) reportSnapSyncProgress(force bool) {
 		receipts = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(block.Number.Uint64()), common.StorageSize(receiptBytes).TerminalString())
 	)
 	log.Info("Syncing: chain download in progress", "synced", progress, "chain", syncedBytes, "headers", headers, "bodies", bodies, "receipts", receipts, "eta", common.PrettyDuration(eta))
+	d.syncLogTime = time.Now()
+}
+
+// reportChainSyncPending says why the chain download report is being withheld,
+// so a sync that has not started yet can be told from one that has stalled. The
+// bodies of a pruned chain only begin at the history cutoff, so a node
+// configured with one is silent here for as long as it takes to reach it.
+//
+// It shares the report's throttle, hence the timestamp.
+func (d *Downloader) reportChainSyncPending(reason string, ctx ...any) {
+	log.Info("Syncing: chain download pending", append([]any{"reason", reason}, ctx...)...)
 	d.syncLogTime = time.Now()
 }

@@ -1505,18 +1505,23 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 			}
 		}
 		// Write all chain data to ancients.
+		ss := time.Now()
 		writeSize, err := rawdb.WriteAncientBlocks(bc.db, blockChain, receiptChain)
 		if err != nil {
 			log.Error("Error importing chain data to ancients", "err", err)
 			return 0, err
 		}
 		size += writeSize
+		if time.Since(ss) > time.Millisecond*20 {
+			log.Info("Slow ancient receipt chain write", "duration", common.PrettyDuration(time.Since(ss)))
+		}
 
 		// Sync the ancient store explicitly to ensure all data has been flushed to disk.
 		//if err := bc.db.SyncAncient(); err != nil {
 		//	return 0, err
 		//}
 		// Write hash to number mappings
+		ss = time.Now()
 		batch := bc.db.NewBatch()
 		for _, block := range blockChain {
 			rawdb.WriteHeaderNumber(batch, block.Hash(), block.NumberU64())
@@ -1527,6 +1532,9 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 		// Update the current snap block because all block data is now present in DB.
 		if err := updateHead(blockChain[len(blockChain)-1].Header()); err != nil {
 			return 0, err
+		}
+		if time.Since(ss) > time.Millisecond*10 {
+			log.Info("Slow ancient receipt head update", "duration", common.PrettyDuration(time.Since(ss)))
 		}
 		stats.processed += int32(len(blockChain))
 		return 0, nil
@@ -3012,6 +3020,7 @@ func (bc *BlockChain) InsertHeadersBeforeCutoff(headers []*types.Header) (int, e
 	//	return 0, err
 	//}
 	// Write hash to number mappings
+	ss := time.Now()
 	batch := bc.db.NewBatch()
 	for _, header := range headers {
 		rawdb.WriteHeaderNumber(batch, header.Hash(), header.Number.Uint64())
@@ -3023,11 +3032,14 @@ func (bc *BlockChain) InsertHeadersBeforeCutoff(headers []*types.Header) (int, e
 	if err := batch.Write(); err != nil {
 		return 0, err
 	}
+	if time.Since(ss) > time.Millisecond*10 {
+		log.Info("Slow header write", "time", common.PrettyDuration(time.Since(ss)))
+	}
 	// Truncate the useless chain segment (zero bodies and receipts) in the
 	// ancient store.
-	if _, err := bc.db.TruncateTail(rawdb.ChainFreezerBlockDataGroup, last.Number.Uint64()+1); err != nil {
-		return 0, err
-	}
+	//if _, err := bc.db.TruncateTail(rawdb.ChainFreezerBlockDataGroup, last.Number.Uint64()+1); err != nil {
+	//	return 0, err
+	//}
 	// Last step update all in-memory markers
 	bc.hc.currentHeader.Store(last)
 	bc.currentSnapBlock.Store(last)
