@@ -54,6 +54,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/syncer"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/ethdb/remotedb"
 	"github.com/ethereum/go-ethereum/ethstats"
 	"github.com/ethereum/go-ethereum/graphql"
@@ -94,17 +95,6 @@ var (
 		Value:    flags.DirectoryString(node.DefaultDataDir()),
 		Category: flags.EthCategory,
 	}
-	RemoteDBFlag = &cli.StringFlag{
-		Name:     "remotedb",
-		Usage:    "URL for remote database",
-		Category: flags.LoggingCategory,
-	}
-	DBEngineFlag = &cli.StringFlag{
-		Name:     "db.engine",
-		Usage:    "Backing database implementation to use ('pebble' or 'leveldb')",
-		Value:    node.DefaultConfig.DBEngine,
-		Category: flags.EthCategory,
-	}
 	AncientFlag = &flags.DirectoryFlag{
 		Name:     "datadir.ancient",
 		Usage:    "Root directory for ancient data (default = inside chaindata)",
@@ -118,6 +108,23 @@ var (
 	MinFreeDiskSpaceFlag = &cli.IntFlag{
 		Name:     "datadir.minfreedisk",
 		Usage:    "Minimum free disk space in MB, once reached triggers auto shut down (default = --cache.gc converted to MB, 0 = disabled)",
+		Category: flags.EthCategory,
+	}
+	RemoteDBFlag = &cli.StringFlag{
+		Name:     "remotedb",
+		Usage:    "URL for remote database",
+		Category: flags.LoggingCategory,
+	}
+	DBEngineFlag = &cli.StringFlag{
+		Name:     "db.engine",
+		Usage:    "Backing database implementation to use ('pebble' or 'leveldb')",
+		Value:    node.DefaultConfig.DBEngine,
+		Category: flags.EthCategory,
+	}
+	DBPebbleModeFlag = &cli.StringFlag{
+		Name:     "db.pebble.mode",
+		Usage:    "Pebble compaction profile ('normal' or 'write-heavy'); write-heavy trades read speed for lower write amplification",
+		Value:    "normal",
 		Category: flags.EthCategory,
 	}
 	KeyStoreDirFlag = &flags.DirectoryFlag{
@@ -1160,6 +1167,7 @@ var (
 		EraFlag,
 		RemoteDBFlag,
 		DBEngineFlag,
+		DBPebbleModeFlag,
 		StateSchemeFlag,
 		HttpHeaderFlag,
 	}
@@ -1812,6 +1820,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if ctx.IsSet(EraFlag.Name) {
 		cfg.DatabaseEra = ctx.String(EraFlag.Name)
 	}
+	if ctx.IsSet(DBPebbleModeFlag.Name) {
+		cfg.DatabasePebbleMode = ctx.String(DBPebbleModeFlag.Name)
+	}
 
 	if gcmode := ctx.String(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
@@ -2344,6 +2355,10 @@ func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly bool) ethdb.
 		}
 		chainDb = remotedb.New(client)
 	default:
+		mode, merr := pebble.ParseMode(ctx.String(DBPebbleModeFlag.Name))
+		if merr != nil {
+			Fatalf("Invalid --%s: %v", DBPebbleModeFlag.Name, merr)
+		}
 		options := node.DatabaseOptions{
 			ReadOnly:          readonly,
 			Cache:             cache,
@@ -2351,6 +2366,7 @@ func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly bool) ethdb.
 			AncientsDirectory: ctx.String(AncientFlag.Name),
 			MetricsNamespace:  "eth/db/chaindata/",
 			EraDirectory:      ctx.String(EraFlag.Name),
+			PebbleMode:        mode,
 		}
 		chainDb, err = stack.OpenDatabaseWithOptions("chaindata", options)
 	}

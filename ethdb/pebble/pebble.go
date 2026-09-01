@@ -18,10 +18,13 @@
 package pebble
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +55,49 @@ const (
 	// leveldb database cannot keep up with requested writes.
 	degradationWarnInterval = time.Minute
 )
+
+// Mode selects the compaction profile the database is tuned for. The profiles
+// differ only in how much data is allowed to accumulate in L0 before it is
+// merged into the base level, which trades read amplification against write
+// amplification.
+type Mode int
+
+const (
+	// ModeNormal balances reads and writes. L0 is drained eagerly, so point
+	// lookups touch few sstables at the cost of rewriting the base level often.
+	ModeNormal Mode = iota
+
+	// ModeWriteHeavy lets L0 stack considerably deeper before draining, so each
+	// base-level rewrite amortises over far more incoming data. Point lookups
+	// pay for it by consulting more L0 sstables.
+	//
+	// Suited to bulk ingest (sync, import, offline state generation). Not
+	// recommended for a node serving reads under load.
+	ModeWriteHeavy
+)
+
+// String implements fmt.Stringer.
+func (m Mode) String() string {
+	switch m {
+	case ModeWriteHeavy:
+		return "write-heavy"
+	default:
+		return "normal"
+	}
+}
+
+// ParseMode maps a user supplied string onto a Mode. An empty string selects
+// ModeNormal.
+func ParseMode(s string) (Mode, error) {
+	switch s {
+	case "", "normal":
+		return ModeNormal, nil
+	case "write-heavy":
+		return ModeWriteHeavy, nil
+	default:
+		return ModeNormal, fmt.Errorf("unknown pebble mode %q (want 'normal' or 'write-heavy')", s)
+	}
+}
 
 // Database is a persistent key-value store based on the pebble v2 storage engine.
 // Apart from basic data storage functionality it also supports batch writes and
@@ -88,6 +134,23 @@ type Database struct {
 	liveIterGauge          *metrics.Gauge   // Gauge for tracking the number of live database iterators
 	levelsGauge            []*metrics.Gauge // Gauge for tracking the number of tables in levels
 
+	l0SublevelsGauge     *metrics.Gauge        // Gauge for tracking the current L0 sublevel count
+	l0SizeGauge          *metrics.GaugeFloat64 // Gauge for tracking the total size of L0, in MB
+	lbaseSizeGauge       *metrics.GaugeFloat64 // Gauge for tracking the total size of the base level, in MB
+	l0FillFactorGauge    *metrics.GaugeFloat64 // Gauge for tracking how far L0 is past its compaction trigger
+	lbaseFillFactorGauge *metrics.GaugeFloat64 // Gauge for tracking how far the base level is past its target size
+	l0DrainDepthGauge    *metrics.GaugeFloat64 // Gauge for tracking the mean sublevel count drained per L0->Lbase compaction
+	l0DrainBytesMeter    *metrics.Meter        // Meter for measuring the L0 bytes consumed by L0->Lbase compactions
+	lbaseDrainBytesMeter *metrics.Meter        // Meter for measuring the base level bytes rewritten by those compactions
+	l0DrainCountMeter    *metrics.Meter        // Meter for counting L0->Lbase compactions
+	l0DrainLevelsMeter   *metrics.Meter        // Meter for counting the L0 sublevels those compactions drained
+	flushedBytesMeter    *metrics.Meter        // Meter for measuring the sstable bytes produced by flushes
+	l0DrainSizeGauge     *metrics.GaugeFloat64 // Gauge for tracking the mean L0 input of an L0->Lbase compaction, in MB
+	l0DrainPeakGauge     *metrics.GaugeFloat64 // Gauge for tracking the largest single L0 input, in MB
+	l0DrainWampGauge     *metrics.GaugeFloat64 // Gauge for tracking the measured write amplification of the L0->Lbase step
+	writeAmpGauge        *metrics.GaugeFloat64 // Gauge for tracking the overall write amplification
+	walBytesMeter        *metrics.Meter        // Meter for measuring the bytes written to the WAL
+
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
 	closed   bool            // keep track of whether we're Closed
@@ -105,6 +168,17 @@ type Database struct {
 	writeDelayReason    string       // The reason of the latest write stall
 	writeDelayCount     atomic.Int64 // Total number of write stall counts
 	writeDelayTime      atomic.Int64 // Total time spent in write stalls
+
+	l0DrainCount     atomic.Int64 // Total number of completed L0->Lbase compactions
+	l0DrainSublevels atomic.Int64 // Total number of L0 sublevels drained by those compactions
+	l0DrainBytes     atomic.Int64 // Total number of L0 bytes consumed by those compactions
+	lbaseDrainBytes  atomic.Int64 // Total number of base level bytes rewritten by those compactions
+	l0DrainPeakBytes atomic.Int64 // Largest single L0 input, reset every metrics interval
+	l0MoveCount      atomic.Int64 // L0->Lbase compactions that only relinked files
+	l0MoveBytes      atomic.Int64 // L0 bytes those relinked
+	intraL0Count     atomic.Int64 // Total number of intra-L0 compactions
+	intraL0Bytes     atomic.Int64 // Total L0 bytes rewritten by intra-L0 compactions
+	peakSublevels    atomic.Int64 // Deepest L0 sublevel count observed
 
 	writeOptions *pebble.WriteOptions
 }
@@ -129,6 +203,365 @@ func (d *Database) onCompactionEnd(info pebble.CompactionInfo) {
 		panic("should not happen")
 	}
 	d.activeComp--
+
+	// Record how much of the L0 stack an L0->Lbase compaction actually drained.
+	if info.Err != nil || len(info.Input) == 0 {
+		return
+	}
+	// Intra-L0 compactions rewrite L0 into itself. They buy read amplification
+	// but every byte they write has to be written again on the way to Lbase, so
+	// they are pure overhead as far as write amplification is concerned.
+	if l0 := info.Input[0]; l0.Level == 0 && info.Output.Level == 0 {
+		var n uint64
+		for _, t := range l0.Tables {
+			n += t.Size
+		}
+		d.intraL0Count.Add(1)
+		d.intraL0Bytes.Add(int64(n))
+	}
+	if l0 := info.Input[0]; l0.Level == 0 && info.Output.Level != 0 {
+		var l0Bytes uint64
+		for _, t := range l0.Tables {
+			l0Bytes += t.Size
+		}
+		// The base level tables are rewritten wholesale to absorb the L0 input,
+		// so together the two sides give the measured write amplification of
+		// this step, rather than one modelled from level sizes.
+		var lbaseBytes uint64
+		for _, lvl := range info.Input[1:] {
+			for _, t := range lvl.Tables {
+				lbaseBytes += t.Size
+			}
+		}
+		// A move compaction relinks its input into the base level and writes
+		// nothing, so counting it as a drain would both overstate what this
+		// stage costs and drag its write amplification towards 1. Note this has
+		// to key off the compaction kind: a compaction that merely overlaps no
+		// base level table is not a move, it still reads L0 and writes the
+		// result out, and belongs in the average at a write amplification of 1.
+		if strings.HasSuffix(info.Reason, "move") {
+			d.l0MoveCount.Add(1)
+			d.l0MoveBytes.Add(int64(l0Bytes))
+			return
+		}
+		d.l0DrainCount.Add(1)
+		d.l0DrainSublevels.Add(int64(l0OverlapDepth(l0.Tables)))
+		d.l0DrainBytes.Add(int64(l0Bytes))
+		d.lbaseDrainBytes.Add(int64(lbaseBytes))
+
+		// Track the largest single drain. pebble stops growing a drain once its
+		// L0 input passes 100MB and grows by more than half again, and hard
+		// stops at 500MB, so where the peak sits says which limit is binding.
+		for peak := d.l0DrainPeakBytes.Load(); int64(l0Bytes) > peak; peak = d.l0DrainPeakBytes.Load() {
+			if d.l0DrainPeakBytes.CompareAndSwap(peak, int64(l0Bytes)) {
+				break
+			}
+		}
+	}
+}
+
+// LevelStat describes one level's shape and the work done on it.
+type LevelStat struct {
+	Level          int
+	Files          int64
+	Size           int64
+	Sublevels      int32  // only meaningful for L0
+	BytesFlushed   uint64 // written into this level by flushes
+	BytesCompacted uint64 // written into this level by compactions
+	BytesRead      uint64 // read out of this level by compactions
+	BytesMoved     uint64 // relinked into this level without rewriting
+}
+
+// CompactionStats summarises where a database's writes went. All counters are
+// cumulative since the database was opened.
+type CompactionStats struct {
+	// Totals.
+	WALBytes     uint64 // logical bytes accepted, the denominator of write amplification
+	DiskBytes    uint64 // physical bytes written: the WAL plus every sstable
+	ReadBytes    uint64 // bytes read back by compactions
+	FlushedBytes uint64 // sstable bytes produced by flushes
+	FlushCount   int64
+
+	// Written bytes by stage, taken from each level's own counter rather than
+	// from compaction inputs, so that the stages sum to DiskBytes exactly.
+	// Compaction inputs overstate what lands on disk, because overwritten keys
+	// and tombstones are dropped in the merge.
+	IntraL0WrittenBytes uint64 // rewritten within L0
+	LbaseWrittenBytes   uint64 // written into the base level, ie the L0 drain
+	CascadeWrittenBytes uint64 // written into every level below the base
+
+	// The L0 to base level step.
+	L0DrainBytes     uint64 // L0 bytes consumed by L0->Lbase compactions
+	LbaseDrainBytes  uint64 // base level bytes rewritten by those compactions
+	L0Drains         uint64
+	L0DrainSublevels uint64 // L0 sublevels those compactions removed
+	L0MoveCount      uint64 // drains that only relinked, writing nothing
+	L0MoveBytes      uint64
+	IntraL0Count     uint64 // compactions that rewrote L0 into itself
+	IntraL0Bytes     uint64
+	PeakSublevels    int64 // deepest L0 stack seen, sampled every few seconds
+	BaseLevel        int   // shallowest level holding data, which is where L0 drains
+
+	// Compaction totals.
+	Compactions           int64
+	MoveCompactions       int64 // relinked without rewriting, so effectively free
+	MultiLevelCompactions int64
+	CompactionDuration    time.Duration
+	CancelledBytes        int64
+	FailedCompactions     int64
+
+	// Read side, which is what a deeper L0 trades away.
+	BlockCacheHits, BlockCacheMisses int64
+	FilterHits, FilterMisses         int64
+
+	// Write stalls.
+	StallCount    int64
+	StallDuration time.Duration
+
+	Levels    []LevelStat    // only levels holding data or that saw work
+	Sublevels []SublevelStat // L0's structure, deepest last
+}
+
+// DrainAmortisation returns how many bytes of L0 an L0->Lbase compaction pushes
+// down per byte of base level it has to disturb. It is the reciprocal view of
+// DrainWriteAmp and the quantity a deeper L0 is meant to improve.
+func (s CompactionStats) DrainAmortisation() float64 {
+	if s.LbaseDrainBytes == 0 {
+		return 0
+	}
+	return float64(s.L0DrainBytes) / float64(s.LbaseDrainBytes)
+}
+
+// DrainWriteAmp returns the bytes an L0->Lbase compaction writes per byte of L0
+// it carries down.
+func (s CompactionStats) DrainWriteAmp() float64 {
+	if s.L0DrainBytes == 0 {
+		return 0
+	}
+	return float64(s.L0DrainBytes+s.LbaseDrainBytes) / float64(s.L0DrainBytes)
+}
+
+// WriteAmp returns the physical bytes written per byte accepted.
+func (s CompactionStats) WriteAmp() float64 {
+	if s.WALBytes == 0 {
+		return 0
+	}
+	return float64(s.DiskBytes) / float64(s.WALBytes)
+}
+
+// CompactionStats reports how much this database has written and where those
+// writes went. It is intended for benchmarks, which need the totals for a run
+// rather than the sampled rates the metrics endpoint exposes.
+func (d *Database) CompactionStats() CompactionStats {
+	m := d.db.Metrics()
+
+	cs := CompactionStats{
+		WALBytes:              m.WAL.BytesIn,
+		FlushCount:            m.Flush.Count,
+		L0DrainBytes:          uint64(d.l0DrainBytes.Load()),
+		LbaseDrainBytes:       uint64(d.lbaseDrainBytes.Load()),
+		L0Drains:              uint64(d.l0DrainCount.Load()),
+		L0DrainSublevels:      uint64(d.l0DrainSublevels.Load()),
+		L0MoveCount:           uint64(d.l0MoveCount.Load()),
+		L0MoveBytes:           uint64(d.l0MoveBytes.Load()),
+		IntraL0Count:          uint64(d.intraL0Count.Load()),
+		IntraL0Bytes:          uint64(d.intraL0Bytes.Load()),
+		PeakSublevels:         d.peakSublevels.Load(),
+		BaseLevel:             -1,
+		Compactions:           m.Compact.Count,
+		MoveCompactions:       m.Compact.MoveCount,
+		MultiLevelCompactions: m.Compact.MultiLevelCount,
+		CompactionDuration:    m.Compact.Duration,
+		CancelledBytes:        m.Compact.CancelledBytes,
+		FailedCompactions:     m.Compact.FailedCount,
+		BlockCacheHits:        m.BlockCache.Hits,
+		BlockCacheMisses:      m.BlockCache.Misses,
+		FilterHits:            m.Filter.Hits,
+		FilterMisses:          m.Filter.Misses,
+		StallCount:            d.writeDelayCount.Load(),
+		StallDuration:         time.Duration(d.writeDelayTime.Load()),
+	}
+	var flushed, compacted uint64
+	for level := range m.Levels {
+		l := &m.Levels[level]
+		flushed += l.TableBytesFlushed
+		compacted += l.TableBytesCompacted
+		cs.ReadBytes += l.TableBytesRead
+
+		// The base level is the shallowest level below L0 holding data. Pebble
+		// picks it the same way, except that it may sit one level shallower
+		// while waiting for the first compaction to land there.
+		if level > 0 && cs.BaseLevel < 0 && l.TablesCount > 0 {
+			cs.BaseLevel = level
+		}
+		if l.TablesCount == 0 && l.TableBytesFlushed == 0 && l.TableBytesCompacted == 0 {
+			continue
+		}
+		cs.Levels = append(cs.Levels, LevelStat{
+			Level:          level,
+			Files:          l.TablesCount,
+			Size:           l.TablesSize,
+			Sublevels:      l.Sublevels,
+			BytesFlushed:   l.TableBytesFlushed,
+			BytesCompacted: l.TableBytesCompacted,
+			BytesRead:      l.TableBytesRead,
+			BytesMoved:     l.TableBytesMoved,
+		})
+	}
+	cs.FlushedBytes = flushed
+	cs.DiskBytes = flushed + compacted + m.WAL.BytesWritten
+	cs.IntraL0WrittenBytes = m.Levels[0].TableBytesCompacted
+	for level := 1; level < len(m.Levels); level++ {
+		switch {
+		case level == cs.BaseLevel:
+			cs.LbaseWrittenBytes = m.Levels[level].TableBytesCompacted
+		case level > cs.BaseLevel:
+			cs.CascadeWrittenBytes += m.Levels[level].TableBytesCompacted
+		}
+	}
+	cs.Sublevels = d.l0Sublevels()
+	return cs
+}
+
+// SublevelStat describes one L0 sublevel.
+type SublevelStat struct {
+	Sublevel int
+	Files    int64
+	Size     int64
+	Span     float64 // fraction of L0's key range this sublevel covers
+}
+
+// l0Sublevels reconstructs L0's sublevel structure. Pebble reports only the
+// sublevel count, but the assignment is reproducible: files are placed oldest
+// first, and each goes one sublevel above the highest it overlaps. Files sharing
+// a sublevel therefore never overlap, which is why L0 can hold thousands of
+// files at a depth of two if the workload writes across the key space in order.
+func (d *Database) l0Sublevels() []SublevelStat {
+	all, err := d.db.SSTables()
+	if err != nil || len(all) == 0 || len(all[0]) == 0 {
+		return nil
+	}
+	files := slices.Clone(all[0])
+	slices.SortFunc(files, func(a, b pebble.SSTableInfo) int {
+		if a.LargestSeqNum != b.LargestSeqNum {
+			return cmp.Compare(a.LargestSeqNum, b.LargestSeqNum)
+		}
+		if a.SmallestSeqNum != b.SmallestSeqNum {
+			return cmp.Compare(a.SmallestSeqNum, b.SmallestSeqNum)
+		}
+		return cmp.Compare(a.FileNum, b.FileNum)
+	})
+
+	// Files already placed in each sublevel, kept sorted by start key so that
+	// the overlap test is a binary search rather than a scan.
+	type placed struct{ lo, hi []byte }
+	var levels [][]placed
+	overlaps := func(ps []placed, lo, hi []byte) bool {
+		i, _ := slices.BinarySearchFunc(ps, lo, func(p placed, k []byte) int {
+			return bytes.Compare(p.lo, k)
+		})
+		// The candidate starting at or after lo, and the one before it, are the
+		// only two that can overlap [lo, hi].
+		if i < len(ps) && bytes.Compare(ps[i].lo, hi) <= 0 {
+			return true
+		}
+		return i > 0 && bytes.Compare(ps[i-1].hi, lo) >= 0
+	}
+
+	var stats []SublevelStat
+	var lo, hi []byte
+	for _, f := range files {
+		flo, fhi := f.Smallest.UserKey, f.Largest.UserKey
+		if lo == nil || bytes.Compare(flo, lo) < 0 {
+			lo = flo
+		}
+		if hi == nil || bytes.Compare(fhi, hi) > 0 {
+			hi = fhi
+		}
+		sub := 0
+		for s := len(levels) - 1; s >= 0; s-- {
+			if overlaps(levels[s], flo, fhi) {
+				sub = s + 1
+				break
+			}
+		}
+		for len(levels) <= sub {
+			levels = append(levels, nil)
+			stats = append(stats, SublevelStat{Sublevel: len(levels) - 1})
+		}
+		i, _ := slices.BinarySearchFunc(levels[sub], flo, func(p placed, k []byte) int {
+			return bytes.Compare(p.lo, k)
+		})
+		levels[sub] = slices.Insert(levels[sub], i, placed{flo, fhi})
+		stats[sub].Files++
+		stats[sub].Size += int64(f.Size)
+	}
+
+	// Report each sublevel's coverage as a fraction of L0's whole key range,
+	// which separates a sublevel tiling the key space from a narrow column.
+	total := keyFraction(lo, hi, lo, hi)
+	for s := range stats {
+		var covered float64
+		for _, p := range levels[s] {
+			covered += keyFraction(p.lo, p.hi, lo, hi)
+		}
+		if total > 0 {
+			stats[s].Span = covered / total
+		}
+	}
+	return stats
+}
+
+// keyFraction approximates what share of [lo, hi] the range [a, b] covers, using
+// the leading bytes of each key. Trie node keys are hashes, so the leading bytes
+// are close to uniformly distributed and this is a fair estimate.
+func keyFraction(a, b, lo, hi []byte) float64 {
+	pos := func(k []byte) float64 {
+		var v, scale float64 = 0, 1
+		for i := 0; i < 8; i++ {
+			scale /= 256
+			if i < len(k) {
+				v += float64(k[i]) * scale
+			}
+		}
+		return v
+	}
+	span := pos(hi) - pos(lo)
+	if span <= 0 {
+		return 0
+	}
+	return (pos(b) - pos(a)) / span
+}
+
+// l0OverlapDepth returns the largest number of the given tables that overlap at
+// any single point of the key space.
+//
+// Tables within one L0 sublevel never overlap each other, so for a set of L0
+// tables this is exactly the number of sublevels they span, which is what an
+// L0->Lbase compaction removes from the read path.
+func l0OverlapDepth(tables []pebble.TableInfo) int {
+	if len(tables) == 0 {
+		return 0
+	}
+	starts := make([][]byte, len(tables))
+	ends := make([][]byte, len(tables))
+	for i, t := range tables {
+		starts[i] = t.Smallest.UserKey
+		ends[i] = t.Largest.UserKey
+	}
+	slices.SortFunc(starts, bytes.Compare)
+	slices.SortFunc(ends, bytes.Compare)
+
+	var depth, deepest, retired int
+	for _, start := range starts {
+		for retired < len(ends) && bytes.Compare(ends[retired], start) < 0 {
+			depth--
+			retired++
+		}
+		depth++
+		deepest = max(deepest, depth)
+	}
+	return deepest
 }
 
 func (d *Database) onWriteStallBegin(b pebble.WriteStallBeginInfo) {
@@ -176,9 +609,17 @@ func (l panicLogger) Fatalf(format string, args ...interface{}) {
 	panic(fmt.Errorf("fatal: "+format, args...))
 }
 
-// New returns a wrapped pebble DB object. The namespace is the prefix that the
-// metrics reporting should use for surfacing internal stats.
+// New returns a wrapped pebble DB object tuned for balanced read/write access.
+// The namespace is the prefix that the metrics reporting should use for
+// surfacing internal stats.
 func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
+	return NewWithMode(file, cache, handles, namespace, readonly, ModeNormal)
+}
+
+// NewWithMode returns a wrapped pebble DB object tuned for the given compaction
+// profile. The namespace is the prefix that the metrics reporting should use
+// for surfacing internal stats. See Mode for the trade-off each profile makes.
+func NewWithMode(file string, cache int, handles int, namespace string, readonly bool, mode Mode) (*Database, error) {
 	// Ensure we have some minimal caching and file guarantees
 	if cache < minCache {
 		cache = minCache
@@ -187,7 +628,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		handles = minHandles
 	}
 	logger := log.New("database", file)
-	logger.Info("Allocated cache and file handles", "cache", common.StorageSize(cache*1024*1024), "handles", handles, "version", "v2")
+	logger.Info("Allocated cache and file handles", "cache", common.StorageSize(cache*1024*1024), "handles", handles, "version", "v2", "mode", mode)
 
 	// The max memtable size is limited by the uint32 offsets stored in
 	// internal/arenaskl.node, DeferredBatchOp, and flushableBatchEntry.
@@ -234,6 +675,64 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		writeOptions: pebble.NoSync,
 	}
 	numCPU := runtime.NumCPU()
+
+	// Compaction profile. See Mode for the trade-off being made here.
+	var (
+		l0CompactionThreshold int
+		l0StopWritesThreshold int
+		lbaseMaxBytes         int64
+		targetFileSizes       [7]int64
+		flushSplitBytes       int64
+		l0CompactionConc      int
+		compactionDebtConc    uint64
+	)
+	switch mode {
+	case ModeWriteHeavy:
+		l0CompactionThreshold = 12
+		l0StopWritesThreshold = 24
+
+		lbaseMaxBytes = min(max(8*int64(memTableSize), 2<<30), 4<<30)
+
+		targetFileSizes = [7]int64{
+			16 * 1024 * 1024,  // L0
+			32 * 1024 * 1024,  // Lbase
+			64 * 1024 * 1024,  // Lbase+1
+			128 * 1024 * 1024, // flat past here: fewer, larger files, write-amp neutral
+			128 * 1024 * 1024,
+			128 * 1024 * 1024,
+			128 * 1024 * 1024,
+		}
+		flushSplitBytes = targetFileSizes[0]
+		l0CompactionConc = 1
+
+		// Compaction debt carries the whole base level whenever L0 is non-empty,
+		// so the debt floor scales with lbaseMaxBytes. A fixed divisor would
+		// contribute its slots unconditionally and pin concurrency at the
+		// ceiling for the entire run.
+		compactionDebtConc = uint64(lbaseMaxBytes)
+
+	default:
+		// The normal profile restates pebble's own defaults, except for
+		// l0CompactionThreshold: the default of 4 leaves the compaction debt
+		// at around 10GB, whereas 2 keeps it below 1GB at the cost of more
+		// frequently scheduled compactions.
+		l0CompactionThreshold = 2
+		l0StopWritesThreshold = 12
+		lbaseMaxBytes = 64 * 1024 * 1024
+		targetFileSizes = [7]int64{
+			2 * 1024 * 1024, // L0
+			4 * 1024 * 1024, // LBase
+			8 * 1024 * 1024,
+			16 * 1024 * 1024,
+			32 * 1024 * 1024,
+			64 * 1024 * 1024,
+			128 * 1024 * 1024,
+		}
+		flushSplitBytes = 2 * targetFileSizes[0]
+		l0CompactionConc = 1
+		compactionDebtConc = 1 << 28 // 256MB
+	}
+
 	opt := &pebble.Options{
 		// Pebble has a single combined cache area and the write
 		// buffers are taken from this too. Assign all available
@@ -270,19 +769,20 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 			{FilterPolicy: bloom.FilterPolicy(10)},
 			{FilterPolicy: bloom.FilterPolicy(10)},
 
-			// Pebble doesn't use the Bloom filter at level6 for read efficiency.
-			{},
+			// Pebble never reads the L6 filter unless IterOptions.UseL6Filters
+			// is set, which geth never does. An empty LevelOptions would still
+			// inherit the filter policy from L5 and write a filter into every
+			// L6 table that nothing ever consults, so opt out explicitly.
+			{FilterPolicy: pebble.NoFilterPolicy},
 		},
+
 		// Per-level target file sizes (replaces LevelOptions.TargetFileSize in v2).
-		TargetFileSizes: [7]int64{
-			2 * 1024 * 1024,
-			4 * 1024 * 1024,
-			8 * 1024 * 1024,
-			16 * 1024 * 1024,
-			32 * 1024 * 1024,
-			64 * 1024 * 1024,
-			128 * 1024 * 1024,
-		},
+		//
+		// Note the array is indexed relative to the base level, not by absolute
+		// level number: [0] is L0, [1] is the base level, [2] is base+1, and so
+		// on. The concrete sizes are part of the compaction profile, see above.
+		TargetFileSizes: targetFileSizes,
+
 		ReadOnly: readonly,
 		EventListener: &pebble.EventListener{
 			CompactionBegin: db.onCompactionBegin,
@@ -301,16 +801,24 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// flushed at the background if the accumulated size exceeds this threshold.
 		WALBytesPerSync: 5 * ethdb.IdealBatchSize,
 
-		// L0CompactionThreshold specifies the number of L0 read-amplification
-		// necessary to trigger an L0 compaction. It essentially refers to the
-		// number of sub-levels at the L0. For each sub-level, it contains several
-		// L0 files which are non-overlapping with each other, typically produced
-		// by a single memory-table flush.
-		//
-		// The default value in Pebble is 4, which is a bit too large to have
-		// the compaction debt as around 10GB. By reducing it to 2, the compaction
-		// debt will be less than 1GB, but with more frequent compactions scheduled.
-		L0CompactionThreshold: 2,
+		// L0CompactionThreshold controls how deep L0 is allowed to stack before
+		// it is drained into the base level; the depth reached is roughly half
+		// this value.
+		L0CompactionThreshold: l0CompactionThreshold,
+
+		// L0StopWritesThreshold is the L0 read-amplification at which writers
+		// are blocked outright.
+		L0StopWritesThreshold: l0StopWritesThreshold,
+
+		// LBaseMaxBytes sets the target size of the base level, and with it the
+		// number of levels between the base level and L6. A larger base level
+		// means fewer levels, hence fewer times each byte is rewritten on its
+		// way down, at the cost of a larger merge each time L0 drains.
+		LBaseMaxBytes: lbaseMaxBytes,
+
+		// FlushSplitBytes bounds how far a flush output may span before it is
+		// cut, keeping flush output aligned with the L0 sublevel structure.
+		FlushSplitBytes: flushSplitBytes,
 
 		// FormatFlushableIngest is the minimum FormatMajorVersion supported by
 		// pebble v2. The more advanced version can be enabled later.
@@ -326,13 +834,18 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 
 	// These two settings define the conditions under which compaction concurrency
 	// is increased. Specifically, one additional compaction job will be enabled when:
-	// - there is one more overlapping sub-level0;
-	// - there is an additional 256 MB of compaction debt;
+	//
+	// - there are l0CompactionConc more overlapping sub-level0;
+	// - there is an additional compactionDebtConc of compaction debt;
 	//
 	// The maximum concurrency is still capped by CompactionConcurrencyRange, but with
-	// these settings compactions can scale up more readily.
-	opt.Experimental.L0CompactionConcurrency = 1
-	opt.Experimental.CompactionDebtConcurrency = 1 << 28 // 256MB
+	// these settings compactions can scale up more readily. Both divisors track
+	// the compaction profile: the write-heavy profile operates at a much deeper
+	// L0 and a much larger compaction debt floor, so reusing the normal values
+	// there would hold concurrency at its ceiling permanently and starve block
+	// execution of CPU.
+	opt.Experimental.L0CompactionConcurrency = l0CompactionConc
+	opt.Experimental.CompactionDebtConcurrency = compactionDebtConc
 
 	// Open the db and recover any potential corruptions
 	innerDB, err := pebble.Open(file, opt)
@@ -364,6 +877,22 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	db.filterMissGauge = metrics.GetOrRegisterGauge(namespace+"filter/miss", nil)
 	db.estimatedCompDebtGauge = metrics.GetOrRegisterGauge(namespace+"compact/estimateDebt", nil)
 	db.liveCompGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/count", nil)
+	db.l0SublevelsGauge = metrics.GetOrRegisterGauge(namespace+"l0/sublevels", nil)
+	db.l0SizeGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"l0/size", nil)
+	db.lbaseSizeGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"lbase/size", nil)
+	db.l0FillFactorGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"l0/fillfactor", nil)
+	db.lbaseFillFactorGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"lbase/fillfactor", nil)
+	db.l0DrainDepthGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"compact/level0/depth", nil)
+	db.l0DrainBytesMeter = metrics.GetOrRegisterMeter(namespace+"compact/level0/bytes", nil)
+	db.lbaseDrainBytesMeter = metrics.GetOrRegisterMeter(namespace+"compact/level0/lbasebytes", nil)
+	db.l0DrainCountMeter = metrics.GetOrRegisterMeter(namespace+"compact/level0/count", nil)
+	db.l0DrainLevelsMeter = metrics.GetOrRegisterMeter(namespace+"compact/level0/sublevels", nil)
+	db.flushedBytesMeter = metrics.GetOrRegisterMeter(namespace+"compact/flushed", nil)
+	db.l0DrainSizeGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"compact/level0/size", nil)
+	db.l0DrainPeakGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"compact/level0/peaksize", nil)
+	db.l0DrainWampGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"compact/level0/wamp", nil)
+	db.writeAmpGauge = metrics.GetOrRegisterGaugeFloat64(namespace+"compact/writeamp", nil)
+	db.walBytesMeter = metrics.GetOrRegisterMeter(namespace+"wal/bytes", nil)
 	db.liveCompSizeGauge = metrics.GetOrRegisterGauge(namespace+"compact/live/size", nil)
 	db.liveIterGauge = metrics.GetOrRegisterGauge(namespace+"iter/count", nil)
 
@@ -564,6 +1093,16 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		writeDelayTimes      [2]int64
 		writeDelayCounts     [2]int64
 		lastWriteStallReport time.Time
+
+		l0DrainCounts    [2]int64
+		l0DrainSublevels [2]int64
+		l0DrainBytes     [2]int64
+		lbaseDrainBytes  [2]int64
+		flushedBytes     [2]int64
+
+		walBytes    [2]int64
+		writtenLogi [2]int64
+		writtenPhys [2]int64
 	)
 
 	// Iterate ad infinitum and collect the stats
@@ -641,6 +1180,76 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 			}
 			d.levelsGauge[i].Update(level.TablesCount)
 		}
+
+		// Report how deep the L0 stack is and how hungry the levels are.
+		d.l0SublevelsGauge.Update(int64(stats.Levels[0].Sublevels))
+		for sub := int64(stats.Levels[0].Sublevels); ; {
+			peak := d.peakSublevels.Load()
+			if sub <= peak || d.peakSublevels.CompareAndSwap(peak, sub) {
+				break
+			}
+		}
+		d.l0FillFactorGauge.Update(stats.Levels[0].FillFactor)
+		d.l0SizeGauge.Update(float64(stats.Levels[0].TablesSize) / (1 << 20))
+		// The ratio of these two sizes is what an L0->Lbase compaction pays:
+		// it merges a slice of L0 with the base level tables overlapping it, so
+		// its write amplification tends to 1 + lbaseSize/l0Size.
+		for level := 1; level < len(stats.Levels); level++ {
+			if stats.Levels[level].TablesCount > 0 {
+				d.lbaseFillFactorGauge.Update(stats.Levels[level].FillFactor)
+				d.lbaseSizeGauge.Update(float64(stats.Levels[level].TablesSize) / (1 << 20))
+				break
+			}
+		}
+
+		// Write amplification over the last interval: physical bytes landed on
+		// disk per logical byte accepted.
+		total := stats.Total()
+		writtenPhys[i%2] = int64(total.TableBytesFlushed + total.TableBytesCompacted +
+			total.BlobBytesFlushed + total.BlobBytesCompacted)
+		writtenLogi[i%2] = int64(total.TableBytesIn)
+		if delta := writtenLogi[i%2] - writtenLogi[(i-1)%2]; delta > 0 {
+			d.writeAmpGauge.Update(float64(writtenPhys[i%2]-writtenPhys[(i-1)%2]) / float64(delta))
+		}
+		walBytes[i%2] = int64(stats.WAL.BytesWritten)
+		d.walBytesMeter.Mark(walBytes[i%2] - walBytes[(i-1)%2])
+
+		// Mean number of L0 sublevels removed per L0->Lbase compaction over the
+		// last interval.
+		l0DrainCounts[i%2] = d.l0DrainCount.Load()
+		l0DrainSublevels[i%2] = d.l0DrainSublevels.Load()
+		l0DrainBytes[i%2] = d.l0DrainBytes.Load()
+		lbaseDrainBytes[i%2] = d.lbaseDrainBytes.Load()
+		if drained := l0DrainCounts[i%2] - l0DrainCounts[(i-1)%2]; drained > 0 {
+			sublevels := l0DrainSublevels[i%2] - l0DrainSublevels[(i-1)%2]
+			l0Bytes := l0DrainBytes[i%2] - l0DrainBytes[(i-1)%2]
+			lbaseBytes := lbaseDrainBytes[i%2] - lbaseDrainBytes[(i-1)%2]
+
+			d.l0DrainDepthGauge.Update(float64(sublevels) / float64(drained))
+			d.l0DrainSizeGauge.Update(float64(l0Bytes) / float64(drained) / (1 << 20))
+			if l0Bytes > 0 {
+				d.l0DrainWampGauge.Update(float64(l0Bytes+lbaseBytes) / float64(l0Bytes))
+			}
+		}
+		// Cumulative counters, so that two snapshots taken around a whole run
+		// decompose its write amplification exactly, without assuming a flush
+		// writes as many bytes as the WAL took in:
+		//
+		//	flush      = d(compact/flushed)                     / d(wal/bytes)
+		//	L0->Lbase  = d(level0/bytes + level0/lbasebytes)    / d(wal/bytes)
+		//	below      = the remainder of d(disk/write)         / d(wal/bytes)
+		d.l0DrainBytesMeter.Mark(l0DrainBytes[i%2] - l0DrainBytes[(i-1)%2])
+		d.lbaseDrainBytesMeter.Mark(lbaseDrainBytes[i%2] - lbaseDrainBytes[(i-1)%2])
+		d.l0DrainCountMeter.Mark(l0DrainCounts[i%2] - l0DrainCounts[(i-1)%2])
+		d.l0DrainLevelsMeter.Mark(l0DrainSublevels[i%2] - l0DrainSublevels[(i-1)%2])
+		d.l0DrainPeakGauge.Update(float64(d.l0DrainPeakBytes.Swap(0)) / (1 << 20))
+
+		var flushed int64
+		for level := range stats.Levels {
+			flushed += int64(stats.Levels[level].TableBytesFlushed)
+		}
+		flushedBytes[i%2] = flushed
+		d.flushedBytesMeter.Mark(flushedBytes[i%2] - flushedBytes[(i-1)%2])
 
 		// Sleep a bit, then repeat the stats collection
 		select {

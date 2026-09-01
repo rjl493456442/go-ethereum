@@ -150,6 +150,11 @@ type Config struct {
 	DatabaseFreezer    string
 	DatabaseEra        string
 
+	// DatabasePebbleMode selects the compaction profile of the pebble backend,
+	// either "normal" (default) or "write-heavy". It is ignored by the leveldb
+	// backend.
+	DatabasePebbleMode string `toml:",omitempty"`
+
 	TrieCleanCache int
 	TrieDirtyCache int
 	TrieTimeout    time.Duration

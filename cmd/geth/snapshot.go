@@ -27,6 +27,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	rtmetrics "runtime/metrics"
 	"slices"
 	"syscall"
 	"time"
@@ -308,8 +309,11 @@ func verifyState(ctx *cli.Context) error {
 // benchGenerateTrie runs triedb.GenerateTrie against a hard-linked checkpoint
 // of the chaindata so the source datadir is never written to.
 func benchGenerateTrie(ctx *cli.Context) error {
-	stack, _ := makeConfigNode(ctx)
+	stack, cfg := makeConfigNode(ctx)
 	defer stack.Close()
+
+	// Enable metrics collection and the stand-alone metrics endpoint.
+	utils.SetupMetrics(&cfg.Metrics)
 
 	if ctx.Bool("pprof") {
 		runtime.SetBlockProfileRate(1)
@@ -401,13 +405,18 @@ func benchGenerateTrie(ctx *cli.Context) error {
 	// hard-links the pebble SSTs (not the freezer), and GenerateTrie never
 	// writes to ancient, so sharing it is safe.
 	srcAncient := stack.ResolveAncient("chaindata", "")
-	kv, err := pebble.New(ckpt, 4096, 1024, "gentrie-bench", false)
+	mode, err := pebble.ParseMode(ctx.String(utils.DBPebbleModeFlag.Name))
+	if err != nil {
+		return err
+	}
+	kv, err := pebble.NewWithMode(ckpt, 4096, 1024, "gentrie-bench/", false, mode)
 	if err != nil {
 		return fmt.Errorf("open checkpoint: %w", err)
 	}
-	chaindb, err := rawdb.Open(kv, rawdb.OpenOptions{
+	timed := &timedKV{KeyValueStore: kv}
+	chaindb, err := rawdb.Open(timed, rawdb.OpenOptions{
 		Ancient:          srcAncient,
-		MetricsNamespace: "gentrie-bench",
+		MetricsNamespace: "gentrie-bench/",
 	})
 	if err != nil {
 		kv.Close()
@@ -421,6 +430,7 @@ func benchGenerateTrie(ctx *cli.Context) error {
 	triedbInst.Close()
 
 	log.Info("running GenerateTrie", "scheme", scheme, "root", root)
+	cpuStart := processCPUTime()
 	runStart := time.Now()
 	stats, err := triedb.GenerateTrie(chaindb, scheme, root, cancelCh)
 	elapsed := time.Since(runStart)
@@ -435,9 +445,173 @@ func benchGenerateTrie(ctx *cli.Context) error {
 	fmt.Printf("scheme:    %s\n", scheme)
 	fmt.Printf("root:      %s\n", root.Hex())
 	fmt.Printf("status:    %s\n", status)
+	fmt.Printf("mode:      %s\n", mode)
 	fmt.Printf("accounts:  %d (%d updated)\n", stats.Scanned, stats.Updated)
 	fmt.Printf("wall time: %s\n", elapsed)
+	printTimeBreakdown(timed, processCPUTime()-cpuStart, elapsed)
+	printCompactionStats(kv.CompactionStats(), elapsed)
 	return err
+}
+
+// processCPUTime returns the CPU seconds this process has burned, counting
+// every core. It is portable, unlike getrusage.
+func processCPUTime() time.Duration {
+	samples := []rtmetrics.Sample{
+		{Name: "/cpu/classes/total:cpu-seconds"},
+		{Name: "/cpu/classes/idle:cpu-seconds"},
+	}
+	rtmetrics.Read(samples)
+	busy := samples[0].Value.Float64() - samples[1].Value.Float64()
+	return time.Duration(busy * float64(time.Second))
+}
+
+// printTimeBreakdown separates the run's wall clock into computation and time
+// spent inside the database. GenerateTrie runs one worker per partition, so the
+// database totals are summed across workers and will exceed the wall clock; the
+// share of a worker's life they represent is the useful reading.
+func printTimeBreakdown(t *timedKV, cpu, elapsed time.Duration) {
+	var (
+		writes = time.Duration(t.writeTime.Load())
+		reads  = time.Duration(t.readTime.Load())
+		iters  = time.Duration(t.iterTime.Load())
+		db     = writes + reads + iters
+		// Workers spend their lives either inside the database or computing, so
+		// their combined lifetime is a reasonable denominator for the split.
+		workers = float64(cpu+db) / float64(elapsed)
+	)
+	pct := func(d time.Duration) float64 {
+		if cpu+db == 0 {
+			return 0
+		}
+		return 100 * float64(d) / float64(cpu+db)
+	}
+	fmt.Printf("\n--- time ---\n")
+	fmt.Printf("wall:          %s\n", elapsed.Round(time.Second))
+	fmt.Printf("cpu busy:      %s (%.1f cores)\n",
+		cpu.Round(time.Second), float64(cpu)/float64(elapsed))
+	fmt.Printf("in database:   %s (%.1f cores' worth, summed over workers)\n",
+		db.Round(time.Second), float64(db)/float64(elapsed))
+	fmt.Printf("  batch write: %-12s %5.1f%%  %d calls\n",
+		writes.Round(time.Second), pct(writes), t.writeOps.Load())
+	fmt.Printf("  point read:  %-12s %5.1f%%  %d calls\n",
+		reads.Round(time.Second), pct(reads), t.readOps.Load())
+	fmt.Printf("  iteration:   %-12s %5.1f%%  %d calls\n",
+		iters.Round(time.Second), pct(iters), t.iterOps.Load())
+	fmt.Printf("  computation: %-12s %5.1f%%\n", cpu.Round(time.Second), pct(cpu))
+	fmt.Printf("(~%.1f workers busy on average; database time is summed across them,\n"+
+		" so the percentages split worker time rather than the wall clock)\n", workers)
+}
+
+// printCompactionStats breaks the run's write amplification down by stage. The
+// checkpoint is opened fresh for the run, so these totals cover exactly it.
+func printCompactionStats(cs pebble.CompactionStats, elapsed time.Duration) {
+	if cs.WALBytes == 0 {
+		fmt.Printf("\nno writes recorded\n")
+		return
+	}
+	var (
+		wal  = float64(cs.WALBytes)
+		gb   = func(v int64) float64 { return float64(v) / (1 << 30) }
+		secs = max(elapsed.Seconds(), 1)
+	)
+	fmt.Printf("\n--- write amplification ---\n")
+	fmt.Printf("accepted:  %.2f GB (%.0f MB/s)\n", gb(int64(cs.WALBytes)), float64(cs.WALBytes)/(1<<20)/secs)
+	fmt.Printf("written:   %.2f GB (%.0f MB/s)\n", gb(int64(cs.DiskBytes)), float64(cs.DiskBytes)/(1<<20)/secs)
+	fmt.Printf("read back: %.2f GB (%.0f MB/s)\n", gb(int64(cs.ReadBytes)), float64(cs.ReadBytes)/(1<<20)/secs)
+	fmt.Printf("write amp: %.3f bytes written per byte accepted\n\n", cs.WriteAmp())
+
+	// Every stage is that level's own written-bytes counter, so the column sums
+	// to the total rather than leaving a residual.
+	fmt.Printf("  %-14s%10s%10s\n", "stage", "GB", "per byte")
+	for _, st := range []struct {
+		name  string
+		bytes uint64
+	}{
+		{"WAL", cs.WALBytes},
+		{"flush -> L0", cs.FlushedBytes},
+		{"intra-L0", cs.IntraL0WrittenBytes},
+		{"L0 -> Lbase", cs.LbaseWrittenBytes},
+		{"Lbase -> L6", cs.CascadeWrittenBytes},
+	} {
+		if st.bytes == 0 && st.name == "intra-L0" {
+			continue
+		}
+		fmt.Printf("  %-14s%10.2f%10.3f\n", st.name, gb(int64(st.bytes)), float64(st.bytes)/wal)
+	}
+	fmt.Printf("  %-14s%10.2f%10.3f\n", "total", gb(int64(cs.DiskBytes)), cs.WriteAmp())
+
+	// Per level, so the cascade above is not just a residual.
+	fmt.Printf("\n  %-6s%8s%10s%12s%12s%12s\n", "level", "files", "size GB", "in GB", "read GB", "moved GB")
+	for _, l := range cs.Levels {
+		name := fmt.Sprintf("L%d", l.Level)
+		if l.Level == 0 {
+			name = fmt.Sprintf("L0/%d", l.Sublevels)
+		} else if l.Level == cs.BaseLevel {
+			name += "*"
+		}
+		fmt.Printf("  %-6s%8d%10.2f%12.2f%12.2f%12.2f\n", name, l.Files, gb(l.Size),
+			gb(int64(l.BytesFlushed+l.BytesCompacted)), gb(int64(l.BytesRead)), gb(int64(l.BytesMoved)))
+	}
+	fmt.Printf("  (* = base level, the level L0 drains into; L0/n shows sublevel count)\n")
+
+	// L0 by sublevel. Files in one sublevel never overlap, so a sublevel with
+	// many files spanning most of the key range is a tiled layer, while one with
+	// few files over a small span is a narrow column.
+	if len(cs.Sublevels) > 0 {
+		fmt.Printf("\n  %-10s%8s%10s%10s%12s\n", "L0", "files", "size GB", "span", "avg file MB")
+		for i := len(cs.Sublevels) - 1; i >= 0; i-- {
+			sl := cs.Sublevels[i]
+			avg := 0.0
+			if sl.Files > 0 {
+				avg = float64(sl.Size) / float64(sl.Files) / (1 << 20)
+			}
+			fmt.Printf("  %-10s%8d%10.2f%9.0f%%%12.1f\n",
+				fmt.Sprintf("sub %d", sl.Sublevel), sl.Files, gb(sl.Size), 100*sl.Span, avg)
+		}
+		fmt.Printf("  (span = share of L0's key range covered; ~100%% means the sublevel tiles it)\n")
+	}
+
+	fmt.Printf("\n  flushes: %d", cs.FlushCount)
+	if cs.FlushCount > 0 {
+		fmt.Printf(" (%.0f MB each)", float64(cs.FlushedBytes)/float64(cs.FlushCount)/(1<<20))
+	}
+	fmt.Printf("\n  compactions: %d total, %d move-only, %d multi-level\n",
+		cs.Compactions, cs.MoveCompactions, cs.MultiLevelCompactions)
+	if cs.L0Drains > 0 {
+		mb := func(v uint64) float64 { return float64(v) / float64(cs.L0Drains) / (1 << 20) }
+		fmt.Printf("    L0->Lbase: %d, %.2f sublevels each\n",
+			cs.L0Drains, float64(cs.L0DrainSublevels)/float64(cs.L0Drains))
+		fmt.Printf("      inputs:  %.1f MB of L0 + %.1f MB of Lbase = %.1f MB\n",
+			mb(cs.L0DrainBytes), mb(cs.LbaseDrainBytes), mb(cs.L0DrainBytes+cs.LbaseDrainBytes))
+		fmt.Printf("      write amp %.3f, ie %.1f bytes of L0 pushed down per byte of Lbase disturbed\n",
+			cs.DrainWriteAmp(), cs.DrainAmortisation())
+		fmt.Printf("      totals:  %.2f GB of L0 + %.2f GB of Lbase\n",
+			gb(int64(cs.L0DrainBytes)), gb(int64(cs.LbaseDrainBytes)))
+	}
+	if cs.L0MoveCount > 0 {
+		fmt.Printf("    L0 moves:  %d, %.2f GB relinked into Lbase without writing\n",
+			cs.L0MoveCount, gb(int64(cs.L0MoveBytes)))
+	}
+	if cs.IntraL0Count > 0 {
+		fmt.Printf("    intra-L0:  %d, %.2f GB rewritten (%.3f per byte accepted, pure overhead)\n",
+			cs.IntraL0Count, gb(int64(cs.IntraL0Bytes)), float64(cs.IntraL0Bytes)/wal)
+	}
+	if cs.FailedCompactions > 0 || cs.CancelledBytes > 0 {
+		fmt.Printf("    %d failed, %.2f GB cancelled\n", cs.FailedCompactions, gb(cs.CancelledBytes))
+	}
+	fmt.Printf("  compaction time: %s (%.0f%% of wall clock, concurrency %.1fx)\n",
+		cs.CompactionDuration.Round(time.Second),
+		100*cs.CompactionDuration.Seconds()/secs, cs.CompactionDuration.Seconds()/secs)
+
+	fmt.Printf("\n  peak L0 sublevels: %d\n", cs.PeakSublevels)
+	fmt.Printf("  write stalls: %d (%s)\n", cs.StallCount, cs.StallDuration.Round(time.Millisecond))
+	if h, m := cs.BlockCacheHits, cs.BlockCacheMisses; h+m > 0 {
+		fmt.Printf("  block cache: %.1f%% hit", 100*float64(h)/float64(h+m))
+		if fh, fm := cs.FilterHits, cs.FilterMisses; fh+fm > 0 {
+			fmt.Printf(", bloom filter: %.1f%% useful", 100*float64(fm)/float64(fh+fm))
+		}
+		fmt.Println()
+	}
 }
 
 // makeCheckpoint opens srcDir as a pebble database and writes a hard-linked
