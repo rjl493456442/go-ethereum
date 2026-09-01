@@ -42,6 +42,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		DatabaseCache           int
 		DatabaseFreezer         string
 		DatabaseEra             string
+		DatabasePebbleMode      string `toml:",omitempty"`
 		TrieCleanCache          int
 		TrieDirtyCache          int
 		TrieTimeout             time.Duration
@@ -98,6 +99,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.DatabaseCache = c.DatabaseCache
 	enc.DatabaseFreezer = c.DatabaseFreezer
 	enc.DatabaseEra = c.DatabaseEra
+	enc.DatabasePebbleMode = c.DatabasePebbleMode
 	enc.TrieCleanCache = c.TrieCleanCache
 	enc.TrieDirtyCache = c.TrieDirtyCache
 	enc.TrieTimeout = c.TrieTimeout
@@ -158,6 +160,7 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		DatabaseCache           *int
 		DatabaseFreezer         *string
 		DatabaseEra             *string
+		DatabasePebbleMode      *string `toml:",omitempty"`
 		TrieCleanCache          *int
 		TrieDirtyCache          *int
 		TrieTimeout             *time.Duration
@@ -266,6 +269,9 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.DatabaseEra != nil {
 		c.DatabaseEra = *dec.DatabaseEra
+	}
+	if dec.DatabasePebbleMode != nil {
+		c.DatabasePebbleMode = *dec.DatabasePebbleMode
 	}
 	if dec.TrieCleanCache != nil {
 		c.TrieCleanCache = *dec.TrieCleanCache
