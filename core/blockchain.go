@@ -331,6 +331,7 @@ type BlockChain struct {
 	jumpDestCache   vm.JumpDestCache                 // Shared JUMPDEST analysis cache for block processing
 	precompileCache *vm.PrecompileCache              // Shared precompile result cache for block processing, nil when disabled
 	txIndexer       *txIndexer                       // Transaction indexer, might be nil if not enabled
+	snapSyncStart   time.Time                        // When SnapSyncStart was called, for the completion report; zero if it wasn't
 
 	hc               *HeaderChain
 	rmLogsFeed       event.Feed
@@ -1160,6 +1161,7 @@ func (bc *BlockChain) SnapSyncStart() error {
 	if snapshots := bc.Snapshots(); snapshots != nil { // Only nil in tests
 		snapshots.Disable()
 	}
+	bc.snapSyncStart = time.Now()
 	return nil
 }
 
@@ -1222,7 +1224,35 @@ func (bc *BlockChain) SnapSyncComplete(hash common.Hash, isSnapV2 bool) error {
 	headBlockGauge.Update(int64(block.NumberU64()))
 
 	log.Info("Committed new head block", "number", block.Number(), "hash", hash)
+	bc.printCompactionStats()
 	return nil
+}
+
+// printCompactionStats dumps the key-value store's compaction breakdown once
+// snap sync has finished, covering the whole sync: it is the write-heavy phase
+// the database is tuned for, and the counters are cumulative from the moment
+// the store was opened.
+//
+// The capability is asked for through an interface rather than a concrete type
+// so that this package need not know which backend is underneath; a store that
+// does not offer the breakdown, which is every backend but pebble, silently
+// produces nothing.
+func (bc *BlockChain) printCompactionStats() {
+	if bc.snapSyncStart.IsZero() {
+		// SnapSyncStart never ran, so there is no window to report rates
+		// against. Skip rather than divide by the process's whole uptime.
+		return
+	}
+	// The database handed to the chain is wrapped around the key-value store to
+	// add the freezer, and the wrapper only carries the ethdb interfaces, so
+	// unwrap before asking.
+	var store any = bc.db
+	if unwrapper, ok := store.(interface{ UnwrapKeyValueStore() ethdb.KeyValueStore }); ok {
+		store = unwrapper.UnwrapKeyValueStore()
+	}
+	if printer, ok := store.(interface{ PrintCompactionStats(time.Duration) }); ok {
+		printer.PrintCompactionStats(time.Since(bc.snapSyncStart))
+	}
 }
 
 // Reset purges the entire blockchain, restoring it to its genesis state.

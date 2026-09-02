@@ -56,6 +56,15 @@ func (frdb *freezerdb) AncientDatadir() (string, error) {
 	return frdb.ancientRoot, nil
 }
 
+// UnwrapKeyValueStore returns the key-value store this database is layered on
+// top of. Embedding it as an interface hides whatever the concrete backend
+// offers beyond ethdb.KeyValueStore, so callers wanting a backend-specific
+// capability have no way to ask for it; this hands them the value to assert
+// against. Nothing about the database's own behaviour goes through here.
+func (frdb *freezerdb) UnwrapKeyValueStore() ethdb.KeyValueStore {
+	return frdb.KeyValueStore
+}
+
 // Close implements io.Closer, closing both the fast key-value store as well as
 // the slow ancient tables.
 func (frdb *freezerdb) Close() error {
@@ -89,6 +98,12 @@ func (frdb *freezerdb) Freeze() error {
 // nofreezedb is a database wrapper that disables freezer data retrievals.
 type nofreezedb struct {
 	ethdb.KeyValueStore
+}
+
+// UnwrapKeyValueStore returns the key-value store this database wraps. See the
+// freezerdb method of the same name.
+func (db *nofreezedb) UnwrapKeyValueStore() ethdb.KeyValueStore {
+	return db.KeyValueStore
 }
 
 // Ancient returns an error as we don't have a backing chain freezer.
