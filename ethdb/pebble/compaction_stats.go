@@ -19,24 +19,32 @@ package pebble
 import (
 	"fmt"
 	"io"
-	"os"
 	"time"
 )
 
-// PrintCompactionStats writes this database's compaction breakdown to stdout,
+// WriteCompactionStats writes this database's compaction breakdown to w,
 // covering everything it has done since it was opened. elapsed is the span the
 // rates are computed against; pass the duration of the work being measured.
 //
 // It is reached through an interface assertion by callers that only hold an
 // ethdb.Database, so that they need not import this package to ask for the
-// breakdown, and get nothing if the store underneath is not pebble.
-func (d *Database) PrintCompactionStats(elapsed time.Duration) {
-	WriteCompactionStats(os.Stdout, d.CompactionStats(), elapsed)
+// breakdown, and get nothing if the store underneath is not pebble. The writer
+// is the caller's choice because those callers differ in where their output is
+// expected to land: a command prints to stdout, a running node to the stream
+// its logs already go to.
+func (d *Database) WriteCompactionStats(w io.Writer, elapsed time.Duration) {
+	WriteCompactionStats(w, d.CompactionStats(), elapsed)
 }
 
 // WriteCompactionStats breaks a run's write amplification down by stage. The
 // counters are cumulative over the database's lifetime, so they describe the
 // run exactly when the database was opened for it.
+//
+// The report is kept to printable ASCII and, in particular, free of equals
+// signs. A caller may hand the result to geth's logger as one multi-line
+// message, and its terminal handler passes newlines through only for messages
+// that need no quoting; a single '=' anywhere would collapse the whole table
+// onto one escaped line.
 func WriteCompactionStats(w io.Writer, cs CompactionStats, elapsed time.Duration) {
 	if cs.WALBytes == 0 {
 		fmt.Fprintf(w, "\nno writes recorded\n")
@@ -85,7 +93,7 @@ func WriteCompactionStats(w io.Writer, cs CompactionStats, elapsed time.Duration
 		fmt.Fprintf(w, "  %-6s%8d%10.2f%12.2f%12.2f%12.2f\n", name, l.Files, gb(l.Size),
 			gb(int64(l.BytesFlushed+l.BytesCompacted)), gb(int64(l.BytesRead)), gb(int64(l.BytesMoved)))
 	}
-	fmt.Fprintf(w, "  (* = base level, the level L0 drains into; L0/n shows sublevel count)\n")
+	fmt.Fprintf(w, "  (* marks the base level, the one L0 drains into; L0/n shows the sublevel count)\n")
 
 	// L0 by sublevel. Files in one sublevel never overlap, so a sublevel with
 	// many files spanning most of the key range is a tiled layer, while one with
@@ -101,7 +109,7 @@ func WriteCompactionStats(w io.Writer, cs CompactionStats, elapsed time.Duration
 			fmt.Fprintf(w, "  %-10s%8d%10.2f%9.0f%%%12.1f\n",
 				fmt.Sprintf("sub %d", sl.Sublevel), sl.Files, gb(sl.Size), 100*sl.Span, avg)
 		}
-		fmt.Fprintf(w, "  (span = share of L0's key range covered; ~100%% means the sublevel tiles it)\n")
+		fmt.Fprintf(w, "  (span is the share of L0's key range covered; ~100%% means the sublevel tiles it)\n")
 	}
 
 	fmt.Fprintf(w, "\n  flushes: %d", cs.FlushCount)
@@ -114,7 +122,7 @@ func WriteCompactionStats(w io.Writer, cs CompactionStats, elapsed time.Duration
 		mb := func(v uint64) float64 { return float64(v) / float64(cs.L0Drains) / (1 << 20) }
 		fmt.Fprintf(w, "    L0->Lbase: %d, %.2f sublevels each\n",
 			cs.L0Drains, float64(cs.L0DrainSublevels)/float64(cs.L0Drains))
-		fmt.Fprintf(w, "      inputs:  %.1f MB of L0 + %.1f MB of Lbase = %.1f MB\n",
+		fmt.Fprintf(w, "      inputs:  %.1f MB of L0 plus %.1f MB of Lbase, %.1f MB in all\n",
 			mb(cs.L0DrainBytes), mb(cs.LbaseDrainBytes), mb(cs.L0DrainBytes+cs.LbaseDrainBytes))
 		fmt.Fprintf(w, "      write amp %.3f, ie %.1f bytes of L0 pushed down per byte of Lbase disturbed\n",
 			cs.DrainWriteAmp(), cs.DrainAmortisation())

@@ -1241,6 +1241,7 @@ func (bc *BlockChain) printCompactionStats() {
 	if bc.snapSyncStart.IsZero() {
 		// SnapSyncStart never ran, so there is no window to report rates
 		// against. Skip rather than divide by the process's whole uptime.
+		log.Warn("Skipping snap sync compaction breakdown", "reason", "sync start time not recorded")
 		return
 	}
 	// The database handed to the chain is wrapped around the key-value store to
@@ -1250,9 +1251,26 @@ func (bc *BlockChain) printCompactionStats() {
 	if unwrapper, ok := store.(interface{ UnwrapKeyValueStore() ethdb.KeyValueStore }); ok {
 		store = unwrapper.UnwrapKeyValueStore()
 	}
-	if printer, ok := store.(interface{ PrintCompactionStats(time.Duration) }); ok {
-		printer.PrintCompactionStats(time.Since(bc.snapSyncStart))
+	writer, ok := store.(interface {
+		WriteCompactionStats(io.Writer, time.Duration)
+	})
+	if !ok {
+		// Every backend but pebble v2, including the legacy v1 format. Say so
+		// rather than going quiet, since the caller asked for the breakdown and
+		// silence is indistinguishable from the report having been missed.
+		log.Warn("Skipping snap sync compaction breakdown", "reason", "unsupported database", "type", fmt.Sprintf("%T", store))
+		return
 	}
+	// Rendered into a buffer and handed to the logger as one multi-line record
+	// rather than written to a stream directly. Writing to stdout or stderr
+	// would land outside whatever --log.file points at and would interleave raw
+	// text into a --log.format=json stream; the terminal handler prefixes only
+	// the first line of a message, so the table's alignment survives the trip.
+	elapsed := time.Since(bc.snapSyncStart)
+	var report strings.Builder
+	writer.WriteCompactionStats(&report, elapsed)
+	log.Info(fmt.Sprintf("Snap sync compaction breakdown, %v\n%s",
+		common.PrettyDuration(elapsed), strings.Trim(report.String(), "\n")))
 }
 
 // Reset purges the entire blockchain, restoring it to its genesis state.
