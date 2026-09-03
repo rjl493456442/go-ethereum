@@ -1228,6 +1228,11 @@ func (bc *BlockChain) SnapSyncComplete(hash common.Hash, isSnapV2 bool) error {
 	return nil
 }
 
+// maxDatabaseUnwraps bounds the layers of database wrapping peeled off in
+// search of the backend, so a wrapper that returns itself cannot spin forever.
+// Two layers is what a node has today.
+const maxDatabaseUnwraps = 8
+
 // printCompactionStats dumps the key-value store's compaction breakdown once
 // snap sync has finished, covering the whole sync: it is the write-heavy phase
 // the database is tuned for, and the counters are cumulative from the moment
@@ -1244,11 +1249,19 @@ func (bc *BlockChain) printCompactionStats() {
 		log.Warn("Skipping snap sync compaction breakdown", "reason", "sync start time not recorded")
 		return
 	}
-	// The database handed to the chain is wrapped around the key-value store to
-	// add the freezer, and the wrapper only carries the ethdb interfaces, so
-	// unwrap before asking.
-	var store any = bc.db
-	if unwrapper, ok := store.(interface{ UnwrapKeyValueStore() ethdb.KeyValueStore }); ok {
+	// The store the node opened reaches the chain under several layers of
+	// wrapping — close tracking on the outside, the freezer within — and each
+	// layer embeds the one below as an interface, which hides everything the
+	// backend offers beyond it. Peel them off until one declines to unwrap,
+	// which is the backend itself.
+	store := any(bc.db)
+	for range maxDatabaseUnwraps {
+		unwrapper, ok := store.(interface {
+			UnwrapKeyValueStore() ethdb.KeyValueStore
+		})
+		if !ok {
+			break
+		}
 		store = unwrapper.UnwrapKeyValueStore()
 	}
 	writer, ok := store.(interface {

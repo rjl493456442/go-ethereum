@@ -772,6 +772,15 @@ type closeTrackingDB struct {
 	n *Node
 }
 
+// UnwrapKeyValueStore returns the database this wrapper tracks. Embedding it as
+// an interface hides whatever the store underneath offers beyond the ethdb
+// interfaces, so callers wanting a backend-specific capability have no way to
+// ask for it; this hands them the value to assert against, or to unwrap once
+// more. Nothing about the database's own behaviour goes through here.
+func (db *closeTrackingDB) UnwrapKeyValueStore() ethdb.KeyValueStore {
+	return db.Database
+}
+
 func (db *closeTrackingDB) Close() error {
 	err := db.Database.Close()
 	if err == nil {
