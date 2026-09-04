@@ -271,13 +271,25 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 			{FilterPolicy: bloom.FilterPolicy(10)},
 
 			// Pebble doesn't use the Bloom filter at level6 for read efficiency.
-			{},
+			{FilterPolicy: pebble.NoFilterPolicy},
 		},
 		// Per-level target file sizes (replaces LevelOptions.TargetFileSize in v2).
+		//
+		// The L0 target is deliberately larger than the ladder below it. A flush
+		// is split into files of this size, and every file costs an fsync on
+		// the order of 20-30ms whatever its size, so at the 2MB pebble defaults
+		// to a memtable flush of several hundred MB became hundreds of files and
+		// took ~10s. During a sustained write burst that is slower than the
+		// memtables fill, the queue of memtables awaiting flush hits its limit
+		// and writes stall for most of the burst. At 16MB the same flush is a
+		// few dozen files and ~2.5s, and the memtable-queue stalls all but
+		// disappear.
+		//
+		// FlushSplitBytes is left at pebble's default of twice this value.
 		TargetFileSizes: [7]int64{
-			2 * 1024 * 1024,
-			4 * 1024 * 1024,
-			8 * 1024 * 1024,
+			16 * 1024 * 1024, // L0
+			4 * 1024 * 1024,  // LBase
+			8 * 1024 * 1024,  // LBase+1
 			16 * 1024 * 1024,
 			32 * 1024 * 1024,
 			64 * 1024 * 1024,
@@ -306,10 +318,6 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 		// number of sub-levels at the L0. For each sub-level, it contains several
 		// L0 files which are non-overlapping with each other, typically produced
 		// by a single memory-table flush.
-		//
-		// The default value in Pebble is 4, which is a bit too large to have
-		// the compaction debt as around 10GB. By reducing it to 2, the compaction
-		// debt will be less than 1GB, but with more frequent compactions scheduled.
 		L0CompactionThreshold: 2,
 
 		// FormatFlushableIngest is the minimum FormatMajorVersion supported by
