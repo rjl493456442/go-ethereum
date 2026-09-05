@@ -19,6 +19,8 @@
 package downloader
 
 import (
+	"sync/atomic"
+
 	"github.com/ethereum/go-ethereum/metrics"
 )
 
@@ -44,7 +46,69 @@ var (
 
 	throttleCounter = metrics.NewRegisteredCounter("eth/downloader/throttle", nil)
 
+	// Per data type scheduling metrics, reported by the concurrent fetcher after
+	// every assignment round. They answer whether the retrieval is bound by the
+	// remote peers (all busy, none idle), by the local result cache (throttled)
+	// or by the header supply (starved).
+	bodyFetchStats    = newFetchStats("bodies")
+	receiptFetchStats = newFetchStats("receipts")
+	balFetchStats     = newFetchStats("bals")
+
+	// rttTargetGauge is the round trip time (in milliseconds) requests are
+	// currently sized for, derived from the median of the peer estimates.
+	rttTargetGauge = metrics.NewRegisteredGauge("eth/downloader/rtt/target", nil)
+
+	// Import side metrics, reported by the goroutine draining the result cache.
+	// The wait timer accumulates the time spent blocked on the network, the
+	// insert timer the time spent writing into the local chain.
+	importWaitTimer      = metrics.NewRegisteredTimer("eth/downloader/import/wait", nil)
+	importInsertTimer    = metrics.NewRegisteredTimer("eth/downloader/import/insert", nil)
+	importBatchHistogram = metrics.NewRegisteredHistogram("eth/downloader/import/batch", nil, metrics.NewExpDecaySample(1028, 0.015))
+
+	// Result cache metrics, reported every time a batch is drained.
+	queueThrottleGauge = metrics.NewRegisteredGauge("eth/downloader/queue/throttle/threshold", nil)
+	queueItemSizeGauge = metrics.NewRegisteredGauge("eth/downloader/queue/itemsize", nil)
+
 	// snapPeerSkipMeter tracks snap peers skipped by the state syncer because
 	// they negotiated a version below the one the syncer requires.
 	snapPeerSkipMeter = metrics.NewRegisteredMeter("eth/downloader/snap/peerskip", nil)
 )
+
+// fetchStats groups the collectors the concurrent fetcher reports into for a
+// single data type (bodies, receipts, access lists), along with a snapshot of
+// the last assignment round for the progress log. The snapshot is maintained
+// independently of the metrics system as that might be disabled.
+type fetchStats struct {
+	inflight  atomic.Int32  // Requests in flight after the last assignment round
+	idle      atomic.Int32  // Peers left without a request after the last assignment round
+	throttles atomic.Uint64 // Cumulative number of rounds cut short by result cache throttling
+
+	idlePeers    *metrics.Gauge    // Peers left without a request after an assignment round
+	busyPeers    *metrics.Gauge    // Peers with a request in flight
+	stalePeers   *metrics.Gauge    // Peers with a timed out but not yet answered request
+	slashedPeers *metrics.Gauge    // Peers with a capacity slashed to zero by a failed delivery
+	capacity     *metrics.Gauge    // Estimated aggregate items per second across all peers
+	starved      *metrics.Meter    // Assignment rounds cut short because nothing was pending
+	throttled    *metrics.Meter    // Assignment rounds cut short by result cache throttling
+	headExpiries *metrics.Meter    // Requests expired early for holding the result cache head
+	items        metrics.Histogram // Items contained in each response
+	bytes        *metrics.Meter    // Payload bytes contained in each response
+}
+
+// newFetchStats registers the scheduling collectors for a data type under
+// eth/downloader/<kind>/...
+func newFetchStats(kind string) *fetchStats {
+	prefix := "eth/downloader/" + kind
+	return &fetchStats{
+		idlePeers:    metrics.NewRegisteredGauge(prefix+"/peers/idle", nil),
+		busyPeers:    metrics.NewRegisteredGauge(prefix+"/peers/busy", nil),
+		stalePeers:   metrics.NewRegisteredGauge(prefix+"/peers/stale", nil),
+		slashedPeers: metrics.NewRegisteredGauge(prefix+"/peers/slashed", nil),
+		capacity:     metrics.NewRegisteredGauge(prefix+"/capacity", nil),
+		starved:      metrics.NewRegisteredMeter(prefix+"/starved", nil),
+		throttled:    metrics.NewRegisteredMeter(prefix+"/throttled", nil),
+		headExpiries: metrics.NewRegisteredMeter(prefix+"/headexpire", nil),
+		items:        metrics.NewRegisteredHistogram(prefix+"/items", nil, metrics.NewExpDecaySample(1028, 0.015)),
+		bytes:        metrics.NewRegisteredMeter(prefix+"/bytes", nil),
+	}
+}

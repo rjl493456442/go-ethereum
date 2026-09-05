@@ -36,7 +36,6 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/triedb"
 )
 
@@ -47,7 +46,7 @@ var (
 	MaxBALFetch     = 128 // Number of block access lists to allow fetching per request
 
 	maxQueuedHeaders           = 32 * 1024                        // [eth/62] Maximum number of headers to queue for import (DOS protection)
-	maxHeadersProcess          = 2048                             // Number of header download results to import at once into the chain
+	maxHeadersProcess          = 20480                            // Number of header download results to import at once into the chain
 	maxResultsProcess          = 2048                             // Number of content download results to import at once into the chain
 	fullMaxForkAncestry uint64 = params.FullImmutabilityThreshold // Maximum chain reorganisation (locally redeclared so tests can reduce it)
 
@@ -165,6 +164,7 @@ type Downloader struct {
 	syncStartBlock uint64    // Head snap block when Geth was started
 	syncStartTime  time.Time // Time instance when chain sync started
 	syncLogTime    time.Time // Time instance when status was last reported
+	syncLogStalls  uint64    // Fetcher rounds throttled by the result cache when status was last reported
 }
 
 // BlockChain encapsulates functions required to sync a (full or snap) blockchain.
@@ -224,7 +224,7 @@ type BlockChain interface {
 	// into the local chain. Blocks older than the specified `ancientLimit`
 	// are stored directly in the ancient store, while newer blocks are stored
 	// in the live key-value store.
-	InsertReceiptChain(types.Blocks, []rlp.RawValue, uint64) (int, error)
+	InsertReceiptChain([]*types.EncodedBlock, uint64) (int, error)
 
 	// Snapshots returns the blockchain snapshot tree to paused it during sync.
 	Snapshots() *snapshot.Tree
@@ -928,7 +928,11 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 	)
 	blocks := make([]*types.Block, len(results))
 	for i, result := range results {
-		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.body())
+		block, err := result.block()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidChain, err)
+		}
+		blocks[i] = block
 
 		// Attach the access list if it was retrieved from the network. The
 		// content hash was already verified against the header on delivery;
@@ -940,6 +944,8 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 	// Downloaded blocks are always regarded as trusted after the
 	// transition. Because the downloaded chain is guided by the
 	// consensus-layer.
+	defer importInsertTimer.UpdateSince(time.Now())
+
 	if index, err := d.blockchain.InsertChain(blocks); err != nil {
 		if index < len(results) {
 			log.Debug("Downloaded item processing failed", "number", results[index].Header.Number, "hash", results[index].Header.Hash(), "err", err)
@@ -1135,19 +1141,17 @@ func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *state
 		"firstnum", first.Number, "firsthash", first.Hash(),
 		"lastnum", last.Number, "lasthash", last.Hash(),
 	)
-	blocks := make([]*types.Block, len(results))
-	receipts := make([]rlp.RawValue, len(results))
+	blocks := make([]*types.EncodedBlock, len(results))
 	for i, result := range results {
-		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.body())
-		receipts[i] = result.Receipts
-
-		// Attach the access list if it was retrieved from the network, so it
-		// gets persisted alongside the block data.
-		if list := result.BAL(); list != nil {
-			blocks[i] = blocks[i].WithAccessListUnsafe(list)
+		block, err := result.encoded()
+		if err != nil {
+			return err
 		}
+		blocks[i] = block
 	}
-	if index, err := d.blockchain.InsertReceiptChain(blocks, receipts, d.ancientLimit); err != nil {
+	defer importInsertTimer.UpdateSince(time.Now())
+
+	if index, err := d.blockchain.InsertReceiptChain(blocks, d.ancientLimit); err != nil {
 		log.Debug("Downloaded item processing failed", "number", results[index].Header.Number, "hash", results[index].Header.Hash(), "err", err)
 		return fmt.Errorf("%w: %v", errInvalidChain, err)
 	}
@@ -1155,17 +1159,17 @@ func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *state
 }
 
 func (d *Downloader) commitPivotBlock(result *fetchResult) error {
-	block := types.NewBlockWithHeader(result.Header).WithBody(result.body())
-	if list := result.BAL(); list != nil {
-		block = block.WithAccessListUnsafe(list)
-	}
-	log.Debug("Committing snap sync pivot as new head", "number", block.Number(), "hash", block.Hash())
-
-	// Commit the pivot block as the new head, will require full sync from here on
-	if _, err := d.blockchain.InsertReceiptChain([]*types.Block{block}, []rlp.RawValue{result.Receipts}, d.ancientLimit); err != nil {
+	block, err := result.encoded()
+	if err != nil {
 		return err
 	}
-	if err := d.blockchain.SnapSyncComplete(block.Hash(), d.snapSyncer.Version() == snap.SNAP2); err != nil {
+	log.Debug("Committing snap sync pivot as new head", "number", block.Header.Number, "hash", block.Header.Hash())
+
+	// Commit the pivot block as the new head, will require full sync from here on
+	if _, err := d.blockchain.InsertReceiptChain([]*types.EncodedBlock{block}, d.ancientLimit); err != nil {
+		return err
+	}
+	if err := d.blockchain.SnapSyncComplete(block.Header.Hash(), d.snapSyncer.Version() == snap.SNAP2); err != nil {
 		return err
 	}
 	d.pivotLock.Lock()
@@ -1176,7 +1180,7 @@ func (d *Downloader) commitPivotBlock(result *fetchResult) error {
 	// the mission of the snap sync is regarded as accomplished and the mode
 	// is flipped to full-sync.
 	if d.moder.disableSnap() {
-		log.Info("Disabled snap-sync after pivot commitment", "number", block.Number(), "hash", block.Hash())
+		log.Info("Disabled snap-sync after pivot commitment", "number", block.Header.Number, "hash", block.Header.Hash())
 	}
 	return nil
 }
@@ -1325,6 +1329,17 @@ func (d *Downloader) reportSnapSyncProgress(force bool) {
 		bodies   = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(block.Number.Uint64()), common.StorageSize(bodyBytes).TerminalString())
 		receipts = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(block.Number.Uint64()), common.StorageSize(receiptBytes).TerminalString())
 	)
-	log.Info("Syncing: chain download in progress", "synced", progress, "chain", syncedBytes, "headers", headers, "bodies", bodies, "receipts", receipts, "eta", common.PrettyDuration(eta))
+	// Report the retrieval pipeline state too: requests in flight and peers
+	// left idle tell whether the download is bound by the remote peers or by
+	// the local result cache (throttled rounds) and importer.
+	var (
+		inflight = fmt.Sprintf("%d+%d", bodyFetchStats.inflight.Load(), receiptFetchStats.inflight.Load())
+		idle     = bodyFetchStats.idle.Load()
+		stalls   = bodyFetchStats.throttles.Load() + receiptFetchStats.throttles.Load()
+	)
+	throttled := stalls - d.syncLogStalls
+	d.syncLogStalls = stalls
+
+	log.Info("Syncing: chain download in progress", "synced", progress, "chain", syncedBytes, "headers", headers, "bodies", bodies, "receipts", receipts, "inflight", inflight, "idle", idle, "throttled", throttled, "eta", common.PrettyDuration(eta))
 	d.syncLogTime = time.Now()
 }

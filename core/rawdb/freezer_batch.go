@@ -19,6 +19,8 @@ package rawdb
 import (
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/rlp"
@@ -29,6 +31,11 @@ const (
 	// This is the maximum amount of data that will be buffered in memory
 	// for a single freezer table batch.
 	freezerBatchBufferLimit = 2 * 1024 * 1024
+
+	// freezerBatchPendingLimit is the maximum amount of uncompressed data that
+	// is gathered in a compressed table batch before being compressed (in
+	// parallel) and appended to the buffered output.
+	freezerBatchPendingLimit = 32 * 1024 * 1024
 
 	// freezerTableFlushThreshold defines the threshold for triggering a freezer
 	// table sync operation. If the number of accumulated uncommitted items exceeds
@@ -78,10 +85,10 @@ func (batch *freezerBatch) commit() (item uint64, writeSize int64, err error) {
 	// Check that count agrees on all batches.
 	item = uint64(math.MaxUint64)
 	for name, tb := range batch.tables {
-		if item < math.MaxUint64 && tb.curItem != item {
-			return 0, 0, fmt.Errorf("table %s is at item %d, want %d", name, tb.curItem, item)
+		if item < math.MaxUint64 && tb.nextItem != item {
+			return 0, 0, fmt.Errorf("table %s is at item %d, want %d", name, tb.nextItem, item)
 		}
-		item = tb.curItem
+		item = tb.nextItem
 	}
 
 	// Commit all table batches.
@@ -98,20 +105,25 @@ func (batch *freezerBatch) commit() (item uint64, writeSize int64, err error) {
 type freezerTableBatch struct {
 	t *freezerTable
 
-	sb          *snappyBuffer
 	encBuffer   writeBuffer
 	dataBuffer  []byte
 	indexBuffer []byte
-	curItem     uint64 // expected index of next append
+	curItem     uint64 // expected index of next item to be appended to the buffers
+	nextItem    uint64 // expected index of next item to be added to the batch
 	totalBytes  int64  // counts written bytes since reset
+
+	// Items of compressed tables are not appended right away: they are gathered
+	// and compressed in parallel once enough of them piled up, or when the batch
+	// is flushed. Compression dominates the cost of writing chain data and would
+	// otherwise serialize the writer on a single core.
+	compress     bool
+	pendingData  []byte // Concatenated uncompressed items awaiting compression
+	pendingSizes []int  // Sizes of the pending items
 }
 
 // newBatch creates a new batch for the freezer table.
 func (t *freezerTable) newBatch() *freezerTableBatch {
-	batch := &freezerTableBatch{t: t}
-	if !t.config.noSnappy {
-		batch.sb = new(snappyBuffer)
-	}
+	batch := &freezerTableBatch{t: t, compress: !t.config.noSnappy}
 	batch.reset()
 	return batch
 }
@@ -120,7 +132,10 @@ func (t *freezerTable) newBatch() *freezerTableBatch {
 func (batch *freezerTableBatch) reset() {
 	batch.dataBuffer = batch.dataBuffer[:0]
 	batch.indexBuffer = batch.indexBuffer[:0]
+	batch.pendingData = batch.pendingData[:0]
+	batch.pendingSizes = batch.pendingSizes[:0]
 	batch.curItem = batch.t.items.Load()
+	batch.nextItem = batch.curItem
 	batch.totalBytes = 0
 }
 
@@ -128,35 +143,100 @@ func (batch *freezerTableBatch) reset() {
 // precautionary parameter to ensure data correctness, but the table will reject already
 // existing data.
 func (batch *freezerTableBatch) Append(item uint64, data interface{}) error {
-	if item != batch.curItem {
-		return fmt.Errorf("%w: have %d want %d", errOutOrderInsertion, item, batch.curItem)
+	if item != batch.nextItem {
+		return fmt.Errorf("%w: have %d want %d", errOutOrderInsertion, item, batch.nextItem)
 	}
+	batch.nextItem++
 
 	// Encode the item.
 	batch.encBuffer.Reset()
 	if err := rlp.Encode(&batch.encBuffer, data); err != nil {
 		return err
 	}
-	encItem := batch.encBuffer.data
-	if batch.sb != nil {
-		encItem = batch.sb.compress(encItem)
-	}
-	return batch.appendItem(encItem)
+	return batch.add(batch.encBuffer.data)
 }
 
 // AppendRaw injects a binary blob at the end of the freezer table. The item number is a
 // precautionary parameter to ensure data correctness, but the table will reject already
 // existing data.
 func (batch *freezerTableBatch) AppendRaw(item uint64, blob []byte) error {
-	if item != batch.curItem {
-		return fmt.Errorf("%w: have %d want %d", errOutOrderInsertion, item, batch.curItem)
+	if item != batch.nextItem {
+		return fmt.Errorf("%w: have %d want %d", errOutOrderInsertion, item, batch.nextItem)
 	}
+	batch.nextItem++
 
-	encItem := blob
-	if batch.sb != nil {
-		encItem = batch.sb.compress(blob)
+	return batch.add(blob)
+}
+
+// add appends an encoded item to the output buffers of an uncompressed table,
+// or gathers it for compression otherwise. The item is copied, callers are
+// free to reuse the buffer.
+func (batch *freezerTableBatch) add(data []byte) error {
+	if !batch.compress {
+		return batch.appendItem(data)
 	}
-	return batch.appendItem(encItem)
+	batch.pendingData = append(batch.pendingData, data...)
+	batch.pendingSizes = append(batch.pendingSizes, len(data))
+
+	if len(batch.pendingData) > freezerBatchPendingLimit {
+		return batch.compressPending()
+	}
+	return nil
+}
+
+// compressPending compresses the gathered items in parallel and appends them
+// to the output buffers in their original order.
+func (batch *freezerTableBatch) compressPending() error {
+	if len(batch.pendingSizes) == 0 {
+		return nil
+	}
+	// Detach the pending items, appending them may commit the output buffers
+	// which must not pick up the pending items again
+	var (
+		data  = batch.pendingData
+		sizes = batch.pendingSizes
+	)
+	batch.pendingData = batch.pendingData[:0]
+	batch.pendingSizes = batch.pendingSizes[:0]
+
+	// Split the items into contiguous chunks and compress each on its own
+	// goroutine, retaining the output per item to append them in order
+	var (
+		workers = min(len(sizes), runtime.NumCPU())
+		chunk   = (len(sizes) + workers - 1) / workers
+		outputs = make([][][]byte, workers)
+		offsets = make([]int, len(sizes)+1)
+		pend    sync.WaitGroup
+	)
+	for i, size := range sizes {
+		offsets[i+1] = offsets[i] + size
+	}
+	for w := 0; w < workers; w++ {
+		start, end := w*chunk, min((w+1)*chunk, len(sizes))
+		if start >= end {
+			break
+		}
+		pend.Add(1)
+		go func(w, start, end int) {
+			defer pend.Done()
+
+			compressed := make([][]byte, 0, end-start)
+			for i := start; i < end; i++ {
+				compressed = append(compressed, snappy.Encode(nil, data[offsets[i]:offsets[i+1]]))
+			}
+			outputs[w] = compressed
+		}(w, start, end)
+	}
+	pend.Wait()
+
+	for _, compressed := range outputs {
+		for _, item := range compressed {
+			if err := batch.appendItem(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (batch *freezerTableBatch) appendItem(data []byte) error {
@@ -165,7 +245,7 @@ func (batch *freezerTableBatch) appendItem(data []byte) error {
 	itemOffset := batch.t.headBytes + int64(len(batch.dataBuffer))
 	if itemOffset+itemSize > int64(batch.t.maxFileSize) {
 		// It doesn't fit, go to next file first.
-		if err := batch.commit(); err != nil {
+		if err := batch.write(); err != nil {
 			return err
 		}
 		if err := batch.t.advanceHead(); err != nil {
@@ -189,15 +269,24 @@ func (batch *freezerTableBatch) appendItem(data []byte) error {
 // maybeCommit writes the buffered data if the buffer is full enough.
 func (batch *freezerTableBatch) maybeCommit() error {
 	if len(batch.dataBuffer) > freezerBatchBufferLimit {
-		return batch.commit()
+		return batch.write()
 	}
 	return nil
 }
 
-// commit writes the batched items to the backing freezerTable. Note index
+// commit compresses and appends any pending items and writes all batched items
+// to the backing freezerTable.
+func (batch *freezerTableBatch) commit() error {
+	if err := batch.compressPending(); err != nil {
+		return err
+	}
+	return batch.write()
+}
+
+// write writes the buffered items to the backing freezerTable. Note index
 // file isn't fsync'd after the file write, the recent write can be lost
 // after the power failure.
-func (batch *freezerTableBatch) commit() error {
+func (batch *freezerTableBatch) write() error {
 	_, err := batch.t.head.Write(batch.dataBuffer)
 	if err != nil {
 		return err
@@ -231,30 +320,7 @@ func (batch *freezerTableBatch) commit() error {
 	return nil
 }
 
-// snappyBuffer writes snappy in block format, and can be reused. It is
-// reset when WriteTo is called.
-type snappyBuffer struct {
-	dst []byte
-}
-
 // compress snappy-compresses the data.
-func (s *snappyBuffer) compress(data []byte) []byte {
-	// The snappy library does not care what the capacity of the buffer is,
-	// but only checks the length. If the length is too small, it will
-	// allocate a brand new buffer.
-	// To avoid that, we check the required size here, and grow the size of the
-	// buffer to utilize the full capacity.
-	if n := snappy.MaxEncodedLen(len(data)); len(s.dst) < n {
-		if cap(s.dst) < n {
-			s.dst = make([]byte, n)
-		}
-		s.dst = s.dst[:n]
-	}
-
-	s.dst = snappy.Encode(s.dst, data)
-	return s.dst
-}
-
 // writeBuffer implements io.Writer for a byte slice.
 type writeBuffer struct {
 	data []byte

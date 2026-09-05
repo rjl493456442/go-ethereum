@@ -434,7 +434,7 @@ func TestAncientStorage(t *testing.T) {
 	}
 
 	// Write and verify the header in the database
-	WriteAncientBlocks(db, []*types.Block{block}, types.EncodeBlockReceiptLists([]types.Receipts{nil}))
+	WriteAncientBlocks(db, types.EncodeBlocks([]*types.Block{block}, types.EncodeBlockReceiptLists([]types.Receipts{nil})))
 
 	if blob := ReadHeaderRLP(db, hash, number); len(blob) == 0 {
 		t.Fatalf("no header returned")
@@ -564,7 +564,7 @@ func BenchmarkWriteAncientBlocks(b *testing.B) {
 
 		blocks := allBlocks[i : i+length]
 		receipts := batchReceipts[:length]
-		writeSize, err := WriteAncientBlocks(db, blocks, types.EncodeBlockReceiptLists(receipts))
+		writeSize, err := WriteAncientBlocks(db, types.EncodeBlocks(blocks, types.EncodeBlockReceiptLists(receipts)))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -869,7 +869,7 @@ func TestHeadersRLPStorage(t *testing.T) {
 	}
 	receipts := make([]types.Receipts, 100)
 	// Write first half to ancients
-	WriteAncientBlocks(db, chain[:50], types.EncodeBlockReceiptLists(receipts[:50]))
+	WriteAncientBlocks(db, types.EncodeBlocks(chain[:50], types.EncodeBlockReceiptLists(receipts[:50])))
 	// Write second half to db
 	for i := 50; i < 100; i++ {
 		WriteCanonicalHash(db, chain[i].Hash(), chain[i].NumberU64())
@@ -948,7 +948,7 @@ func TestWriteAncientBlocksNilBAL(t *testing.T) {
 	if block.AccessList() != nil {
 		t.Fatalf("test precondition: block must have nil access list")
 	}
-	if _, err := WriteAncientBlocks(db, []*types.Block{block}, types.EncodeBlockReceiptLists([]types.Receipts{nil})); err != nil {
+	if _, err := WriteAncientBlocks(db, types.EncodeBlocks([]*types.Block{block}, types.EncodeBlockReceiptLists([]types.Receipts{nil}))); err != nil {
 		t.Fatalf("WriteAncientBlocks failed: %v", err)
 	}
 	hash, number := block.Hash(), block.NumberU64()

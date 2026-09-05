@@ -226,6 +226,13 @@ type Trackers struct {
 	// run every now and again.
 	tuned time.Time
 
+	// MinRoundTrip is the floor applied to the round trip estimate, and thus
+	// to the request sizing and timeouts derived from it. It defaults to a
+	// generous value suitable for large serving side lookups; users whose
+	// requests are bounded by the reply size (and thus cheap to serve) may
+	// lower it to have timeouts track the real network latency.
+	MinRoundTrip time.Duration
+
 	// The fields below can be used to override certain default values. Their
 	// purpose is to allow quicker tests. Don't use them in production.
 	OverrideTTLLimit time.Duration
@@ -241,6 +248,7 @@ func NewTrackers(log log.Logger) *Trackers {
 		roundtrip:        rttMaxEstimate,
 		confidence:       1,
 		tuned:            time.Now(),
+		MinRoundTrip:     rttMinEstimate,
 		OverrideTTLLimit: ttlLimit,
 		log:              log,
 	}
@@ -306,8 +314,8 @@ func (t *Trackers) medianRoundTrip() time.Duration {
 		median = time.Duration(rtts[idx])
 	}
 	// Restrict the RTT into some QoS defaults, irrelevant of true RTT
-	if median < rttMinEstimate {
-		median = rttMinEstimate
+	if median < t.MinRoundTrip {
+		median = t.MinRoundTrip
 	}
 	if median > rttMaxEstimate {
 		median = rttMaxEstimate

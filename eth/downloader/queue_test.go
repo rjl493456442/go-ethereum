@@ -326,7 +326,7 @@ func TestBlockAccessLists(t *testing.T) {
 	if got, exp := req.Headers[0].Number.Uint64(), uint64(6); got != exp {
 		t.Fatalf("expected header %d, got %d", exp, got)
 	}
-	accepted, err := q.DeliverBALs(peer.id, []rlp.RawValue{enc, rlp.EmptyString}, []common.Hash{balHash, {}})
+	accepted, err := q.DeliverBALs(req.ID, []rlp.RawValue{enc, rlp.EmptyString}, []common.Hash{balHash, {}})
 	if accepted != 1 || err != nil {
 		t.Fatalf("unexpected delivery result, accepted %d, err %v", accepted, err)
 	}
@@ -348,7 +348,7 @@ func TestBlockAccessLists(t *testing.T) {
 		t.Fatal("expected access list fetch task")
 	}
 	badEnc, _ := rlp.EncodeToBytes(&bal.BlockAccessList{{Address: common.Address{0x02}}})
-	accepted, err = q.DeliverBALs(peer2.id, []rlp.RawValue{badEnc}, []common.Hash{crypto.Keccak256Hash(badEnc)})
+	accepted, err = q.DeliverBALs(req.ID, []rlp.RawValue{badEnc}, []common.Hash{crypto.Keccak256Hash(badEnc)})
 	if accepted != 0 || !errors.Is(err, errInvalidBAL) {
 		t.Fatalf("unexpected delivery result, accepted %d, err %v", accepted, err)
 	}
@@ -461,7 +461,7 @@ func XTestDelivery(t *testing.T) {
 				}
 
 				time.Sleep(100 * time.Millisecond)
-				if _, err := q.DeliverBodies(peer.id, hashes, bodies); err != nil {
+				if _, err := q.DeliverBodies(f.ID, hashes, bodies); err != nil {
 					fmt.Printf("delivered %d bodies %v\n", len(txset), err)
 				}
 			} else {
@@ -487,7 +487,7 @@ func XTestDelivery(t *testing.T) {
 				for i, receipt := range rcs {
 					hashes[i] = types.DeriveSha(receipt, hasher)
 				}
-				_, err := q.DeliverReceipts(peer.id, types.EncodeBlockReceiptLists(rcs), hashes)
+				_, err := q.DeliverReceipts(f.ID, types.EncodeBlockReceiptLists(rcs), hashes)
 				if err != nil {
 					fmt.Printf("delivered %d receipts %v\n", len(rcs), err)
 				}
@@ -591,4 +591,65 @@ func (n *network) headers(from int) []*types.Header {
 		}
 	}
 	return hdrs
+}
+
+// Tests that retrieval requests are capped to what fits into a remote reply,
+// given the running estimate of the item size, and left alone before any
+// estimate is available.
+func TestRequestLimit(t *testing.T) {
+	tests := []struct {
+		count int
+		size  common.StorageSize
+		want  int
+	}{
+		{count: 128, size: 0, want: 128},             // no estimate yet, request untouched
+		{count: 128, size: 1024, want: 128},          // tiny items, msgrate count wins
+		{count: 128, size: 100 * 1024, want: 31},     // 1.5 * 2MB / 100KB = 30.72 -> 31
+		{count: 128, size: 300 * 1024, want: 11},     // 1.5 * 2MB / 300KB = 10.24 -> 11
+		{count: 256, size: 300 * 1024, want: 11},     // receipt count, same cap
+		{count: 128, size: 4 * 1024 * 1024, want: 2}, // huge items, never below the minimum
+		{count: 1, size: 300 * 1024, want: 1},        // small count is left alone
+		{count: 8, size: 100 * 1024, want: 8},        // count below cap is left alone
+	}
+	for i, tt := range tests {
+		if have := requestLimit(tt.count, tt.size); have != tt.want {
+			t.Errorf("test %d: request limit mismatch: have %d, want %d", i, have, tt.want)
+		}
+	}
+}
+
+// Tests that the item size estimate takes the first sample as is and then
+// moves towards later samples with the configured weight.
+func TestUpdateSizeEstimate(t *testing.T) {
+	var estimate common.StorageSize
+	if estimate = updateSizeEstimate(estimate, 1000); estimate != 1000 {
+		t.Fatalf("first sample not adopted: have %v, want 1000", estimate)
+	}
+	if estimate = updateSizeEstimate(estimate, 2000); estimate != 1100 {
+		t.Fatalf("estimate mismatch: have %v, want 1100", estimate)
+	}
+}
+
+// Tests that the number of requests pipelined towards a peer covers its
+// capacity within the target round trip, bounded by the per-peer cap.
+func TestRequestSlots(t *testing.T) {
+	tests := []struct {
+		capacity int
+		limit    int
+		want     int
+	}{
+		{capacity: 10, limit: 17, want: 1},   // slow peer, a single request covers it
+		{capacity: 17, limit: 17, want: 1},   // exactly one request worth
+		{capacity: 18, limit: 17, want: 2},   // slightly above, rounded up to probe
+		{capacity: 30, limit: 17, want: 2},   // two requests worth
+		{capacity: 40, limit: 17, want: 3},   // rounded up to three
+		{capacity: 128, limit: 17, want: 4},  // capped at maxRequestsPerPeer
+		{capacity: 128, limit: 128, want: 1}, // no size estimate, request untouched
+		{capacity: 5, limit: 0, want: 1},     // degenerate limit
+	}
+	for i, tt := range tests {
+		if have := requestSlots(tt.capacity, tt.limit); have != tt.want {
+			t.Errorf("test %d: slot count mismatch: have %d, want %d", i, have, tt.want)
+		}
+	}
 }

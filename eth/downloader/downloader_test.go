@@ -149,6 +149,7 @@ type downloadTesterPeer struct {
 	dl             *downloadTester
 	withholdBodies map[common.Hash]struct{}
 	corruptBodies  bool     // if set, the peer serves incorrect blocks
+	dropRequests   bool     // if set, the peer never answers body and receipt requests
 	balGate        *balGate // if set, body deliveries wait for the access lists
 	id             string
 	chain          *core.BlockChain
@@ -294,6 +295,9 @@ func (dlp *downloadTesterPeer) RequestHeadersByNumber(origin uint64, amount int,
 // peer in the download tester. The returned function can be used to retrieve
 // batches of block bodies from the particularly requested peer.
 func (dlp *downloadTesterPeer) RequestBodies(hashes []common.Hash, sink chan *eth.Response) (*eth.Request, error) {
+	if dlp.dropRequests {
+		return &eth.Request{Peer: dlp.id, Sent: time.Now()}, nil
+	}
 	blobs := eth.ServiceGetBlockBodiesQuery(dlp.chain, hashes)
 
 	bodies := make([]*types.Body, len(blobs))
@@ -362,6 +366,9 @@ func (dlp *downloadTesterPeer) RequestBodies(hashes []common.Hash, sink chan *et
 // peer in the download tester. The returned function can be used to retrieve
 // batches of block receipts from the particularly requested peer.
 func (dlp *downloadTesterPeer) RequestReceipts(hashes []common.Hash, gasUsed []uint64, timestamps []uint64, sink chan *eth.Response) (*eth.Request, error) {
+	if dlp.dropRequests {
+		return &eth.Request{Peer: dlp.id, Sent: time.Now()}, nil
+	}
 	blobs := eth.ServiceGetReceiptsQuery69(dlp.chain, hashes)
 	receipts := make([]types.Receipts, blobs.Len())
 
@@ -577,6 +584,42 @@ func testCanonSync(t *testing.T, protocol uint, mode SyncMode, snapV2 bool) {
 	tester.newPeer("peer", protocol, chain.blocks[1:])
 
 	// Synchronise with the peer and make sure all relevant data was retrieved
+	if err := tester.downloader.BeaconSync(chain.blocks[len(chain.blocks)-1].Header(), nil); err != nil {
+		t.Fatalf("failed to beacon-sync chain: %v", err)
+	}
+	select {
+	case <-success:
+		assertOwnChain(t, tester, len(chain.blocks))
+	case <-time.NewTimer(time.Second * 3).C:
+		t.Fatalf("Failed to sync chain in three seconds")
+	}
+}
+
+func TestUnansweredRequestsFull(t *testing.T) { testUnansweredRequests(t, eth.ETH69, FullSync) }
+func TestUnansweredRequestsSnap(t *testing.T) { testUnansweredRequests(t, eth.ETH69, SnapSync) }
+
+// Tests that a peer swallowing its requests without ever answering gets timed
+// out and its items reassigned to the remaining peers, without the fetchers
+// stalling. This is a regression test for a timer drain deadlock in the timeout
+// handling of the concurrent fetcher.
+func testUnansweredRequests(t *testing.T, protocol uint, mode SyncMode) {
+	success := make(chan struct{})
+	tester := newTesterWithSnap(t, mode, func() {
+		close(success)
+	}, false)
+	defer tester.terminate()
+
+	// Tighten the request timeout so the requests of the dead peer expire
+	// well within the time budget of the test
+	tester.downloader.peers.rates.OverrideTTLLimit = 500 * time.Millisecond
+
+	// Create a small enough block chain to download, served by a live peer
+	// and one that never answers
+	chain := testChainBase.shorten(blockCacheMaxItems - 15)
+	tester.newPeer("peer-live", protocol, chain.blocks[1:])
+	tester.newPeer("peer-dead", protocol, chain.blocks[1:]).dropRequests = true
+
+	// Synchronise with the peers and make sure all relevant data was retrieved
 	if err := tester.downloader.BeaconSync(chain.blocks[len(chain.blocks)-1].Header(), nil); err != nil {
 		t.Fatalf("failed to beacon-sync chain: %v", err)
 	}
