@@ -58,15 +58,15 @@ func (q *bodyQueue) reserve(peer *peerConnection, items int) (*fetchRequest, boo
 	return q.queue.ReserveBodies(peer, items)
 }
 
-// unreserve is responsible for removing the current body retrieval allocation
-// assigned to a specific peer and placing it back into the pool to allow
-// reassigning to some other peer.
-func (q *bodyQueue) unreserve(peer string) int {
-	fails := q.queue.ExpireBodies(peer)
+// unreserve is responsible for removing the body retrieval allocation of
+// the given request and placing it back into the pool to allow reassigning
+// to some other peer.
+func (q *bodyQueue) unreserve(id uint64) int {
+	fails := q.queue.ExpireBodies(id)
 	if fails > 2 {
-		log.Trace("Body delivery timed out", "peer", peer)
+		log.Trace("Body delivery timed out", "request", id)
 	} else {
-		log.Debug("Body delivery stalling", "peer", peer)
+		log.Debug("Body delivery stalling", "request", id)
 	}
 	return fails
 }
@@ -87,10 +87,10 @@ func (q *bodyQueue) request(peer *peerConnection, req *fetchRequest, resCh chan 
 
 // deliver is responsible for taking a generic response packet from the concurrent
 // fetcher, unpacking the body data and delivering it to the downloader's queue.
-func (q *bodyQueue) deliver(peer *peerConnection, packet *eth.Response) (int, error) {
+func (q *bodyQueue) deliver(id uint64, peer *peerConnection, packet *eth.Response) (int, error) {
 	resp := packet.Res.(*eth.BlockBodiesResponse)
 	meta := packet.Meta.(eth.BlockBodyHashes)
-	accepted, err := q.queue.DeliverBodies(peer.id, meta, *resp)
+	accepted, err := q.queue.DeliverBodies(id, meta, *resp)
 	switch {
 	case err == nil && len(*resp) == 0:
 		peer.log.Trace("Requested bodies delivered")
@@ -104,8 +104,15 @@ func (q *bodyQueue) deliver(peer *peerConnection, packet *eth.Response) (int, er
 
 // stalled returns the peer whose body request holds the head of the result
 // cache for longer than the given threshold, blocking the consumer.
-func (q *bodyQueue) stalled(threshold time.Duration) string {
+func (q *bodyQueue) stalled(threshold time.Duration) uint64 {
 	return q.queue.StalledBodies(threshold)
+}
+
+// slots is responsible for calculating how many body requests may be kept in
+// flight towards a particular peer to cover its capacity within the allotted
+// round trip time.
+func (q *bodyQueue) slots(peer *peerConnection, rtt time.Duration) int {
+	return q.queue.BodySlots(peer, rtt)
 }
 
 // metrics returns the collectors the concurrent fetcher reports the scheduling

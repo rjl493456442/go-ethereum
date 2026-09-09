@@ -70,12 +70,12 @@ func (q *balQueue) reserve(peer *peerConnection, items int) (*fetchRequest, bool
 // unreserve is responsible for removing the current access list retrieval
 // allocation assigned to a specific peer and placing it back into the pool to
 // allow reassigning to some other peer.
-func (q *balQueue) unreserve(peer string) int {
-	fails := q.queue.ExpireBALs(peer)
+func (q *balQueue) unreserve(id uint64) int {
+	fails := q.queue.ExpireBALs(id)
 	if fails > 2 {
-		log.Trace("Access list delivery timed out", "peer", peer)
+		log.Trace("Access list delivery timed out", "request", id)
 	} else {
-		log.Debug("Access list delivery stalling", "peer", peer)
+		log.Debug("Access list delivery stalling", "request", id)
 	}
 	return fails
 }
@@ -97,11 +97,11 @@ func (q *balQueue) request(peer *peerConnection, req *fetchRequest, resCh chan *
 // deliver is responsible for taking a generic response packet from the
 // concurrent fetcher, unpacking the access list data and delivering it to the
 // downloader's queue.
-func (q *balQueue) deliver(peer *peerConnection, packet *eth.Response) (int, error) {
+func (q *balQueue) deliver(id uint64, peer *peerConnection, packet *eth.Response) (int, error) {
 	bals := *packet.Res.(*eth.BlockAccessListResponse)
 	hashes := packet.Meta.([]common.Hash) // {keccak256 hash per entry, zero hash if unavailable}
 
-	accepted, err := q.queue.DeliverBALs(peer.id, bals, hashes)
+	accepted, err := q.queue.DeliverBALs(id, bals, hashes)
 	switch {
 	case err == nil && len(bals) == 0:
 		peer.log.Trace("Requested access lists delivered")
@@ -115,8 +115,14 @@ func (q *balQueue) deliver(peer *peerConnection, packet *eth.Response) (int, err
 
 // stalled is a no-op for access lists: they are a best-effort component that
 // never holds back the delivery of a block, so they cannot block the consumer.
-func (q *balQueue) stalled(threshold time.Duration) string {
-	return ""
+func (q *balQueue) stalled(threshold time.Duration) uint64 {
+	return 0
+}
+
+// slots keeps access list retrievals to a single request per peer, they are a
+// best-effort component that does not warrant pipelining.
+func (q *balQueue) slots(peer *peerConnection, rtt time.Duration) int {
+	return 1
 }
 
 // metrics returns the collectors the concurrent fetcher reports the scheduling

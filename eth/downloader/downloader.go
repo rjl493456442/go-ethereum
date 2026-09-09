@@ -36,7 +36,6 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/triedb"
 )
 
@@ -225,7 +224,7 @@ type BlockChain interface {
 	// into the local chain. Blocks older than the specified `ancientLimit`
 	// are stored directly in the ancient store, while newer blocks are stored
 	// in the live key-value store.
-	InsertReceiptChain(types.Blocks, []rlp.RawValue, uint64) (int, error)
+	InsertReceiptChain([]*types.EncodedBlock, uint64) (int, error)
 
 	// Snapshots returns the blockchain snapshot tree to paused it during sync.
 	Snapshots() *snapshot.Tree
@@ -929,14 +928,11 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 	)
 	blocks := make([]*types.Block, len(results))
 	for i, result := range results {
-		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.body())
-
-		// Attach the access list if it was retrieved from the network. The
-		// content hash was already verified against the header on delivery;
-		// blocks lacking one have theirs computed locally during execution.
-		if list := result.BAL(); list != nil {
-			blocks[i] = blocks[i].WithAccessListUnsafe(list)
+		block, err := result.block()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidChain, err)
 		}
+		blocks[i] = block
 	}
 	// Downloaded blocks are always regarded as trusted after the
 	// transition. Because the downloaded chain is guided by the
@@ -1138,21 +1134,17 @@ func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *state
 		"firstnum", first.Number, "firsthash", first.Hash(),
 		"lastnum", last.Number, "lasthash", last.Hash(),
 	)
-	blocks := make([]*types.Block, len(results))
-	receipts := make([]rlp.RawValue, len(results))
+	blocks := make([]*types.EncodedBlock, len(results))
 	for i, result := range results {
-		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.body())
-		receipts[i] = result.Receipts
-
-		// Attach the access list if it was retrieved from the network, so it
-		// gets persisted alongside the block data.
-		if list := result.BAL(); list != nil {
-			blocks[i] = blocks[i].WithAccessListUnsafe(list)
+		block, err := result.encoded()
+		if err != nil {
+			return err
 		}
+		blocks[i] = block
 	}
 	defer importInsertReceiptsTimer.UpdateSince(time.Now())
 
-	if index, err := d.blockchain.InsertReceiptChain(blocks, receipts, d.ancientLimit); err != nil {
+	if index, err := d.blockchain.InsertReceiptChain(blocks, d.ancientLimit); err != nil {
 		log.Debug("Downloaded item processing failed", "number", results[index].Header.Number, "hash", results[index].Header.Hash(), "err", err)
 		return fmt.Errorf("%w: %v", errInvalidChain, err)
 	}
@@ -1160,17 +1152,17 @@ func (d *Downloader) commitSnapSyncData(results []*fetchResult, stateSync *state
 }
 
 func (d *Downloader) commitPivotBlock(result *fetchResult) error {
-	block := types.NewBlockWithHeader(result.Header).WithBody(result.body())
-	if list := result.BAL(); list != nil {
-		block = block.WithAccessListUnsafe(list)
-	}
-	log.Debug("Committing snap sync pivot as new head", "number", block.Number(), "hash", block.Hash())
-
-	// Commit the pivot block as the new head, will require full sync from here on
-	if _, err := d.blockchain.InsertReceiptChain([]*types.Block{block}, []rlp.RawValue{result.Receipts}, d.ancientLimit); err != nil {
+	block, err := result.encoded()
+	if err != nil {
 		return err
 	}
-	if err := d.blockchain.SnapSyncComplete(block.Hash(), d.snapSyncer.Version() == snap.SNAP2); err != nil {
+	log.Debug("Committing snap sync pivot as new head", "number", block.Header.Number, "hash", block.Header.Hash())
+
+	// Commit the pivot block as the new head, will require full sync from here on
+	if _, err := d.blockchain.InsertReceiptChain([]*types.EncodedBlock{block}, d.ancientLimit); err != nil {
+		return err
+	}
+	if err := d.blockchain.SnapSyncComplete(block.Header.Hash(), d.snapSyncer.Version() == snap.SNAP2); err != nil {
 		return err
 	}
 	d.pivotLock.Lock()
@@ -1181,7 +1173,7 @@ func (d *Downloader) commitPivotBlock(result *fetchResult) error {
 	// the mission of the snap sync is regarded as accomplished and the mode
 	// is flipped to full-sync.
 	if d.moder.disableSnap() {
-		log.Info("Disabled snap-sync after pivot commitment", "number", block.Number(), "hash", block.Hash())
+		log.Info("Disabled snap-sync after pivot commitment", "number", block.Header.Number, "hash", block.Header.Hash())
 	}
 	return nil
 }

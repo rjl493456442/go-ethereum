@@ -1449,18 +1449,18 @@ const (
 //
 // The optional ancientLimit can also be specified and chain segment before that
 // will be directly stored in the ancient, getting rid of the chain migration.
-func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain []rlp.RawValue, ancientLimit uint64) (int, error) {
+func (bc *BlockChain) InsertReceiptChain(blockChain []*types.EncodedBlock, ancientLimit uint64) (int, error) {
 	// Verify the supplied headers before insertion without lock
 	var headers []*types.Header
 	for _, block := range blockChain {
-		headers = append(headers, block.Header())
+		headers = append(headers, block.Header)
 		// Here we also validate that blob transactions in the block do not
 		// contain a sidecar. While the sidecar does not affect the block hash
 		// or tx hash, sending blobs within a block is not allowed.
-		for txIndex, tx := range block.Transactions() {
-			if tx.Type() == types.BlobTxType && tx.BlobTxSidecar() != nil {
-				return 0, fmt.Errorf("block #%d contains unexpected blob sidecar in tx at index %d", block.NumberU64(), txIndex)
-			}
+		if sidecars, err := block.HasBlobSidecars(); err != nil {
+			return 0, fmt.Errorf("block #%d has malformed body: %v", block.Header.Number, err)
+		} else if sidecars {
+			return 0, fmt.Errorf("block #%d contains unexpected blob sidecar", block.Header.Number)
 		}
 	}
 	if n, err := bc.hc.ValidateHeaderChain(headers); err != nil {
@@ -1496,11 +1496,11 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 	//
 	// this function only accepts canonical chain data. All side chain will be reverted
 	// eventually.
-	writeAncient := func(blockChain types.Blocks, receiptChain []rlp.RawValue) (int, error) {
+	writeAncient := func(blockChain []*types.EncodedBlock) (int, error) {
 		// Ensure genesis is in the ancient store
-		if blockChain[0].NumberU64() == 1 {
+		if blockChain[0].Header.Number.Uint64() == 1 {
 			if frozen, _ := bc.db.Ancients(); frozen == 0 {
-				writeSize, err := rawdb.WriteAncientBlocks(bc.db, []*types.Block{bc.genesisBlock}, []rlp.RawValue{rlp.EmptyList})
+				writeSize, err := rawdb.WriteAncientBlocks(bc.db, []*types.EncodedBlock{types.EncodeBlock(bc.genesisBlock, rlp.EmptyList)})
 				if err != nil {
 					log.Error("Error writing genesis to ancients", "err", err)
 					return 0, err
@@ -1511,7 +1511,7 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 		}
 		// Write all chain data to ancients.
 		start := time.Now()
-		writeSize, err := rawdb.WriteAncientBlocks(bc.db, blockChain, receiptChain)
+		writeSize, err := rawdb.WriteAncientBlocks(bc.db, blockChain)
 		if err != nil {
 			log.Error("Error importing chain data to ancients", "err", err)
 			return 0, err
@@ -1529,13 +1529,13 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 		// Write hash to number mappings
 		batch := bc.db.NewBatch()
 		for _, block := range blockChain {
-			rawdb.WriteHeaderNumber(batch, block.Hash(), block.NumberU64())
+			rawdb.WriteHeaderNumber(batch, block.Header.Hash(), block.Header.Number.Uint64())
 		}
 		if err := batch.Write(); err != nil {
 			return 0, err
 		}
 		// Update the current snap block because all block data is now present in DB.
-		if err := updateHead(blockChain[len(blockChain)-1].Header()); err != nil {
+		if err := updateHead(blockChain[len(blockChain)-1].Header); err != nil {
 			return 0, err
 		}
 		stats.processed += int32(len(blockChain))
@@ -1548,17 +1548,25 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 	// existing local chain segments (reorg around the chain tip). The reorganized part
 	// will be included in the provided chain segment, and stale canonical markers will be
 	// silently rewritten. Therefore, no explicit reorg logic is needed.
-	writeLive := func(blockChain types.Blocks, receiptChain []rlp.RawValue) error {
+	writeLive := func(blockChain []*types.EncodedBlock) error {
 		batch := bc.db.NewBatch()
-		for i, block := range blockChain {
+		for _, block := range blockChain {
 			// Short circuit insertion if shutting down or processing failed
 			if bc.insertStopped() {
 				return errInsertionInterrupted
 			}
 			// Write all the data out into the database
-			rawdb.WriteCanonicalHash(batch, block.Hash(), block.NumberU64())
-			rawdb.WriteBlock(batch, block)
-			rawdb.WriteRawReceipts(batch, block.Hash(), block.NumberU64(), receiptChain[i])
+			var (
+				hash   = block.Header.Hash()
+				number = block.Header.Number.Uint64()
+			)
+			rawdb.WriteCanonicalHash(batch, hash, number)
+			rawdb.WriteHeader(batch, block.Header)
+			rawdb.WriteBodyRLP(batch, hash, number, block.Body)
+			rawdb.WriteRawReceipts(batch, hash, number, block.Receipts)
+			if block.AccessList != nil {
+				rawdb.WriteAccessListRLP(batch, hash, number, block.AccessList)
+			}
 
 			// Write everything belongs to the blocks into the database. So that
 			// we can ensure all components of body is completed(body, receipts)
@@ -1581,16 +1589,16 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 				return err
 			}
 		}
-		return updateHead(blockChain[len(blockChain)-1].Header())
+		return updateHead(blockChain[len(blockChain)-1].Header)
 	}
 
 	// Split the supplied blocks into two groups, according to the
 	// given ancient limit.
 	index := sort.Search(len(blockChain), func(i int) bool {
-		return blockChain[i].NumberU64() >= ancientLimit
+		return blockChain[i].Header.Number.Uint64() >= ancientLimit
 	})
 	if index > 0 {
-		if n, err := writeAncient(blockChain[:index], receiptChain[:index]); err != nil {
+		if n, err := writeAncient(blockChain[:index]); err != nil {
 			if err == errInsertionInterrupted {
 				return 0, nil
 			}
@@ -1598,7 +1606,7 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 		}
 	}
 	if index != len(blockChain) {
-		if err := writeLive(blockChain[index:], receiptChain[index:]); err != nil {
+		if err := writeLive(blockChain[index:]); err != nil {
 			if err == errInsertionInterrupted {
 				return 0, nil
 			}
@@ -1606,10 +1614,10 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 		}
 	}
 	var (
-		head    = blockChain[len(blockChain)-1]
+		head    = blockChain[len(blockChain)-1].Header
 		context = []interface{}{
 			"count", stats.processed, "elapsed", common.PrettyDuration(time.Since(start)),
-			"number", head.Number(), "hash", head.Hash(), "age", common.PrettyAge(time.Unix(int64(head.Time()), 0)),
+			"number", head.Number, "hash", head.Hash(), "age", common.PrettyAge(time.Unix(int64(head.Time), 0)),
 			"size", common.StorageSize(size),
 		}
 	)
@@ -3007,7 +3015,7 @@ func (bc *BlockChain) InsertHeadersBeforeCutoff(headers []*types.Header) (int, e
 		first     = headers[0].Number.Uint64()
 	)
 	if first == 1 && frozen == 0 {
-		_, err := rawdb.WriteAncientBlocks(bc.db, []*types.Block{bc.genesisBlock}, []rlp.RawValue{rlp.EmptyList})
+		_, err := rawdb.WriteAncientBlocks(bc.db, []*types.EncodedBlock{types.EncodeBlock(bc.genesisBlock, rlp.EmptyList)})
 		if err != nil {
 			log.Error("Error writing genesis to ancients", "err", err)
 			return 0, err

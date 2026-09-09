@@ -58,15 +58,15 @@ func (q *receiptQueue) reserve(peer *peerConnection, items int) (*fetchRequest, 
 	return q.queue.ReserveReceipts(peer, items)
 }
 
-// unreserve is responsible for removing the current receipt retrieval allocation
-// assigned to a specific peer and placing it back into the pool to allow
-// reassigning to some other peer.
-func (q *receiptQueue) unreserve(peer string) int {
-	fails := q.queue.ExpireReceipts(peer)
+// unreserve is responsible for removing the receipt retrieval allocation of
+// the given request and placing it back into the pool to allow reassigning
+// to some other peer.
+func (q *receiptQueue) unreserve(id uint64) int {
+	fails := q.queue.ExpireReceipts(id)
 	if fails > 2 {
-		log.Trace("Receipt delivery timed out", "peer", peer)
+		log.Trace("Receipt delivery timed out", "request", id)
 	} else {
-		log.Debug("Receipt delivery stalling", "peer", peer)
+		log.Debug("Receipt delivery stalling", "request", id)
 	}
 	return fails
 }
@@ -93,11 +93,11 @@ func (q *receiptQueue) request(peer *peerConnection, req *fetchRequest, resCh ch
 
 // deliver is responsible for taking a generic response packet from the concurrent
 // fetcher, unpacking the receipt data and delivering it to the downloader's queue.
-func (q *receiptQueue) deliver(peer *peerConnection, packet *eth.Response) (int, error) {
+func (q *receiptQueue) deliver(id uint64, peer *peerConnection, packet *eth.Response) (int, error) {
 	receipts := *packet.Res.(*eth.ReceiptsRLPResponse)
 	hashes := packet.Meta.([]common.Hash) // {receipt hashes}
 
-	accepted, err := q.queue.DeliverReceipts(peer.id, receipts, hashes)
+	accepted, err := q.queue.DeliverReceipts(id, receipts, hashes)
 	switch {
 	case err == nil && len(receipts) == 0:
 		peer.log.Trace("Requested receipts delivered")
@@ -111,8 +111,15 @@ func (q *receiptQueue) deliver(peer *peerConnection, packet *eth.Response) (int,
 
 // stalled returns the peer whose receipt request holds the head of the result
 // cache for longer than the given threshold, blocking the consumer.
-func (q *receiptQueue) stalled(threshold time.Duration) string {
+func (q *receiptQueue) stalled(threshold time.Duration) uint64 {
 	return q.queue.StalledReceipts(threshold)
+}
+
+// slots is responsible for calculating how many receipt requests may be kept in
+// flight towards a particular peer to cover its capacity within the allotted
+// round trip time.
+func (q *receiptQueue) slots(peer *peerConnection, rtt time.Duration) int {
+	return q.queue.ReceiptSlots(peer, rtt)
 }
 
 // metrics returns the collectors the concurrent fetcher reports the scheduling

@@ -745,11 +745,10 @@ func WriteBlock(db ethdb.KeyValueWriter, block *types.Block) {
 }
 
 // WriteAncientBlocks writes entire block data into ancient store and returns the total written size.
-func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.Block, receipts []rlp.RawValue) (int64, error) {
+func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.EncodedBlock) (int64, error) {
 	return db.ModifyAncients(func(op ethdb.AncientWriteOp) error {
-		for i, block := range blocks {
-			header := block.Header()
-			if err := writeAncientBlock(op, block, header, receipts[i]); err != nil {
+		for _, block := range blocks {
+			if err := writeAncientBlock(op, block); err != nil {
 				return err
 			}
 		}
@@ -757,31 +756,25 @@ func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.Block, receipts 
 	})
 }
 
-func writeAncientBlock(op ethdb.AncientWriteOp, block *types.Block, header *types.Header, receipts rlp.RawValue) error {
-	num := block.NumberU64()
-	if err := op.AppendRaw(ChainFreezerHashTable, num, block.Hash().Bytes()); err != nil {
+func writeAncientBlock(op ethdb.AncientWriteOp, block *types.EncodedBlock) error {
+	num := block.Header.Number.Uint64()
+	if err := op.AppendRaw(ChainFreezerHashTable, num, block.Header.Hash().Bytes()); err != nil {
 		return fmt.Errorf("can't add block %d hash: %v", num, err)
 	}
-	if err := op.Append(ChainFreezerHeaderTable, num, header); err != nil {
+	if err := op.Append(ChainFreezerHeaderTable, num, block.Header); err != nil {
 		return fmt.Errorf("can't append block header %d: %v", num, err)
 	}
-	if err := op.Append(ChainFreezerBodiesTable, num, block.Body()); err != nil {
+	if err := op.AppendRaw(ChainFreezerBodiesTable, num, block.Body); err != nil {
 		return fmt.Errorf("can't append block body %d: %v", num, err)
 	}
-	if err := op.Append(ChainFreezerReceiptTable, num, receipts); err != nil {
+	if err := op.AppendRaw(ChainFreezerReceiptTable, num, block.Receipts); err != nil {
 		return fmt.Errorf("can't append block %d receipts: %v", num, err)
 	}
 	// Block access lists are only retrieved (best effort) for blocks close to
 	// the head of the network chain; a nil entry is stored as the absence
 	// placeholder for anything the network no longer serves.
-	if list := block.AccessList(); list != nil {
-		if err := op.Append(ChainFreezerBALTable, num, list); err != nil {
-			return fmt.Errorf("can't append block %d bals: %v", num, err)
-		}
-	} else {
-		if err := op.AppendRaw(ChainFreezerBALTable, num, nil); err != nil {
-			return fmt.Errorf("can't append block %d bals: %v", num, err)
-		}
+	if err := op.AppendRaw(ChainFreezerBALTable, num, block.AccessList); err != nil {
+		return fmt.Errorf("can't append block %d bals: %v", num, err)
 	}
 	return nil
 }
