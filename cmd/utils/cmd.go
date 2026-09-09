@@ -361,7 +361,7 @@ func ImportHistory(chain *core.BlockChain, dir string, network string, from func
 						return nil
 					}
 					enc := types.EncodeBlockReceiptLists(receiptsList)
-					if _, err := chain.InsertReceiptChain(blocks, enc, math.MaxUint64); err != nil {
+					if _, err := chain.InsertReceiptChain(types.EncodeBlocks(blocks, enc), math.MaxUint64); err != nil {
 						return fmt.Errorf("error inserting blocks %d-%d: %w",
 							blocks[0].NumberU64(), blocks[len(blocks)-1].NumberU64(), err)
 					}

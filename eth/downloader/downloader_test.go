@@ -149,6 +149,7 @@ type downloadTesterPeer struct {
 	dl             *downloadTester
 	withholdBodies map[common.Hash]struct{}
 	corruptBodies  bool     // if set, the peer serves incorrect blocks
+	dropRequests   bool     // if set, the peer never answers body and receipt requests
 	balGate        *balGate // if set, body deliveries wait for the access lists
 	id             string
 	chain          *core.BlockChain
@@ -294,6 +295,9 @@ func (dlp *downloadTesterPeer) RequestHeadersByNumber(origin uint64, amount int,
 // peer in the download tester. The returned function can be used to retrieve
 // batches of block bodies from the particularly requested peer.
 func (dlp *downloadTesterPeer) RequestBodies(hashes []common.Hash, sink chan *eth.Response) (*eth.Request, error) {
+	if dlp.dropRequests {
+		return &eth.Request{Peer: dlp.id, Sent: time.Now()}, nil
+	}
 	blobs := eth.ServiceGetBlockBodiesQuery(dlp.chain, hashes)
 
 	bodies := make([]*types.Body, len(blobs))
@@ -362,6 +366,9 @@ func (dlp *downloadTesterPeer) RequestBodies(hashes []common.Hash, sink chan *et
 // peer in the download tester. The returned function can be used to retrieve
 // batches of block receipts from the particularly requested peer.
 func (dlp *downloadTesterPeer) RequestReceipts(hashes []common.Hash, gasUsed []uint64, timestamps []uint64, sink chan *eth.Response) (*eth.Request, error) {
+	if dlp.dropRequests {
+		return &eth.Request{Peer: dlp.id, Sent: time.Now()}, nil
+	}
 	blobs := eth.ServiceGetReceiptsQuery69(dlp.chain, hashes)
 	receipts := make([]types.Receipts, blobs.Len())
 
