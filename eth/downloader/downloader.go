@@ -165,6 +165,7 @@ type Downloader struct {
 	syncStartBlock uint64    // Head snap block when Geth was started
 	syncStartTime  time.Time // Time instance when chain sync started
 	syncLogTime    time.Time // Time instance when status was last reported
+	syncLogStalls  uint64    // Fetcher rounds throttled by the result cache when status was last reported
 }
 
 // BlockChain encapsulates functions required to sync a (full or snap) blockchain.
@@ -1329,6 +1330,17 @@ func (d *Downloader) reportSnapSyncProgress(force bool) {
 		bodies   = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(block.Number.Uint64()), common.StorageSize(bodyBytes).TerminalString())
 		receipts = fmt.Sprintf("%v@%v", log.FormatLogfmtUint64(block.Number.Uint64()), common.StorageSize(receiptBytes).TerminalString())
 	)
-	log.Info("Syncing: chain download in progress", "synced", progress, "chain", syncedBytes, "headers", headers, "bodies", bodies, "receipts", receipts, "eta", common.PrettyDuration(eta))
+	// Report the retrieval pipeline state too: requests in flight and peers
+	// left idle tell whether the download is bound by the remote peers or by
+	// the local result cache (throttled rounds) and importer.
+	var (
+		inflight = fmt.Sprintf("%d+%d", bodyFetchMetrics.busyPeers.Snapshot().Value(), receiptFetchMetrics.busyPeers.Snapshot().Value())
+		idle     = fmt.Sprintf("%d+%d", bodyFetchMetrics.idlePeers.Snapshot().Value(), receiptFetchMetrics.idlePeers.Snapshot().Value())
+		stalls   = uint64(bodyFetchMetrics.throttled.Snapshot().Count() + receiptFetchMetrics.throttled.Snapshot().Count())
+	)
+	throttled := stalls - d.syncLogStalls
+	d.syncLogStalls = stalls
+
+	log.Info("Syncing: chain download in progress", "synced", progress, "chain", syncedBytes, "headers", headers, "bodies", bodies, "receipts", receipts, "inflight", inflight, "idle", idle, "throttled", throttled, "eta", common.PrettyDuration(eta))
 	d.syncLogTime = time.Now()
 }
