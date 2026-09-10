@@ -400,7 +400,8 @@ func TestHashRanges(t *testing.T) {
 
 // TestGenerateTriePathSchemeNodeSet runs GenerateTrie on the path scheme and
 // checks the persisted account-trie node set against a canonical StackTrie. A
-// root-only check can't see the single-partition orphan, but a node-set diff can.
+// root-only check can't see an orphan left behind by a fold at either level of
+// the assembly, but a node-set diff can.
 func TestGenerateTriePathSchemeNodeSet(t *testing.T) {
 	mkAccount := func(hashHex string) testAccount {
 		// Empty storage and no code, so the account trie is the only trie built
@@ -443,6 +444,29 @@ func TestGenerateTriePathSchemeNodeSet(t *testing.T) {
 			accounts: []testAccount{
 				mkAccount("0x5a00000000000000000000000000000000000000000000000000000000000000"),
 				mkAccount("0x5f00000000000000000000000000000000000000000000000000000000000000"),
+			},
+		},
+		{
+			// Two accounts in one two-nibble partition, diverging at the third
+			// nibble: the partition's root at [5,a] is a branch. The depth-1 node
+			// at [5] folds nibble a into an extension pointing at that branch,
+			// and the root folds 5 into it again, orphaning the node at [5].
+			name: "two accounts diverging at third nibble, nested folds",
+			accounts: []testAccount{
+				mkAccount("0x5a00000000000000000000000000000000000000000000000000000000000000"),
+				mkAccount("0x5a80000000000000000000000000000000000000000000000000000000000000"),
+			},
+		},
+		{
+			// Mixed shapes at depth 1: under 5, partitions a (a branch of two)
+			// and f (a leaf) make [5] a real branch; under c a single leaf folds,
+			// orphaning [c,0]. The root is a branch over 5 and c.
+			name: "branch and fold side by side under the root",
+			accounts: []testAccount{
+				mkAccount("0x5a00000000000000000000000000000000000000000000000000000000000000"),
+				mkAccount("0x5a80000000000000000000000000000000000000000000000000000000000000"),
+				mkAccount("0x5f00000000000000000000000000000000000000000000000000000000000000"),
+				mkAccount("0xc000000000000000000000000000000000000000000000000000000000000000"),
 			},
 		},
 		{

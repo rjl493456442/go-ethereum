@@ -95,6 +95,11 @@ In other words, this command does the snapshot to trie conversion.
 				ArgsUsage: "[<root>]",
 				Action:    benchGenerateTrie,
 				Flags: slices.Concat(utils.NetworkFlags, utils.DatabaseFlags, []cli.Flag{
+					&cli.IntFlag{
+						Name:  "workers",
+						Usage: "Partitions built concurrently; the trie work is CPU-bound per worker, the writes are bounded by the disk",
+						Value: triedb.DefaultGenerateWorkers,
+					},
 					&cli.StringFlag{
 						Name:  "checkpoint",
 						Usage: "Directory for the pebble checkpoint (default: <chaindata-parent>/.gentrie-bench-<ts>)",
@@ -428,7 +433,8 @@ func benchGenerateTrie(ctx *cli.Context) error {
 	log.Info("running GenerateTrie", "scheme", scheme, "root", root)
 	cpuStart := processCPUTime()
 	runStart := time.Now()
-	stats, err := triedb.GenerateTrie(chaindb, scheme, root, cancelCh)
+	workers := ctx.Int("workers")
+	stats, err := triedb.GenerateTrieWithWorkers(chaindb, scheme, root, cancelCh, nil, workers)
 	elapsed := time.Since(runStart)
 
 	status := "root matched"
@@ -442,9 +448,10 @@ func benchGenerateTrie(ctx *cli.Context) error {
 	fmt.Printf("root:      %s\n", root.Hex())
 	fmt.Printf("status:    %s\n", status)
 	fmt.Printf("accounts:  %d (%d updated)\n", stats.Scanned, stats.Updated)
+	fmt.Printf("workers:   %d over %d partitions\n", workers, triedb.GeneratePartitions())
 	fmt.Printf("wall time: %s\n", elapsed)
 	cs := kv.CompactionStats()
-	printTimeBreakdown(timed, cs, processCPUTime()-cpuStart, elapsed)
+	printTimeBreakdown(timed, cs, processCPUTime()-cpuStart, elapsed, workers)
 	pebble.WriteCompactionStats(os.Stdout, cs, elapsed)
 	return err
 }
@@ -1014,62 +1021,52 @@ func processCPUTime() time.Duration {
 	return time.Duration(busy * float64(time.Second))
 }
 
-// printTimeBreakdown separates the run's wall clock into computing and waiting
-// on the database, and splits the waiting further into write stalls, by the
-// gate that caused them, and the writes themselves.
+// printTimeBreakdown accounts for a worker's time. GenerateTrie runs one
+// worker per partition for roughly the whole run, so a worker's lifetime is
+// the wall clock; what it did not spend inside the database it spent
+// computing. Database time is summed across workers by the timed store and
+// divided back out here, so every line reads as a share of one worker's life.
 //
-// GenerateTrie runs one worker per partition, so database time is summed
-// across workers and can exceed the wall clock; the share of a worker's life
-// it represents is the useful reading. Write stalls are counted from pebble's
-// own stall events and sit inside the batch-write time: a batch that arrives
-// while the store is stalled waits out the rest of the stall before it is
-// written. The line to read first is the last one: the batch-write time that
-// remains once stalls are taken out is what writing costs when the store keeps
-// up, and the stall time is what the configuration failed to absorb.
-func printTimeBreakdown(t *timedKV, cs pebble.CompactionStats, cpu, elapsed time.Duration) {
+// Process CPU is reported separately and deliberately not called computation:
+// pebble's compaction and flush threads burn CPU in this process too, and on a
+// run that keeps the disk busy they account for a large part of it.
+func printTimeBreakdown(t *timedKV, cs pebble.CompactionStats, cpu, elapsed time.Duration, workers int) {
 	var (
 		writes  = time.Duration(t.writeTime.Load())
 		reads   = time.Duration(t.readTime.Load())
 		iters   = time.Duration(t.iterTime.Load())
 		db      = writes + reads + iters
+		perW    = func(d time.Duration) time.Duration { return d / time.Duration(workers) }
 		stalled = cs.StallDuration
-		workers = float64(cpu+db) / float64(elapsed)
+		compute = elapsed - perW(db)
 	)
-	pct := func(d time.Duration) float64 {
-		if cpu+db == 0 {
-			return 0
-		}
-		return 100 * float64(d) / float64(cpu+db)
+	if compute < 0 {
+		compute = 0
 	}
+	share := func(d time.Duration) float64 { return 100 * float64(d) / float64(elapsed) }
 	fmt.Printf("\n--- time ---\n")
-	fmt.Printf("wall:          %s\n", elapsed.Round(time.Second))
-	fmt.Printf("cpu busy:      %s (%.1f cores)\n", cpu.Round(time.Second), float64(cpu)/float64(elapsed))
-	fmt.Printf("in database:   %s (%.1f cores' worth, summed over workers)\n", db.Round(time.Second), float64(db)/float64(elapsed))
-	fmt.Printf("  batch write: %-12s %5.1f%%  %d calls\n", writes.Round(time.Second), pct(writes), t.writeOps.Load())
-	fmt.Printf("  point read:  %-12s %5.1f%%  %d calls\n", reads.Round(time.Second), pct(reads), t.readOps.Load())
-	fmt.Printf("  iteration:   %-12s %5.1f%%  %d calls\n", iters.Round(time.Second), pct(iters), t.iterOps.Load())
-	fmt.Printf("  computation: %-12s %5.1f%%\n", cpu.Round(time.Second), pct(cpu))
-	fmt.Printf("(~%.1f workers busy on average; database time is summed across them,\n"+
-		" so the percentages split worker time rather than the wall clock)\n", workers)
-
-	fmt.Printf("\nwrite stalls:  %s in %d stalls", stalled.Round(time.Millisecond), cs.StallCount)
+	fmt.Printf("wall:           %s\n", elapsed.Round(time.Second))
+	fmt.Printf("process cpu:    %s (%.1f cores; trie workers plus pebble compaction and flush)\n",
+		cpu.Round(time.Second), float64(cpu)/float64(elapsed))
+	fmt.Printf("%d trie workers, each over the run:\n", workers)
+	fmt.Printf("  computing:    %-10s %5.1f%%   (wall less time in the database)\n", compute.Round(time.Second), share(compute))
+	fmt.Printf("  iteration:    %-10s %5.1f%%   %d calls in all\n", perW(iters).Round(time.Second), share(perW(iters)), t.iterOps.Load())
+	fmt.Printf("  batch write:  %-10s %5.1f%%   %d calls in all\n", perW(writes).Round(time.Second), share(perW(writes)), t.writeOps.Load())
+	fmt.Printf("  point read:   %-10s %5.1f%%   %d calls in all\n", perW(reads).Round(time.Second), share(perW(reads)), t.readOps.Load())
+	// A stall blocks the write path for every worker at once, so each one
+	// waits it out: it is a share of each worker's batch-write time, and of
+	// the wall clock, as is.
+	fmt.Printf("write stalls:   %s in %d", stalled.Round(time.Millisecond), cs.StallCount)
 	if cs.StallCount > 0 {
 		fmt.Printf(" (memtable queue %s in %d, L0 limit %s in %d)",
 			cs.StallMemtableDuration.Round(time.Millisecond), cs.StallMemtableCount,
 			cs.StallL0Duration.Round(time.Millisecond), cs.StallL0Count)
 	}
-	fmt.Println()
+	fmt.Printf("\n  %.1f%% of the wall clock", share(stalled))
 	if writes > 0 {
-		// A stall blocks the write path for everyone, so every worker that was
-		// writing waited for it; charge it against the summed batch-write time
-		// once per worker that was busy on average.
-		charged := time.Duration(float64(stalled) * workers)
-		if charged > writes {
-			charged = writes
-		}
-		fmt.Printf("  of batch-write time, stalled: %s (%.0f%%); writing: %s\n",
-			charged.Round(time.Second), 100*float64(charged)/float64(writes), (writes - charged).Round(time.Second))
-		fmt.Printf("  wall clock spent stalled:    %s (%.0f%% of the run)\n",
-			stalled.Round(time.Second), 100*float64(stalled)/float64(elapsed))
+		fmt.Printf("; %.0f%% of a worker's batch-write time", 100*float64(stalled)/float64(perW(writes)))
 	}
+	fmt.Println()
+	fmt.Printf("  database time, all workers: %s; stalls apart, writes cost %s per worker\n",
+		db.Round(time.Second), (perW(writes) - min(stalled, perW(writes))).Round(time.Second))
 }

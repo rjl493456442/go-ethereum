@@ -53,15 +53,38 @@ type GenerateStats struct {
 }
 
 // numPartitions is the number of slices the account hash space is divided
-// into by GenerateTrie.
-const numPartitions = 16
+// into by GenerateTrie: one per two leading nibbles, so a partition is the
+// subtrie under a depth-2 path and its root mounts into the depth-1 branch
+// above it. There are more partitions than workers; a pool of workers takes
+// them in order, so at any moment the concurrent writers are ascending through
+// consecutive slices of the hash space.
+//
+// Why not one partition per worker: a worker's stream of trie nodes lands as
+// narrow sstables that overlap nothing older only if it stays within its own
+// slice, and a flush cuts files by size, not by slice. With many workers each
+// slice's share of a flush shrinks below the file size, files straddle slices
+// and pebble has to rewrite them into the base level instead of relinking
+// them. Fixing the partition count at 256 and choosing the worker count
+// separately keeps the two concerns apart.
+const numPartitions = 256
 
-// Each partition covers 1/16 of the account hash space. We track progress
+// DefaultGenerateWorkers is how many partitions GenerateTrie builds at once.
+// The trie work is CPU-bound per worker; the writes it produces are bounded by
+// the disk's compaction bandwidth, and past that point extra workers only wait
+// on the L0 write stall. Also keep workers <= memtable size / L0 file size, or
+// a slice's share of one flush falls below a file and relinking breaks.
+const DefaultGenerateWorkers = 16
+
+// GeneratePartitions returns the number of partitions GenerateTrie divides the
+// account hash space into.
+func GeneratePartitions() int { return numPartitions }
+
+// Each partition covers 1/256 of the account hash space. We track progress
 // by interpreting the top 8 bytes of an account hash as a uint64, so each
-// partition spans 2^64 / 16 = 2^60. partitionFinished is stored in a
+// partition spans 2^64 / 256 = 2^56. partitionFinished is stored in a
 // partition's position when it completes.
 const (
-	partitionRangeSize = uint64(1) << 60
+	partitionRangeSize = uint64(1) << 56
 	partitionFinished  = ^uint64(0)
 )
 
@@ -156,17 +179,21 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 	batch := db.NewBatchWithSize(ethdb.IdealBatchSize)
 
 	// Account-trie builder for this partition. It is fed account keys with
-	// their leading nibble stripped and emits nodes at their absolute path
-	// (prefixed with the partition nibble), so they line up with the full
-	// trie without any post-hoc surgery.
+	// their two leading nibbles stripped and emits nodes at their absolute
+	// path (prefixed with those nibbles), so they line up with the full trie
+	// without any post-hoc surgery.
 	//
-	// The subtree root is the only node emitted at path [partition]; we both
-	// persist it (so the top-level branch can reference it) and capture its
-	// bytes for assembleRoot, which needs them to either reference it or,
-	// in the single-partition case, fold the leading nibble back in.
-	var root []byte
-	acctTrie := trie.NewPartialStackTrie(partition, func(path []byte, hash common.Hash, blob []byte) {
-		if len(path) == 1 {
+	// The subtree root is the only node emitted at the partition's own path;
+	// we both persist it (so the branch above can reference it) and capture
+	// its bytes for assembleRoot, which needs them to either reference it or,
+	// when it is the only populated partition under its parent, fold the
+	// nibble back in.
+	var (
+		root   []byte
+		prefix = []byte{partition >> 4, partition & 0x0f}
+	)
+	acctTrie := trie.NewPartialStackTrieAt(prefix, func(path []byte, hash common.Hash, blob []byte) {
+		if len(path) == len(prefix) {
 			root = common.CopyBytes(blob)
 		}
 		c.accountTrieNodes.Add(1)
@@ -333,8 +360,8 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 	}
 
 	// Finalize the partition's account trie. For a non-empty partition this
-	// emits the subtree root at path [partition], populating rootBlob. An empty
-	// partition never emits any node and leaves rootBlob at nil.
+	// emits the subtree root at the partition's path, populating root. An empty
+	// partition never emits any node and leaves root at nil.
 	acctTrie.Hash()
 
 	if err := batch.Write(); err != nil {
@@ -368,9 +395,9 @@ func hashRanges(total int) [][2]common.Hash {
 }
 
 // GenerateTrie builds all tries (storage + account) from flat snapshot
-// data in the database. The account hash space is partitioned into 16
-// slices aligned with the first-nibble branching of the MPT root. Each
-// partition is processed by its own goroutine, which walks its slice,
+// data in the database. The account hash space is partitioned into 256
+// slices aligned with the two-nibble branching below the MPT root, built
+// by a pool of workers. Each worker walks its slice,
 // reconciles stale account.Root fields with flat storage, builds the
 // per-account storage tries and the partition's slice of the account
 // trie. Once every partition has produced its subtree root, the top-level
@@ -379,11 +406,24 @@ func hashRanges(total int) [][2]common.Hash {
 // Generation is all or nothing: an interrupted run leaves no resume
 // state and the next run builds every partition from scratch.
 func GenerateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}) (GenerateStats, error) {
-	return GenerateTrieWithProgress(db, scheme, root, cancel, nil)
+	return generateTrie(db, scheme, root, cancel, nil, DefaultGenerateWorkers)
+}
+
+// GenerateTrieWithWorkers is GenerateTrieWithProgress with the number of
+// partitions built concurrently chosen by the caller.
+func GenerateTrieWithWorkers(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64, workers int) (GenerateStats, error) {
+	return generateTrie(db, scheme, root, cancel, prog, workers)
 }
 
 // GenerateTrieWithProgress is GenerateTrie with live progress reporting.
 func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64) (GenerateStats, error) {
+	return generateTrie(db, scheme, root, cancel, prog, DefaultGenerateWorkers)
+}
+
+func generateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64, workers int) (GenerateStats, error) {
+	if workers < 1 {
+		workers = 1
+	}
 	var (
 		start        = time.Now()
 		c            genCounters
@@ -396,12 +436,13 @@ func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash
 	go tickProgress(progressDone, start, &c, prog)
 	defer close(progressDone)
 
-	// Run every partition concurrently, each producing the subtree root
-	// blob that assembleRoot needs.
+	// Run the partitions through a pool of workers, in order, each producing
+	// the subtree root blob that assembleRoot needs.
 	var (
 		ranges  = hashRanges(numPartitions)
 		eg, ctx = errgroup.WithContext(context.Background())
 	)
+	eg.SetLimit(workers)
 	for i, r := range ranges {
 		partition := byte(i)
 		rangeStart, rangeEnd := r[0], r[1]
@@ -411,7 +452,7 @@ func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash
 			if err != nil {
 				return err
 			}
-			log.Info("Partition done", "partition", partition, "elapsed", common.PrettyDuration(time.Since(start)))
+			log.Debug("Partition done", "partition", partition, "elapsed", common.PrettyDuration(time.Since(start)))
 
 			c.progress[partition].Store(partitionFinished)
 			partitionBlobs[partition] = blob
@@ -449,76 +490,89 @@ func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash
 	}, nil
 }
 
-// assembleRoot computes the canonical state root from the 16 partition subtree
-// root blobs and persists the top-level node. Each partition was built with its
-// leading nibble stripped, so its root blob is already the exact node the parent
-// branch mounts in that slot, and the partition has already written it (and all
-// its descendants) at their absolute paths. What's left depends on how many
-// partitions ended up populated:
-//
-//   - 0 populated: the state is empty, the root is types.EmptyRootHash and
-//     nothing is written.
-//
-//   - 1 populated: there is no top-level branch; the canonical root is that
-//     lone partition's subtree with its leading nibble folded back in (see
-//     trie.MountPartitionRoot). The new root node is written. If the fold
-//     orphaned the old subtree root the partition left at [n], that node is
-//     also deleted.
-//
-//   - 2+ populated: the canonical root is a 17-slot branch mounting each
-//     partition's subtree root by hash. The subtree roots are already on disk,
-//     so we only encode, hash, and persist the branch itself.
+// assembleRoot computes the canonical state root from the partition subtree
+// root blobs and persists every node above them. Partitions are the subtries
+// under depth-2 paths, so assembly is two levels of the same step: each depth-1
+// node is put together from its 16 partitions, then the root from the 16
+// depth-1 nodes. See assembleNode for what one step entails.
 func assembleRoot(db ethdb.Database, scheme string, partitionBlobs [numPartitions][]byte) (common.Hash, error) {
-	var (
-		populated int
-		partition int // last populated index, read only when populated == 1
-		children  [17][]byte
-	)
-
-	// Loop through all partitions and count how many are populated, while
-	// pre-filling the branch children array for the common 2+ case.
-	for i := range numPartitions {
-		if partitionBlobs[i] != nil {
-			populated++
-			partition = i
-			children[i] = crypto.Keccak256(partitionBlobs[i])
-		}
-	}
-
-	// No populated partitions: the state is empty.
-	if populated == 0 {
-		return types.EmptyRootHash, nil
-	}
-
-	// One populated partition: no top-level branch, so fold its leading nibble
-	// back into the subtree root.
-	if populated == 1 {
-		rootHash, rootBlob, isOrphaned, err := trie.MountPartitionRoot(partitionBlobs[partition], byte(partition))
+	batch := db.NewBatch()
+	var level1 [16][]byte
+	for n := range 16 {
+		var children [16][]byte
+		copy(children[:], partitionBlobs[n*16:(n+1)*16])
+		blob, err := assembleNode(batch, scheme, []byte{byte(n)}, children)
 		if err != nil {
-			return common.Hash{}, fmt.Errorf("mount partition %d: %w", partition, err)
+			return common.Hash{}, err
 		}
-		batch := db.NewBatch()
-		rawdb.WriteTrieNode(batch, common.Hash{}, nil, rootHash, rootBlob, scheme)
-		if isOrphaned {
-			// The folded root at nil does not reference [partition], so the copy
-			// generatePartition wrote there is now unreferenced. Delete it so the
-			// on-disk node set matches the canonical trie.
-			staleHash := crypto.Keccak256Hash(partitionBlobs[partition])
-			rawdb.DeleteTrieNode(batch, common.Hash{}, []byte{byte(partition)}, staleHash, scheme)
-		}
-		return rootHash, batch.Write()
+		level1[n] = blob
 	}
-
-	// populated >= 2: mount each partition's subtree root (already persisted at
-	// path [i]) into a 17-slot branch by hash, using the children array filled
-	// above. Those hash references are valid because account-trie subtree roots
-	// are always >= 32 bytes.
-	rootBlob, rootHash, err := trie.AssembleBranch(children)
+	rootBlob, err := assembleNode(batch, scheme, nil, level1)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	rawdb.WriteTrieNode(db, common.Hash{}, nil, rootHash, rootBlob, scheme)
-	return rootHash, nil
+	if rootBlob == nil {
+		// Nothing anywhere: the state is empty and nothing is written.
+		return types.EmptyRootHash, nil
+	}
+	return crypto.Keccak256Hash(rootBlob), batch.Write()
+}
+
+// assembleNode builds the node at path `at` from the subtree root blobs of its
+// 16 children, found at paths at+[i], writes what it creates, and returns the
+// node's blob, or nil if no child is populated. Each child was built with its
+// nibble stripped, so its blob is already the exact node the parent mounts in
+// that slot, and the child has already written it (and all its descendants) at
+// their absolute paths. What is left depends on how many are populated:
+//
+//   - 0: the subtree is empty; nothing is written and nil is returned.
+//
+//   - 1: there is no branch at `at`; the node there is that lone child's
+//     subtree with its nibble folded back in (see trie.MountPartitionRoot).
+//     If the fold orphaned the node the child left at at+[i], it is deleted.
+//
+//   - 2+: the node at `at` is a 17-slot branch mounting each child by hash.
+//     The children are already on disk, so only the branch is written. The
+//     hash references are valid because account-trie subtree roots are always
+//     at least 32 bytes.
+func assembleNode(batch ethdb.Batch, scheme string, at []byte, children [16][]byte) ([]byte, error) {
+	var (
+		populated int
+		last      int // last populated index, read only when populated == 1
+		refs      [17][]byte
+	)
+	for i := range children {
+		if children[i] != nil {
+			populated++
+			last = i
+			refs[i] = crypto.Keccak256(children[i])
+		}
+	}
+	switch populated {
+	case 0:
+		return nil, nil
+	case 1:
+		hash, blob, isOrphaned, err := trie.MountPartitionRoot(children[last], byte(last))
+		if err != nil {
+			return nil, fmt.Errorf("mount subtree %x%x: %w", at, last, err)
+		}
+		rawdb.WriteTrieNode(batch, common.Hash{}, at, hash, blob, scheme)
+		if isOrphaned {
+			// The folded node at `at` does not reference at+[last], so the copy
+			// the child wrote there is now unreferenced. Delete it so the
+			// on-disk node set matches the canonical trie.
+			stale := crypto.Keccak256Hash(children[last])
+			rawdb.DeleteTrieNode(batch, common.Hash{}, append(bytes.Clone(at), byte(last)), stale, scheme)
+		}
+		return blob, nil
+	default:
+		blob, hash, err := trie.AssembleBranch(refs)
+		if err != nil {
+			return nil, err
+		}
+		rawdb.WriteTrieNode(batch, common.Hash{}, at, hash, blob, scheme)
+		return blob, nil
+	}
 }
 
 // tickProgress logs an aggregate progress line every 30 seconds until done
