@@ -428,21 +428,39 @@ func (bc *BlockChain) StateAt(header *types.Header) (*state.StateDB, error) {
 	return state.New(header.Root, state.NewMPTDatabase(bc.triedb, bc.codedb).WithSnapshot(bc.snaps))
 }
 
+// StateConfig specifies the configuration for initializing the stateDB.
+type StateConfig struct {
+	Prefetch bool // Whether the hasher prefetching is enabled
+}
+
 // StateAtForkBoundary returns a new mutable state based on the parent state
 // and the given header, handling the transition across the UBT fork.
-func (bc *BlockChain) StateAtForkBoundary(parent *types.Header, header *types.Header) (*state.StateDB, error) {
+func (bc *BlockChain) StateAtForkBoundary(parent *types.Header, header *types.Header, config StateConfig) (*state.StateDB, error) {
 	// The parent is already in the UBT fork.
 	if bc.chainConfig.IsUBT(parent.Number, parent.Time) {
-		return state.New(parent.Root, state.NewUBTDatabase(bc.triedb, bc.codedb))
+		db := state.NewUBTDatabase(bc.triedb, bc.codedb)
+		if config.Prefetch {
+			db.EnablePrefetch()
+		}
+		return state.New(parent.Root, db)
 	}
 	// The current block is the first block in the UBT fork
 	// (i.e., the parent is the last MPT block).
 	if bc.chainConfig.IsUBT(header.Number, header.Time) {
 		// TODO(gballet): register chain context if needed
-		return state.New(parent.Root, state.NewUBTDatabase(bc.triedb, bc.codedb))
+		db := state.NewUBTDatabase(bc.triedb, bc.codedb)
+		if config.Prefetch {
+			db.EnablePrefetch()
+		}
+		return state.New(parent.Root, db)
 	}
 	// Both the parent and current block are in the MPT fork.
-	return state.New(parent.Root, state.NewMPTDatabase(bc.triedb, bc.codedb).WithSnapshot(bc.snaps))
+	db := state.NewMPTDatabase(bc.triedb, bc.codedb)
+	db.WithSnapshot(bc.snaps)
+	if config.Prefetch {
+		db.EnablePrefetch()
+	}
+	return state.New(parent.Root, db)
 }
 
 // HistoricState returns a historic state specified by the given header.

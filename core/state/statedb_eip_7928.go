@@ -25,10 +25,8 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -97,10 +95,8 @@ func (s *StateDB) applyBlockAccessList(list bal.BlockAccessList, threads int) er
 		addresses = append(addresses, access.Address)
 	}
 	// Schedule background warming of the account trie for every mutated account.
-	if s.prefetcher != nil && len(addresses) > 0 {
-		if err := s.prefetcher.prefetch(common.Hash{}, s.originalRoot, common.Address{}, addresses, nil, false); err != nil {
-			log.Error("Failed to prefetch account trie", "err", err)
-		}
+	if prefetcher, ok := s.hasher.(Prefetcher); ok && len(addresses) > 0 {
+		prefetcher.PrefetchAccount(addresses)
 	}
 	// Process the accounts by applying the final value of mutated fields.
 	var ba balApplyContext
@@ -171,9 +167,7 @@ func (s *StateDB) prepareBALAccount(entry *balAccount, ba *balApplyContext) erro
 }
 
 // applyBALStorage schedules warming of the account's storage trie and stages the
-// writes that actually change a slot's value. The storage trie itself is left
-// unopened on the object; IntermediateRoot pulls the warmed trie back from the
-// prefetcher (or opens it lazily if prefetching is disabled).
+// writes that actually change a slot's value.
 func (s *StateDB) applyBALStorage(obj *stateObject, slots []balSlot, ba *balApplyContext) error {
 	if len(slots) == 0 {
 		return nil
@@ -181,13 +175,13 @@ func (s *StateDB) applyBALStorage(obj *stateObject, slots []balSlot, ba *balAppl
 	addr := obj.address
 
 	// Schedule background warming of the storage trie paths to the mutated slots.
-	if obj.data.Root != types.EmptyRootHash && s.prefetcher != nil {
+	if prefetcher, ok := s.hasher.(Prefetcher); ok {
 		keys := make([]common.Hash, len(slots))
 		for i := range slots {
 			keys[i] = slots[i].key
 		}
 		ba.prefetchMu.Lock()
-		s.prefetcher.prefetch(obj.addrHash(), obj.data.Root, addr, nil, keys, false)
+		prefetcher.PrefetchStorage(addr, keys)
 		ba.prefetchMu.Unlock()
 	}
 	// Stage the writes that differ from the slot's pre-state value.

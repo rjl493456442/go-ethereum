@@ -30,9 +30,10 @@ import (
 // It leverages both trie and state snapshot to provide functionalities for state
 // access.
 type MPTDatabase struct {
-	triedb *triedb.Database
-	codedb *CodeDB
-	snap   *snapshot.Tree
+	triedb   *triedb.Database
+	codedb   *CodeDB
+	snap     *snapshot.Tree
+	prefetch bool
 }
 
 // Type returns Merkle, indicating this database is backed by a Merkle Patricia Trie.
@@ -53,6 +54,13 @@ func NewMPTDatabase(tdb *triedb.Database, codedb *CodeDB) *MPTDatabase {
 // registration must be performed before the MPTDatabase is used.
 func (db *MPTDatabase) WithSnapshot(snapshot *snapshot.Tree) Database {
 	db.snap = snapshot
+	return db
+}
+
+// EnablePrefetch enables the hasher prefetching feature. Note that this
+// configuration must be performed before the MPTDatabase is used.
+func (db *MPTDatabase) EnablePrefetch() Database {
+	db.prefetch = true
 	return db
 }
 
@@ -98,6 +106,12 @@ func (db *MPTDatabase) Reader(stateRoot common.Hash) (Reader, error) {
 		return nil, err
 	}
 	return newReader(db.codedb.Reader(), sr), nil
+}
+
+// Hasher implements Database, returning a hasher associated with the specified
+// state root.
+func (db *MPTDatabase) Hasher(stateRoot common.Hash) (Hasher, error) {
+	return newMerkleHasher(stateRoot, db.triedb, db.prefetch)
 }
 
 // ReadersWithCacheStats creates a pair of state readers that share the same
@@ -156,7 +170,10 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 		}
 	}
 	// Encode the state mutations in the MPT format
-	accounts, accountOrigin, storages, storageOrigin := update.EncodeMPTState()
+	accounts, accountOrigin, storages, storageOrigin, err := update.EncodeMPTState()
+	if err != nil {
+		return err
+	}
 
 	// If snapshotting is enabled, update the snapshot tree with this new version
 	if db.snap != nil && db.snap.Snapshot(update.OriginRoot) != nil {

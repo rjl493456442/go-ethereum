@@ -30,6 +30,14 @@ type UBTDatabase struct {
 	triedb   *triedb.Database
 	codedb   *CodeDB
 	recorder *bintrie.Recorder
+	prefetch bool
+}
+
+// EnablePrefetch enables the hasher prefetching feature. Note that this
+// configuration must be performed before the UBTDatabase is used.
+func (db *UBTDatabase) EnablePrefetch() Database {
+	db.prefetch = true
+	return db
 }
 
 // EnableAllocRecording installs an alloc recorder shared across every binary
@@ -94,6 +102,12 @@ func (db *UBTDatabase) Reader(stateRoot common.Hash) (Reader, error) {
 		return nil, err
 	}
 	return newReader(db.codedb.Reader(), sr), nil
+}
+
+// Hasher implements Database, returning a hasher associated with the specified
+// state root.
+func (db *UBTDatabase) Hasher(stateRoot common.Hash) (Hasher, error) {
+	return newBinaryHasher(stateRoot, db.triedb, db.prefetch)
 }
 
 // ReadersWithCacheStats creates a pair of state readers that share the same

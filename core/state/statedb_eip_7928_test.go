@@ -20,10 +20,12 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/holiman/uint256"
 )
 
@@ -42,7 +44,12 @@ func TestApplyBlockAccessListConcurrentPrefetch(t *testing.T) {
 
 	// Base state: n contracts, each with a pre-existing storage slot so its
 	// storage root is non-empty.
-	db := NewDatabaseForTesting()
+	var (
+		disk   = rawdb.NewMemoryDatabase()
+		tdb    = triedb.NewDatabase(disk, nil)
+		codedb = NewCodeDB(disk)
+		db     = NewMPTDatabase(tdb, codedb)
+	)
 	base, _ := New(types.EmptyRootHash, db)
 	for i := range n {
 		addr := addrOf(i)
@@ -72,8 +79,7 @@ func TestApplyBlockAccessListConcurrentPrefetch(t *testing.T) {
 		cb.BalanceChange(0, addr, uint256.NewInt(uint64(200+i)))
 		cb.StorageWrite(0, addr, slot, common.BigToHash(uint256.NewInt(uint64(i+1)).ToBig()))
 	}
-	balState, _ := New(root0, db)
-	balState.StartPrefetcher("test", nil)
+	balState, _ := New(root0, NewMPTDatabase(tdb, codedb).EnablePrefetch())
 	if err := balState.ApplyBlockAccessList(cb.ToEncodingObj()); err != nil {
 		balState.StopPrefetcher()
 		t.Fatalf("apply block access list: %v", err)
@@ -89,8 +95,8 @@ func TestApplyBlockAccessListConcurrentPrefetch(t *testing.T) {
 // TestApplyBlockAccessListMatchesSequential checks that installing a block's
 // post-state through ApplyBlockAccessList yields exactly the same state root as
 // applying the same mutations one by one. The BAL path warms both the account
-// trie and the storage tries through the prefetcher and pulls them back at
-// IntermediateRoot, so this also exercises that machinery. Run with -race to
+// trie and the storage tries through the hasher prefetcher, so this also
+// exercises that machinery. Run with -race to
 // catch data races in the concurrent prefetch scheduling.
 func TestApplyBlockAccessListMatchesSequential(t *testing.T) {
 	var (
@@ -106,7 +112,12 @@ func TestApplyBlockAccessListMatchesSequential(t *testing.T) {
 	// Build a base state with a plain account and a contract that already has
 	// some storage (so its storage root is non-empty and the storage-trie
 	// prefetch path is exercised).
-	db := NewDatabaseForTesting()
+	var (
+		disk   = rawdb.NewMemoryDatabase()
+		tdb    = triedb.NewDatabase(disk, nil)
+		codedb = NewCodeDB(disk)
+		db     = NewMPTDatabase(tdb, codedb)
+	)
 	base, _ := New(types.EmptyRootHash, db)
 	base.SetBalance(existing, uint256.NewInt(1000), tracing.BalanceChangeUnspecified)
 	base.SetNonce(existing, 1, tracing.NonceChangeUnspecified)
@@ -147,8 +158,7 @@ func TestApplyBlockAccessListMatchesSequential(t *testing.T) {
 	cb.NonceChange(fresh, 0, 1)
 	list := cb.ToEncodingObj()
 
-	balState, _ := New(root0, db)
-	balState.StartPrefetcher("test", nil)
+	balState, _ := New(root0, NewMPTDatabase(tdb, codedb).EnablePrefetch())
 	if err := balState.ApplyBlockAccessList(list); err != nil {
 		balState.StopPrefetcher()
 		t.Fatalf("apply block access list: %v", err)

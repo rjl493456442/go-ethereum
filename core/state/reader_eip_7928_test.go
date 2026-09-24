@@ -23,7 +23,6 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/testrand"
 )
 
@@ -71,7 +70,7 @@ func (r *countingStateReader) validate(total int) error {
 	return nil
 }
 
-func (r *countingStateReader) Account(addr common.Address) (*types.StateAccount, error) {
+func (r *countingStateReader) Account(addr common.Address) (*Account, error) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 

@@ -17,6 +17,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 
@@ -43,7 +44,7 @@ type ContractCode struct {
 // AccountDelete represents a deletion operation for an Ethereum account.
 type AccountDelete struct {
 	Address        common.Address              // Address uniquely identifies the account.
-	Origin         *types.StateAccount         // Origin is the account state prior to deletion (never be null).
+	Origin         *Account                    // Origin is the account state prior to deletion (never be null).
 	Storages       map[common.Hash]common.Hash // Storages contains mutated storage slots.
 	StoragesOrigin map[common.Hash]common.Hash // StoragesOrigin holds original values of mutated slots; keys are hashes of raw storage slot keys.
 }
@@ -51,8 +52,8 @@ type AccountDelete struct {
 // AccountUpdate represents an update operation for an Ethereum account.
 type AccountUpdate struct {
 	Address  common.Address              // Address uniquely identifies the account.
-	Data     *types.StateAccount         // Data is the updated account state; nil indicates deletion.
-	Origin   *types.StateAccount         // Origin is the previous account state; nil indicates non-existence.
+	Data     *Account                    // Data is the updated account state; nil indicates deletion.
+	Origin   *Account                    // Origin is the previous account state; nil indicates non-existence.
 	Code     *ContractCode               // Code contains updated contract code; nil if unchanged.
 	Storages map[common.Hash]common.Hash // Storages contains updated storage slots.
 
@@ -84,14 +85,14 @@ type StateUpdate struct {
 	BlockNumber uint64      // Associated block number
 
 	// Accounts contains mutated accounts, keyed by address hash.
-	Accounts map[common.Hash]*types.StateAccount
+	Accounts map[common.Hash]*Account
 
 	// Storages contains mutated storage slots, keyed by address
 	// hash and storage slot key hash.
 	Storages map[common.Hash]map[common.Hash]common.Hash
 
 	// AccountsOrigin holds the original values of mutated accounts, keyed by address.
-	AccountsOrigin map[common.Address]*types.StateAccount
+	AccountsOrigin map[common.Address]*Account
 
 	// StoragesOrigin holds the original values of mutated storage slots.
 	// The key format depends on StorageKeyType:
@@ -102,6 +103,11 @@ type StateUpdate struct {
 
 	Codes map[common.Address]*ContractCode // Codes contains the set of dirty codes
 	Nodes *trienode.MergedNodeSet          // Aggregated dirty nodes caused by state changes
+
+	// SecondaryHashes contains the roots of the secondary tries (e.g. the
+	// storage tries in the two-layer Merkle-Patricia hashing scheme) along
+	// with their original values, keyed by account address.
+	SecondaryHashes map[common.Address]Hashes
 }
 
 // Empty returns a flag indicating the state transition is empty or not.
@@ -112,10 +118,10 @@ func (sc *StateUpdate) Empty() bool {
 // NewStateUpdate constructs a state update object by identifying the differences
 // between two states through state execution. It combines the specified account
 // deletions and account updates to create a complete state update.
-func NewStateUpdate(typ StorageKeyEncoding, originRoot common.Hash, root common.Hash, blockNumber uint64, deletes map[common.Hash]*AccountDelete, updates map[common.Hash]*AccountUpdate, nodes *trienode.MergedNodeSet) *StateUpdate {
+func NewStateUpdate(typ StorageKeyEncoding, originRoot common.Hash, root common.Hash, blockNumber uint64, deletes map[common.Hash]*AccountDelete, updates map[common.Hash]*AccountUpdate, nodes *trienode.MergedNodeSet, secondaryHashes map[common.Address]Hashes) *StateUpdate {
 	var (
-		accounts       = make(map[common.Hash]*types.StateAccount)
-		accountsOrigin = make(map[common.Address]*types.StateAccount)
+		accounts       = make(map[common.Hash]*Account)
+		accountsOrigin = make(map[common.Address]*Account)
 		storages       = make(map[common.Hash]map[common.Hash]common.Hash)
 		storagesOrigin = make(map[common.Address]map[common.Hash]common.Hash)
 		codes          = make(map[common.Address]*ContractCode)
@@ -178,16 +184,17 @@ func NewStateUpdate(typ StorageKeyEncoding, originRoot common.Hash, root common.
 		}
 	}
 	return &StateUpdate{
-		OriginRoot:     originRoot,
-		Root:           root,
-		BlockNumber:    blockNumber,
-		Accounts:       accounts,
-		AccountsOrigin: accountsOrigin,
-		Storages:       storages,
-		StoragesOrigin: storagesOrigin,
-		StorageKeyType: typ,
-		Codes:          codes,
-		Nodes:          nodes,
+		OriginRoot:      originRoot,
+		Root:            root,
+		BlockNumber:     blockNumber,
+		Accounts:        accounts,
+		AccountsOrigin:  accountsOrigin,
+		Storages:        storages,
+		StoragesOrigin:  storagesOrigin,
+		StorageKeyType:  typ,
+		Codes:           codes,
+		Nodes:           nodes,
+		SecondaryHashes: secondaryHashes,
 	}
 }
 
@@ -210,9 +217,20 @@ func encodeSlot(value common.Hash) []byte {
 	return blob
 }
 
-// encodeAccounts encodes the given accounts into their slim RLP form, reusing a
-// single encoder across all of them.
-func encodeAccounts[K comparable](src map[K]*types.StateAccount) map[K][]byte {
+// encodeAccount encodes the account along with the given storage root into
+// the slim RLP form.
+func encodeAccount(buf *rlp.EncoderBuffer, account *Account, root common.Hash) []byte {
+	return types.SlimAccountRLPInto(buf, types.StateAccount{
+		Nonce:    account.Nonce,
+		Balance:  account.Balance,
+		Root:     root,
+		CodeHash: account.CodeHash,
+	})
+}
+
+// encodeAccounts encodes the given accounts into their slim RLP form without
+// storage root, reusing a single encoder across all of them.
+func encodeAccounts[K comparable](src map[K]*Account) map[K][]byte {
 	out := make(map[K][]byte, len(src))
 	if len(src) == 0 {
 		return out
@@ -225,7 +243,7 @@ func encodeAccounts[K comparable](src map[K]*types.StateAccount) map[K][]byte {
 			out[key] = nil
 			continue
 		}
-		out[key] = types.SlimAccountRLPInto(&buf, *account)
+		out[key] = encodeAccount(&buf, account, common.Hash{})
 	}
 	return out
 }
@@ -248,8 +266,38 @@ func encodeStorages[K comparable](src map[K]map[common.Hash]common.Hash) map[K]m
 //
 // It transforms account and storage updates into their corresponding MPT-encoded
 // key-value mappings, using the same encoding rules as the Ethereum state trie.
-func (sc *StateUpdate) EncodeMPTState() (map[common.Hash][]byte, map[common.Address][]byte, map[common.Hash]map[common.Hash][]byte, map[common.Address]map[common.Hash][]byte) {
-	return encodeAccounts(sc.Accounts), encodeAccounts(sc.AccountsOrigin), encodeStorages(sc.Storages), encodeStorages(sc.StoragesOrigin)
+func (sc *StateUpdate) EncodeMPTState() (map[common.Hash][]byte, map[common.Address][]byte, map[common.Hash]map[common.Hash][]byte, map[common.Address]map[common.Hash][]byte, error) {
+	var (
+		accounts      = make(map[common.Hash][]byte, len(sc.Accounts))
+		accountOrigin = make(map[common.Address][]byte, len(sc.AccountsOrigin))
+		buf           = rlp.NewEncoderBuffer(nil)
+	)
+	defer buf.Flush()
+
+	for addr, prev := range sc.AccountsOrigin {
+		if prev == nil {
+			accountOrigin[addr] = nil
+		} else {
+			pair, ok := sc.SecondaryHashes[addr]
+			if !ok {
+				return nil, nil, nil, nil, errors.New("no secondary hash")
+			}
+			accountOrigin[addr] = encodeAccount(&buf, prev, pair.Prev)
+		}
+
+		addrHash := crypto.Keccak256Hash(addr.Bytes())
+		data := sc.Accounts[addrHash]
+		if data == nil {
+			accounts[addrHash] = nil
+		} else {
+			pair, ok := sc.SecondaryHashes[addr]
+			if !ok {
+				return nil, nil, nil, nil, errors.New("no secondary hash")
+			}
+			accounts[addrHash] = encodeAccount(&buf, data, pair.Hash)
+		}
+	}
+	return accounts, accountOrigin, encodeStorages(sc.Storages), encodeStorages(sc.StoragesOrigin), nil
 }
 
 // EncodeUBTState encodes all state mutations alongside their original value
@@ -306,9 +354,24 @@ func (sc *StateUpdate) ToTracingUpdate() (*tracing.StateUpdate, error) {
 		if !exists {
 			return nil, fmt.Errorf("account %x not found", addr)
 		}
-		change := &tracing.AccountChange{
-			Prev: oldData,
-			New:  newData,
+		hashes := sc.SecondaryHashes[addr]
+		change := &tracing.AccountChange{}
+
+		if oldData != nil {
+			change.Prev = &types.StateAccount{
+				Nonce:    oldData.Nonce,
+				Balance:  oldData.Balance,
+				Root:     hashes.Prev,
+				CodeHash: oldData.CodeHash,
+			}
+		}
+		if newData != nil {
+			change.New = &types.StateAccount{
+				Nonce:    newData.Nonce,
+				Balance:  newData.Balance,
+				Root:     hashes.Hash,
+				CodeHash: newData.CodeHash,
+			}
 		}
 		update.AccountChanges[addr] = change
 	}

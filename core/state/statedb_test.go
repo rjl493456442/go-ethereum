@@ -32,15 +32,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
-	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
@@ -234,7 +229,7 @@ func TestCopyWithDirtyJournal(t *testing.T) {
 	for i := byte(0); i < 255; i++ {
 		obj := orig.getOrNewStateObject(common.BytesToAddress([]byte{i}))
 		obj.AddBalance(uint256.NewInt(uint64(i)))
-		obj.data.Root = common.HexToHash("0xdeadbeef")
+		//obj.data.Root = common.HexToHash("0xdeadbeef")
 	}
 	root, _ := orig.Commit(params.Rules{IsEIP158: true}, 0)
 	orig, _ = New(root, db)
@@ -277,7 +272,7 @@ func TestCopyObjectState(t *testing.T) {
 	for i := byte(0); i < 5; i++ {
 		obj := orig.getOrNewStateObject(common.BytesToAddress([]byte{i}))
 		obj.AddBalance(uint256.NewInt(uint64(i)))
-		obj.data.Root = common.HexToHash("0xdeadbeef")
+		//obj.data.Root = common.HexToHash("0xdeadbeef")
 	}
 	orig.Finalise(params.Rules{IsEIP158: true})
 	cpy := orig.Copy()
@@ -545,47 +540,6 @@ func (test *snapshotTest) run() bool {
 	return true
 }
 
-func forEachStorage(s *StateDB, addr common.Address, cb func(key, value common.Hash) bool) error {
-	so := s.getStateObject(addr)
-	if so == nil {
-		return nil
-	}
-	tr, err := so.getTrie()
-	if err != nil {
-		return err
-	}
-	trieIt, err := tr.NodeIterator(nil)
-	if err != nil {
-		return err
-	}
-	var (
-		it      = trie.NewIterator(trieIt)
-		visited = make(map[common.Hash]bool)
-	)
-
-	for it.Next() {
-		key := common.BytesToHash(tr.GetKey(it.Key))
-		visited[key] = true
-		if value, dirty := so.dirtyStorage[key]; dirty {
-			if !cb(key, value) {
-				return nil
-			}
-			continue
-		}
-
-		if len(it.Value) > 0 {
-			_, content, _, err := rlp.Split(it.Value)
-			if err != nil {
-				return err
-			}
-			if !cb(key, common.BytesToHash(content)) {
-				return nil
-			}
-		}
-	}
-	return nil
-}
-
 // checkEqual checks that methods of state and checkstate return the same values.
 func (test *snapshotTest) checkEqual(state, checkstate *StateDB) error {
 	for _, addr := range test.addrs {
@@ -611,12 +565,6 @@ func (test *snapshotTest) checkEqual(state, checkstate *StateDB) error {
 		}
 		// Check storage.
 		if obj := state.getStateObject(addr); obj != nil {
-			forEachStorage(state, addr, func(key, value common.Hash) bool {
-				return checkeq("GetState("+key.Hex()+")", checkstate.GetState(addr, key), value)
-			})
-			forEachStorage(checkstate, addr, func(key, value common.Hash) bool {
-				return checkeq("GetState("+key.Hex()+")", checkstate.GetState(addr, key), value)
-			})
 			other := checkstate.getStateObject(addr)
 			// Check dirty storage which is not in trie
 			if !maps.Equal(obj.dirtyStorage, other.dirtyStorage) {
@@ -821,8 +769,14 @@ func TestCopyCommitCopy(t *testing.T) {
 		t.Fatalf("second copy committed storage slot mismatch: have %x, want %x", val, common.Hash{})
 	}
 	// Commit state, ensure states can be loaded from disk
-	root, _ := state.Commit(params.Rules{}, 0)
-	state, _ = New(root, tdb)
+	root, err := state.Commit(params.Rules{}, 0)
+	if err != nil {
+		t.Fatalf("commit fail: %v", err)
+	}
+	state, err = New(root, tdb)
+	if err != nil {
+		t.Fatalf("New fail: %v", err)
+	}
 	if balance := state.GetBalance(addr); balance.Cmp(uint256.NewInt(42)) != 0 {
 		t.Fatalf("state post-commit balance mismatch: have %v, want %v", balance, 42)
 	}
@@ -1001,7 +955,10 @@ func TestDeleteCreateRevert(t *testing.T) {
 }
 
 func TestWitnessIncludesAbsentAccountReads(t *testing.T) {
-	db := NewDatabaseForTesting()
+	tdb := triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil)
+	db := NewMPTDatabase(tdb, nil)
+	db.EnablePrefetch()
+
 	state, _ := New(types.EmptyRootHash, db)
 	for i := byte(0); i < 3; i++ {
 		addr := common.Address{i + 1}
@@ -1020,7 +977,7 @@ func TestWitnessIncludesAbsentAccountReads(t *testing.T) {
 		Codes: make(map[string]struct{}),
 		State: make(map[string]struct{}),
 	}
-	state.StartPrefetcher("test", witness)
+	state.TraceWitness(witness)
 	missing := common.HexToAddress("0x017655eac00c837122cabbbc0dd604a196906648")
 	if balance := state.GetBalance(missing); balance.Sign() != 0 {
 		t.Fatalf("unexpected balance for absent account: %v", balance)
@@ -1033,6 +990,10 @@ func TestWitnessIncludesAbsentAccountReads(t *testing.T) {
 	}
 	if err := state.Error(); err != nil {
 		t.Fatalf("unexpected state error after root calculation: %v", err)
+	}
+	// The witness is gathered from the hasher when the state is committed.
+	if _, err := state.Commit(params.Rules{}, 1); err != nil {
+		t.Fatalf("failed to commit read-only state: %v", err)
 	}
 	if len(witness.State) == 0 {
 		t.Fatal("missing witness nodes for absent account read")
@@ -1353,60 +1314,6 @@ func TestStateDBTransientStorage(t *testing.T) {
 	cpy := state.Copy()
 	if got := cpy.GetTransientState(addr, key); got != value {
 		t.Fatalf("transient storage mismatch: have %x, want %x", got, value)
-	}
-}
-
-func TestDeleteStorage(t *testing.T) {
-	var (
-		disk     = rawdb.NewMemoryDatabase()
-		tdb      = triedb.NewDatabase(disk, nil)
-		snaps, _ = snapshot.New(snapshot.Config{CacheSize: 10}, disk, tdb, types.EmptyRootHash)
-		db       = NewMPTDatabase(tdb, nil).WithSnapshot(snaps)
-		state, _ = New(types.EmptyRootHash, db)
-		addr     = common.HexToAddress("0x1")
-	)
-	// Initialize account and populate storage
-	state.SetBalance(addr, uint256.NewInt(1), tracing.BalanceChangeUnspecified)
-	state.CreateAccount(addr)
-	for i := 0; i < 1000; i++ {
-		slot := common.Hash(uint256.NewInt(uint64(i)).Bytes32())
-		value := common.Hash(uint256.NewInt(uint64(10 * i)).Bytes32())
-		state.SetState(addr, slot, value)
-	}
-	root, _ := state.Commit(params.Rules{IsEIP158: true}, 0)
-	// Init phase done, create two states, one with snap and one without
-	fastState, _ := New(root, NewMPTDatabase(tdb, nil).WithSnapshot(snaps))
-	slowState, _ := New(root, NewMPTDatabase(tdb, nil))
-
-	obj := fastState.getOrNewStateObject(addr)
-	storageRoot := obj.data.Root
-
-	_, _, fastNodes, err := fastState.deleteStorage(crypto.Keccak256Hash(addr[:]), storageRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, _, slowNodes, err := slowState.deleteStorage(crypto.Keccak256Hash(addr[:]), storageRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check := func(set *trienode.NodeSet) string {
-		var a []string
-		set.ForEachWithOrder(func(path string, n *trienode.Node) {
-			if n.Hash != (common.Hash{}) {
-				t.Fatal("delete should have empty hashes")
-			}
-			if len(n.Blob) != 0 {
-				t.Fatal("delete should have empty blobs")
-			}
-			a = append(a, fmt.Sprintf("%x", path))
-		})
-		return strings.Join(a, ",")
-	}
-	slowRes := check(slowNodes)
-	fastRes := check(fastNodes)
-	if slowRes != fastRes {
-		t.Fatalf("difference found:\nfast: %v\nslow: %v\n", fastRes, slowRes)
 	}
 }
 

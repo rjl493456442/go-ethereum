@@ -184,7 +184,10 @@ func (test *stateTest) run() bool {
 		storages      []map[common.Hash]map[common.Hash][]byte
 		storageOrigin []map[common.Address]map[common.Hash][]byte
 		copyUpdate    = func(update *StateUpdate) {
-			accts, acctOrigin, slots, slotOrigin := update.EncodeMPTState()
+			accts, acctOrigin, slots, slotOrigin, err := update.EncodeMPTState()
+			if err != nil {
+				panic(err)
+			}
 			accounts = append(accounts, maps.Clone(accts))
 			accountOrigin = append(accountOrigin, maps.Clone(acctOrigin))
 			storages = append(storages, maps.Clone(slots))

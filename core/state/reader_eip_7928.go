@@ -236,7 +236,7 @@ func NewReaderWithBlockLevelAccessList(base Reader, lookup *bal.Lookup, txIndex 
 //
 // The returned account reflects the pre-transition state overlaid with all
 // mutations made by call frames prior to the reader's TxIndex.
-func (r *ReaderWithBlockLevelAccessList) Account(addr common.Address) (*types.StateAccount, error) {
+func (r *ReaderWithBlockLevelAccessList) Account(addr common.Address) (*Account, error) {
 	base, err := r.Reader.Account(addr)
 	if err != nil {
 		return nil, err
@@ -250,9 +250,9 @@ func (r *ReaderWithBlockLevelAccessList) Account(addr common.Address) (*types.St
 	// Overlay the mutations on top of a copy of the base account. The base
 	// account must not be mutated in place: with a shared cache in front of the
 	// underlying reader, the same instance is handed to concurrent readers.
-	account := types.NewEmptyStateAccount()
+	account := newEmptyAccount()
 	if base != nil {
-		account = base.Copy()
+		account = base.copy()
 	}
 	if hasBalance {
 		account.Balance = balance.Clone()

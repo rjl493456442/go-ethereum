@@ -29,14 +29,26 @@ import (
 // ExecuteStats includes all the statistics of a block execution in details.
 type ExecuteStats struct {
 	// State read times
-	AccountReads   time.Duration // Time spent on the account reads
-	StorageReads   time.Duration // Time spent on the storage reads
+	AccountReads time.Duration // Time spent on the account reads
+	StorageReads time.Duration // Time spent on the storage reads
+	CodeReads    time.Duration // Time spent on the contract code read
+
+	// State hash times
 	AccountHashes  time.Duration // Time spent on the account trie hash
 	AccountUpdates time.Duration // Time spent on the account trie update
-	AccountCommits time.Duration // Time spent on the account trie commit
 	StorageUpdates time.Duration // Time spent on the storage trie update
-	StorageCommits time.Duration // Time spent on the storage trie commit
-	CodeReads      time.Duration // Time spent on the contract code read
+
+	// EVM execution and validation time
+	Execution  time.Duration // Time spent on the EVM execution
+	Validation time.Duration // Time spent on the block validation
+
+	// Commit times
+	HasherCommit   time.Duration // Time spent on trie commit
+	DatabaseCommit time.Duration // Time spent on database commit
+
+	// Others
+	TotalTime     time.Duration // The total time spent on block execution
+	MgasPerSecond float64       // The million gas processed per second
 
 	AccountLoaded   int // Number of accounts loaded
 	AccountUpdated  int // Number of accounts updated
@@ -49,16 +61,37 @@ type ExecuteStats struct {
 	CodeUpdated     int // Number of contract code written (CREATE/CREATE2 + EIP-7702)
 	CodeUpdateBytes int // Total bytes of code written
 
-	Execution       time.Duration // Time spent on the EVM execution
-	Validation      time.Duration // Time spent on the block validation
-	CrossValidation time.Duration // Optional, time spent on the block cross validation
-	DatabaseCommit  time.Duration // Time spent on database commit
-	TotalTime       time.Duration // The total time spent on block execution
-	MgasPerSecond   float64       // The million gas processed per second
-
 	// Cache hit rates
 	StateReadCacheStats     state.ReaderStats
 	StatePrefetchCacheStats state.ReaderStats
+}
+
+func NewExecuteStats(stateDB *state.StateDB, process time.Duration, validation time.Duration) *ExecuteStats {
+	return &ExecuteStats{
+		// State read times
+		AccountReads: stateDB.AccountReads,
+		StorageReads: stateDB.StorageReads,
+		CodeReads:    stateDB.CodeReads,
+
+		// State hash times
+		AccountHashes:  stateDB.AccountHashes,
+		AccountUpdates: stateDB.AccountUpdates,
+		StorageUpdates: stateDB.StorageUpdates,
+
+		Execution:  process - stateDB.StateReadTime(),
+		Validation: validation - stateDB.StateHashTime(),
+
+		AccountLoaded:   stateDB.AccountLoaded,
+		AccountUpdated:  stateDB.AccountUpdated,
+		AccountDeleted:  stateDB.AccountDeleted,
+		StorageLoaded:   stateDB.StorageLoaded,
+		StorageUpdated:  int(stateDB.StorageUpdated.Load()),
+		StorageDeleted:  int(stateDB.StorageDeleted.Load()),
+		CodeLoaded:      stateDB.CodeLoaded,
+		CodeLoadBytes:   stateDB.CodeLoadBytes,
+		CodeUpdated:     stateDB.CodeUpdated,
+		CodeUpdateBytes: stateDB.CodeUpdateBytes,
+	}
 }
 
 // reportMetrics uploads execution statistics to the metrics system.
@@ -79,12 +112,10 @@ func (s *ExecuteStats) reportMetrics() {
 	accountUpdateTimer.Update(s.AccountUpdates) // Account updates are complete(in validation)
 	storageUpdateTimer.Update(s.StorageUpdates) // Storage updates are complete(in validation)
 	accountHashTimer.Update(s.AccountHashes)    // Account hashes are complete(in validation)
-	accountCommitTimer.Update(s.AccountCommits) // Account commits are complete, we can mark them
-	storageCommitTimer.Update(s.StorageCommits) // Storage commits are complete, we can mark them
+	hasherCommitTimer.Update(s.HasherCommit)    // Trie commits are complete, we can mark them
 
 	blockExecutionTimer.Update(s.Execution)                 // The time spent on EVM processing
 	blockValidationTimer.Update(s.Validation)               // The time spent on block validation
-	blockCrossValidationTimer.Update(s.CrossValidation)     // The time spent on stateless cross validation
 	triedbCommitTimer.Update(s.DatabaseCommit)              // Trie database commits are complete, we can mark them
 	blockInsertTimer.Update(s.TotalTime)                    // The total time spent on block execution
 	chainMgaspsMeter.Update(time.Duration(s.MgasPerSecond)) // TODO(rjl493456442) generalize the ResettingTimer
@@ -208,7 +239,7 @@ func (s *ExecuteStats) logSlow(block *types.Block, slowBlockThreshold time.Durat
 			ExecutionMs: durationToMs(s.Execution),
 			StateReadMs: durationToMs(s.AccountReads + s.StorageReads + s.CodeReads),
 			StateHashMs: durationToMs(s.AccountHashes + s.AccountUpdates + s.StorageUpdates),
-			CommitMs:    durationToMs(max(s.AccountCommits, s.StorageCommits) + s.DatabaseCommit),
+			CommitMs:    durationToMs(s.HasherCommit + s.DatabaseCommit),
 			TotalMs:     durationToMs(s.TotalTime),
 		},
 		Throughput: slowBlockThru{

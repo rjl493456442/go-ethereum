@@ -58,6 +58,9 @@ type Database interface {
 	// through which the account iterator and storage iterator can be created.
 	Iteratee(root common.Hash) (Iteratee, error)
 
+	// Hasher returns a state hasher associated with the specified state root.
+	Hasher(root common.Hash) (Hasher, error)
+
 	// OpenTrie opens the main account trie.
 	OpenTrie(root common.Hash) (Trie, error)
 
