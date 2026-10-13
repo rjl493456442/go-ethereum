@@ -29,4 +29,7 @@ var (
 	storageTriesUpdatedMeter = metrics.NewRegisteredMeter("state/update/storagenodes", nil)
 	accountTrieDeletedMeter  = metrics.NewRegisteredMeter("state/delete/accountnodes", nil)
 	storageTriesDeletedMeter = metrics.NewRegisteredMeter("state/delete/storagenodes", nil)
+
+	commitCodeTimer   = metrics.NewRegisteredResettingTimer("state/commit/code", nil)
+	commitEncodeTimer = metrics.NewRegisteredResettingTimer("state/commit/encode", nil)
 )

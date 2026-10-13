@@ -50,9 +50,9 @@ type bufferSet struct {
 	bloom  *bloomFilter // filter over the keys of the set, nil to probe the set always
 }
 
-// newBufferSet constructs the set with the provided nodes and states. The keys
-// of the set are also passed to fn if it's not nil.
-func newBufferSet(nodes *nodeSet, states *stateSet, layers uint64, fn func(uint64)) *bufferSet {
+// newBufferSet constructs the set with the provided nodes and states, along
+// with the filter over the given bloom keys of them.
+func newBufferSet(nodes *nodeSet, states *stateSet, layers uint64, keys ...[]uint64) *bufferSet {
 	// Don't panic for the lazy callers, initialize the nil set instead
 	if nodes == nil {
 		nodes = newNodeSet(nil)
@@ -69,7 +69,7 @@ func newBufferSet(nodes *nodeSet, states *stateSet, layers uint64, fn func(uint6
 		layers: layers,
 		nodes:  nodes,
 		states: states,
-		bloom:  newSetBloom(nodes, states, fn),
+		bloom:  newSetBloom(keys...),
 	}
 }
 
@@ -100,7 +100,7 @@ func mergeBufferSets(sets []*bufferSet) *bufferSet {
 		nodes:  mergeNodeSets(nodes),
 		states: mergeStateSets(states),
 	}
-	merged.bloom = newSetBloom(merged.nodes, merged.states, nil)
+	merged.bloom = newSetBloom(appendBloomKeys(nil, merged.nodes, merged.states))
 	return merged
 }
 
@@ -304,7 +304,11 @@ func newBuffer(limit int, nodes *nodeSet, states *stateSet, layers uint64) *buff
 		bloom = newBufferBloom(uint64(limit))
 	)
 	if nodes != nil || states != nil || layers != 0 {
-		set := newBufferSet(nodes, states, layers, bloom.insert)
+		keys := appendBloomKeys(nil, nodes, states)
+		set := newBufferSet(nodes, states, layers, keys)
+		for _, key := range keys {
+			bloom.insert(key)
+		}
 		if set.size() > 0 || layers > 0 {
 			sets = []*bufferSet{set}
 			size = set.size()
@@ -414,23 +418,30 @@ func (b *buffer) storageList(accountHash common.Hash) []common.Hash {
 func (b *buffer) commit(nodes *nodeSet, states *stateSet) *buffer {
 	start := time.Now()
 
-	// Derive the bloom keys once, for both the filter of the new set and the
-	// shared one.
-	keys := bloomKeyPool.Get().(*[]uint64)
-	defer bloomKeyPool.Put(keys)
-
-	*keys = (*keys)[:0]
-	set := newBufferSet(nodes, states, 1, func(key uint64) { *keys = append(*keys, key) })
-
 	b.viewMu.Lock()
 	view := b.view.Load()
 
-	// Insert the keys of the new set into the shared bloom filter before the
-	// view publication, ensuring the readers of the new view can never observe
-	// a false negative.
-	for _, key := range *keys {
-		view.bloom.insertAtomic(key)
+	// Derive the bloom keys of the new set in partitions concurrently, inserting
+	// them into the shared bloom filter before the view publication, ensuring
+	// the readers of the new view can never observe a false negative.
+	var (
+		wg   sync.WaitGroup
+		keys = bloomKeyPool.Get().(*[bloomParts][]uint64)
+	)
+	defer bloomKeyPool.Put(keys)
+
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keys[i] = appendBloomKeysPart(keys[i][:0], nodes, states, i, bloomParts)
+			for _, key := range keys[i] {
+				view.bloom.insertAtomic(key)
+			}
+		}()
 	}
+	wg.Wait()
+	set := newBufferSet(nodes, states, 1, keys[:]...)
 
 	// Construct the set list for the new view. Note the list held by the
 	// current view must not be modified in place (append could mutate the

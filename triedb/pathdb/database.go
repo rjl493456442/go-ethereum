@@ -294,28 +294,41 @@ func (db *Database) setStateGenerator() error {
 // The supplied parentRoot and root must be a valid trie hash value.
 func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint64, nodes *trienode.MergedNodeSet, states *StateSetWithOrigin) error {
 	// Hold the lock to prevent concurrent mutations.
+	start := time.Now()
 	db.lock.Lock()
 	defer db.lock.Unlock()
+	updateLockTimer.UpdateSince(start)
 
 	// Short circuit if the mutation is not allowed.
 	if err := db.modifyAllowed(); err != nil {
 		return err
 	}
+	start = time.Now()
 	var nodesWithOrigins *nodeSetWithOrigin
 	if db.config.TrienodeHistory >= 0 {
 		nodesWithOrigins = NewNodeSetWithOrigin(nodes.NodeAndOrigins())
 	} else {
 		nodesWithOrigins = NewNodeSetWithOrigin(nodes.Nodes(), nil)
 	}
+	updateNodeSetTimer.UpdateSince(start)
+
+	start = time.Now()
 	if err := db.tree.add(root, parentRoot, block, nodesWithOrigins, states); err != nil {
 		return err
 	}
+	updateAddTimer.UpdateSince(start)
+
 	// Keep 128 diff layers in the memory, persistent layer is 129th.
 	// - head layer is paired with HEAD state
 	// - head-1 layer is paired with HEAD-1 state
 	// - head-127 layer(bottom-most diff layer) is paired with HEAD-127 state
 	// - head-128 layer(disk layer) is paired with HEAD-128 state
-	return db.tree.cap(root, maxDiffLayers)
+	start = time.Now()
+	if err := db.tree.cap(root, maxDiffLayers); err != nil {
+		return err
+	}
+	updateCapTimer.UpdateSince(start)
+	return nil
 }
 
 // Commit traverses downwards the layer tree from a specified layer with the

@@ -18,6 +18,7 @@ package pathdb
 
 import (
 	"encoding/binary"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -52,25 +53,57 @@ func bloomAccountKey(hash common.Hash) uint64 {
 	return bloomMix(binary.BigEndian.Uint64(hash[:8]) ^ bloomAccountSalt)
 }
 
+// bloomStorageSeed derives the seed shared by the storage slots of the
+// account with the specified address hash.
+func bloomStorageSeed(accountHash common.Hash) uint64 {
+	x := binary.BigEndian.Uint64(accountHash[:8])
+	return (x<<17 | x>>47) ^ bloomStorageSalt
+}
+
+// bloomSlotKey derives the bloom key for the storage slot with the specified
+// slot key hash, under the given account seed.
+func bloomSlotKey(seed uint64, storageHash common.Hash) uint64 {
+	return bloomMix(seed ^ binary.BigEndian.Uint64(storageHash[:8]))
+}
+
 // bloomStorageKey derives the bloom key for the storage slot with the
 // specified account address hash and slot key hash.
 func bloomStorageKey(accountHash common.Hash, storageHash common.Hash) uint64 {
-	x := binary.BigEndian.Uint64(accountHash[:8])
-	y := binary.BigEndian.Uint64(storageHash[:8])
-	return bloomMix((x<<17 | x>>47) ^ y ^ bloomStorageSalt)
+	return bloomSlotKey(bloomStorageSeed(accountHash), storageHash)
+}
+
+// bloomNodeSeed derives the seed shared by the trie nodes of the trie with
+// the specified identifier.
+func bloomNodeSeed(owner common.Hash) uint64 {
+	return binary.BigEndian.Uint64(owner[:8]) ^ bloomNodeSalt
+}
+
+// bloomPathKey derives the bloom key for the trie node with the specified node
+// path, under the given trie seed. The path is consumed 8 bytes at a time, the
+// remainder is packed with its length to keep the different paths apart.
+func bloomPathKey[P string | []byte](seed uint64, path P) uint64 {
+	for len(path) >= 8 {
+		seed = bloomMix(seed ^ bloomLoad64(path))
+		path = path[8:]
+	}
+	tail := uint64(len(path)) << 56
+	for i := 0; i < len(path); i++ {
+		tail |= uint64(path[i]) << (8 * i)
+	}
+	return bloomMix(seed ^ tail)
+}
+
+// bloomLoad64 reads the leading 8 bytes of the path in little-endian order.
+func bloomLoad64[P string | []byte](p P) uint64 {
+	_ = p[7]
+	return uint64(p[0]) | uint64(p[1])<<8 | uint64(p[2])<<16 | uint64(p[3])<<24 |
+		uint64(p[4])<<32 | uint64(p[5])<<40 | uint64(p[6])<<48 | uint64(p[7])<<56
 }
 
 // bloomNodeKey derives the bloom key for the trie node with the specified
 // trie identifier and node path.
-func bloomNodeKey(owner common.Hash, path []byte) uint64 {
-	// FNV-1a over the node path, which is too short and low-entropy
-	// to be consumed directly
-	h := uint64(14695981039346656037)
-	for _, b := range path {
-		h ^= uint64(b)
-		h *= 1099511628211
-	}
-	return bloomMix(binary.BigEndian.Uint64(owner[:8]) ^ h ^ bloomNodeSalt)
+func bloomNodeKey[P string | []byte](owner common.Hash, path P) uint64 {
+	return bloomPathKey(bloomNodeSeed(owner), path)
 }
 
 // bloomFilter is a blocked bloom filter: the 3 bits of a key sit in one 512-bit
@@ -113,17 +146,18 @@ func newBufferBloom(limit uint64) *bloomFilter {
 	return newBloomFilter(bloomBits(limit))
 }
 
-// newSetBloom constructs the filter over the keys of the provided sets, with 12
-// bits per key. The keys are also passed to fn if it's not nil, sparing the key
-// derivation of another filter over the same keys.
-func newSetBloom(nodes *nodeSet, states *stateSet, fn func(uint64)) *bloomFilter {
-	b := newBloomFilter(uint64(bloomKeyCount(nodes, states)) * 12)
-	forEachBloomKey(nodes, states, func(key uint64) {
-		b.insert(key)
-		if fn != nil {
-			fn(key)
+// newSetBloom constructs the filter over the provided keys, with 12 bits per key.
+func newSetBloom(keys ...[]uint64) *bloomFilter {
+	var n int
+	for _, part := range keys {
+		n += len(part)
+	}
+	b := newBloomFilter(uint64(n) * 12)
+	for _, part := range keys {
+		for _, key := range part {
+			b.insert(key)
 		}
-	})
+	}
 	return b
 }
 
@@ -173,32 +207,67 @@ func (b *bloomFilter) contains(key uint64) bool {
 // insertSet adds all the keys aggregated in the provided node set and state
 // set into a filter that may be probed concurrently.
 func (b *bloomFilter) insertSet(nodes *nodeSet, states *stateSet) {
-	forEachBloomKey(nodes, states, b.insertAtomic)
+	for _, key := range appendBloomKeys(nil, nodes, states) {
+		b.insertAtomic(key)
+	}
 }
 
-// forEachBloomKey derives the bloom keys of all the entries aggregated in the
-// provided node set and state set.
-func forEachBloomKey(nodes *nodeSet, states *stateSet, fn func(uint64)) {
+// bloomParts is the number of the partitions the bloom keys of a committed set
+// are derived and inserted in, concurrently.
+const bloomParts = 4
+
+// appendBloomKeys appends the bloom keys of all the entries aggregated in the
+// provided node set and state set to dst.
+func appendBloomKeys(dst []uint64, nodes *nodeSet, states *stateSet) []uint64 {
+	dst = slices.Grow(dst, bloomKeyCount(nodes, states))
+	return appendBloomKeysPart(dst, nodes, states, 0, 1)
+}
+
+// appendBloomKeysPart appends the bloom keys of the given partition (out of
+// parts) of the entries to dst. With multiple partitions, the partition 0 covers
+// the account trie and the accounts, the others split the storage tries and the
+// slots by the owner; a single partition covers all the entries.
+func appendBloomKeysPart(dst []uint64, nodes *nodeSet, states *stateSet, part int, parts int) []uint64 {
+	var (
+		accounts = part == 0
+		storage  = func(owner common.Hash) bool {
+			return parts == 1 || part > 0 && int(owner[0])%(parts-1) == part-1
+		}
+	)
 	if nodes != nil {
-		for path := range nodes.accountNodes {
-			fn(bloomNodeKey(common.Hash{}, []byte(path)))
+		if accounts {
+			seed := bloomNodeSeed(common.Hash{})
+			for path := range nodes.accountNodes {
+				dst = append(dst, bloomPathKey(seed, path))
+			}
 		}
 		for owner, subset := range nodes.storageNodes {
+			if !storage(owner) {
+				continue
+			}
+			seed := bloomNodeSeed(owner)
 			for path := range subset {
-				fn(bloomNodeKey(owner, []byte(path)))
+				dst = append(dst, bloomPathKey(seed, path))
 			}
 		}
 	}
 	if states != nil {
-		for hash := range states.accountData {
-			fn(bloomAccountKey(hash))
+		if accounts {
+			for hash := range states.accountData {
+				dst = append(dst, bloomAccountKey(hash))
+			}
 		}
 		for accountHash, slots := range states.storageData {
+			if !storage(accountHash) {
+				continue
+			}
+			seed := bloomStorageSeed(accountHash)
 			for storageHash := range slots {
-				fn(bloomStorageKey(accountHash, storageHash))
+				dst = append(dst, bloomSlotKey(seed, storageHash))
 			}
 		}
 	}
+	return dst
 }
 
 // bloomKeyCount returns the number of the entries aggregated in the provided
@@ -221,5 +290,5 @@ func bloomKeyCount(nodes *nodeSet, states *stateSet) int {
 }
 
 // bloomKeyPool recycles the key slices staged between the key derivation and
-// the insertion into the buffer-wide filter.
-var bloomKeyPool = sync.Pool{New: func() any { return new([]uint64) }}
+// the construction of the filter of a committed set, one per partition.
+var bloomKeyPool = sync.Pool{New: func() any { return new([bloomParts][]uint64) }}

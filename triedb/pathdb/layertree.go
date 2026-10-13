@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -192,8 +193,10 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 	if !ok {
 		return fmt.Errorf("triedb layer [%#x] is disk layer", root)
 	}
+	start := time.Now()
 	tree.lock.Lock()
 	defer tree.lock.Unlock()
+	updateCapLockTimer.UpdateSince(start)
 
 	// If full commit was requested, flatten the diffs and merge onto disk
 	if layers == 0 {
@@ -257,11 +260,13 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		//		        ->C2'->C3'->C4'
 		// The original C3 is replaced by the new base (with root C3)
 		// Dangling layers in (b) will be removed later
+		persistStart := time.Now()
 		newBase, err = parent.persist(false)
 		if err != nil {
 			diff.lock.Unlock()
 			return err
 		}
+		updatePersistTimer.UpdateSince(persistStart)
 		tree.layers[newBase.rootHash()] = newBase
 
 		// Link the new parent and release the lock

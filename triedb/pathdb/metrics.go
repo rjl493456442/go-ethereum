@@ -72,6 +72,16 @@ var (
 	compactInputMeter  = metrics.NewRegisteredMeter("pathdb/compact/input", nil)
 	compactOutputMeter = metrics.NewRegisteredMeter("pathdb/compact/output", nil)
 
+	updateLockTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/lock", nil)
+	updateStateSetTimer = metrics.NewRegisteredResettingTimer("pathdb/update/stateset", nil)
+	updateNodeSetTimer  = metrics.NewRegisteredResettingTimer("pathdb/update/nodeset", nil)
+	updateAddTimer      = metrics.NewRegisteredResettingTimer("pathdb/update/add", nil)
+	updateCapTimer      = metrics.NewRegisteredResettingTimer("pathdb/update/cap", nil)
+	updateCapLockTimer  = metrics.NewRegisteredResettingTimer("pathdb/update/cap/lock", nil)
+	updatePersistTimer  = metrics.NewRegisteredResettingTimer("pathdb/update/persist", nil)
+	updateHistoryTimer  = metrics.NewRegisteredResettingTimer("pathdb/update/history", nil)
+	updateStateIDTimer  = metrics.NewRegisteredResettingTimer("pathdb/update/stateid", nil)
+
 	commitWaitTimer      = metrics.NewRegisteredResettingTimer("pathdb/commit/wait", nil)
 	commitFlattenTimer   = metrics.NewRegisteredResettingTimer("pathdb/commit/flatten", nil)
 	commitLayersMeter    = metrics.NewRegisteredMeter("pathdb/commit/layers", nil)

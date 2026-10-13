@@ -430,10 +430,12 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Construct and store the state history first. If crash happens after storing
 	// the state history but without flushing the corresponding states(journal),
 	// the stored state history will be truncated from head in the next restart.
+	start := time.Now()
 	flushA, err := dl.writeHistory(typeStateHistory, bottom)
 	if err != nil {
 		return nil, err
 	}
+	updateHistoryTimer.UpdateSince(start)
 	// Construct and store the trienode history first. If crash happens after
 	// storing the trienode history but without flushing the corresponding
 	// states(journal), the stored trienode history will be truncated from head
@@ -452,10 +454,12 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Store the root->id lookup afterwards. All stored lookups are identified
 	// by the **unique** state root. It's impossible that in the same chain
 	// blocks are not adjacent but have the same root.
+	start = time.Now()
 	if dl.id == 0 {
 		rawdb.WriteStateID(dl.db.diskdb, dl.root, 0)
 	}
 	rawdb.WriteStateID(dl.db.diskdb, bottom.rootHash(), bottom.stateID())
+	updateStateIDTimer.UpdateSince(start)
 
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the
 	// buffer as the combined layer.
