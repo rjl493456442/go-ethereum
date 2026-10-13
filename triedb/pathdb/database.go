@@ -135,6 +135,7 @@ type Database struct {
 
 	trienodeFreezer ethdb.ResettableAncientStore // Freezer for storing trienode histories, nil possible in tests
 	trienodeIndexer *historyIndexer              // History indexer for historical trienode data
+	historyWriter   *historyWriter               // Background writer of the histories, nil if read only or no freezer
 
 	lock sync.RWMutex // Lock to prevent mutations from happening at the same time
 }
@@ -175,6 +176,9 @@ func New(diskdb ethdb.Database, config *Config, isUBT bool) *Database {
 		log.Crit("Failed to repair history", "err", err)
 	}
 	db.stateFreezer, db.trienodeFreezer = states, trienodes
+	if !db.readOnly && (states != nil || trienodes != nil) {
+		db.historyWriter = newHistoryWriter()
+	}
 
 	// Disable database in case node is still in the initial state sync stage.
 	if rawdb.ReadSnapSyncStatusFlag(diskdb) == rawdb.StateSyncRunning && !db.readOnly {
@@ -197,6 +201,23 @@ func New(diskdb ethdb.Database, config *Config, isUBT bool) *Database {
 	}
 	log.Info("Initialized path database", fields...)
 	return db
+}
+
+// waitHistory blocks until the scheduled history writes are done.
+func (db *Database) waitHistory() error {
+	if db.historyWriter == nil {
+		return nil
+	}
+	return db.historyWriter.wait()
+}
+
+// persistHistory blocks until the scheduled history writes are done and syncs
+// the history freezers, making the histories durable.
+func (db *Database) persistHistory() error {
+	if err := db.waitHistory(); err != nil {
+		return err
+	}
+	return syncHistory(db.stateFreezer, db.trienodeFreezer)
 }
 
 // setHistoryIndexer initializes the indexers for both state history and
@@ -304,12 +325,11 @@ func (db *Database) Update(root common.Hash, parentRoot common.Hash, block uint6
 		return err
 	}
 	start = time.Now()
-	var nodesWithOrigins *nodeSetWithOrigin
+	var origins map[common.Hash]map[string][]byte
 	if db.config.TrienodeHistory >= 0 {
-		nodesWithOrigins = NewNodeSetWithOrigin(nodes.NodeAndOrigins())
-	} else {
-		nodesWithOrigins = NewNodeSetWithOrigin(nodes.Nodes(), nil)
+		_, origins = nodes.NodeAndOrigins()
 	}
+	nodesWithOrigins := newNodeSetWithOrigin(newMergedNodeSet(nodes), origins)
 	updateNodeSetTimer.UpdateSince(start)
 
 	start = time.Now()
@@ -373,6 +393,10 @@ func (db *Database) Disable() error {
 	disk.resetCache() // a stale layer can no longer release its caches
 	disk.markStale()
 
+	if err := db.waitHistory(); err != nil {
+		return err
+	}
+
 	// Write the initial sync flag to persist it across restarts.
 	rawdb.WriteSnapSyncStatusFlag(db.diskdb, rawdb.StateSyncRunning)
 	log.Info("Disabled trie database due to state sync")
@@ -401,6 +425,9 @@ func (db *Database) resetForReactivation(root common.Hash) error {
 	// Clean up all state histories in the freezer. Theoretically all root->id
 	// mappings should be removed as well; since those can be huge, leave them
 	// on disk and let them be overwritten.
+	if err := db.waitHistory(); err != nil {
+		return err
+	}
 	purgeHistory(db.stateFreezer, db.diskdb, typeStateHistory)
 	purgeHistory(db.trienodeFreezer, db.diskdb, typeTrienodeHistory)
 
@@ -489,6 +516,9 @@ func (db *Database) Recover(root common.Hash) error {
 	if db.stateFreezer == nil {
 		return errors.New("state rollback is non-supported")
 	}
+	if err := db.waitHistory(); err != nil {
+		return err
+	}
 	// Short circuit if the target state is not recoverable
 	if !db.Recoverable(root) {
 		return errStateUnrecoverable
@@ -561,6 +591,9 @@ func (db *Database) Recoverable(root common.Hash) bool {
 	if db.stateFreezer == nil {
 		return false
 	}
+	if err := db.waitHistory(); err != nil {
+		return false
+	}
 	blob := rawdb.ReadStateHistoryMeta(db.stateFreezer, *id+1)
 	if len(blob) == 0 {
 		return false // pruned from the tail or otherwise unavailable
@@ -590,6 +623,12 @@ func (db *Database) Close() error {
 	}
 	dl.resetCache() // release the memory held by clean cache
 
+	// Terminate the background history writer after the scheduled writes
+	if db.historyWriter != nil {
+		if err := db.historyWriter.close(); err != nil {
+			return err
+		}
+	}
 	// Terminate the background state history indexer
 	if db.stateIndexer != nil {
 		db.stateIndexer.close()

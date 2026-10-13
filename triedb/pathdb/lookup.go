@@ -40,20 +40,31 @@ func storageKeySlice(accountHash common.Hash, slotHash common.Hash) []byte {
 	return key[:]
 }
 
+// lookupShards is the number of the shards the lookup is split into by the
+// account hash, linked and unlinked concurrently.
+const lookupShards = 4
+
+// lookupShard returns the lookup shard of the given account and its storage.
+func lookupShard(accountHash common.Hash) int {
+	return int(accountHash[0]) % lookupShards
+}
+
 // lookup is an internal structure used to efficiently determine the layer in
 // which a state entry resides.
 type lookup struct {
 	// accounts represents the mutation history for specific accounts.
 	// The key is the account address hash, and the value is a slice
 	// of **diff layer** IDs indicating where the account was modified,
-	// with the order from oldest to newest.
-	accounts map[common.Hash][]common.Hash
+	// with the order from oldest to newest. It's split into shards by
+	// the account hash.
+	accounts [lookupShards]map[common.Hash][]common.Hash
 
 	// storages represents the mutation history for specific storage
 	// slot. The key is the account address hash and the storage key
 	// hash, the value is a slice of **diff layer** IDs indicating
 	// where the slot was modified, with the order from oldest to newest.
-	storages map[[64]byte][]common.Hash
+	// It's split into shards by the account hash.
+	storages [lookupShards]map[[64]byte][]common.Hash
 
 	// descendant is the callback indicating whether the layer with
 	// given root is a descendant of the one specified by `ancestor`.
@@ -70,10 +81,10 @@ func newLookup(head layer, descendant func(state common.Hash, ancestor common.Ha
 		layers = append(layers, current)
 		current = current.parentLayer()
 	}
-	l := &lookup{
-		accounts:   make(map[common.Hash][]common.Hash),
-		storages:   make(map[[64]byte][]common.Hash),
-		descendant: descendant,
+	l := &lookup{descendant: descendant}
+	for i := range lookupShards {
+		l.accounts[i] = make(map[common.Hash][]common.Hash)
+		l.storages[i] = make(map[[64]byte][]common.Hash)
 	}
 	// Apply the diff layers from bottom to top
 	for i := len(layers) - 1; i >= 0; i-- {
@@ -120,7 +131,7 @@ func (l *lookup) accountTip(accountHash common.Hash, stateID common.Hash, base c
 	// - (y, C4) => D
 	// - (y, C3') => D
 	// - (y, C0) => null
-	list := l.accounts[accountHash]
+	list := l.accounts[lookupShard(accountHash)][accountHash]
 	for i := len(list) - 1; i >= 0; i-- {
 		// If the current state matches the stateID, or the requested state is a
 		// descendant of it, return the current state as the most recent one
@@ -147,7 +158,7 @@ func (l *lookup) accountTip(accountHash common.Hash, stateID common.Hash, base c
 // See accountTip for the returned-hash / ok convention — the same
 // bintrie-zero-root caveat applies here.
 func (l *lookup) storageTip(accountHash common.Hash, slotHash common.Hash, stateID common.Hash, base common.Hash) (common.Hash, bool) {
-	list := l.storages[storageKey(accountHash, slotHash)]
+	list := l.storages[lookupShard(accountHash)][storageKey(accountHash, slotHash)]
 	for i := len(list) - 1; i >= 0; i-- {
 		// If the current state matches the stateID, or the requested state is a
 		// descendant of it, return the current state as the most recent one
@@ -182,34 +193,29 @@ func (l *lookup) addLayer(diff *diffLayer) {
 		wg    sync.WaitGroup
 		state = diff.rootHash()
 	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for accountHash := range diff.states.accountData {
-			list, exists := l.accounts[accountHash]
-			if !exists {
-				list = make([]common.Hash, 0, 16) // TODO(rjl493456442) use sync pool
-			}
-			list = append(list, state)
-			l.accounts[accountHash] = list
-		}
-	}()
+	for shard := range lookupShards {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for accountHash, slots := range diff.states.storageData {
-			for slotHash := range slots {
-				key := storageKey(accountHash, slotHash)
-				list, exists := l.storages[key]
-				if !exists {
-					list = make([]common.Hash, 0, 16) // TODO(rjl493456442) use sync pool
+			accounts, storages := l.accounts[shard], l.storages[shard]
+			for accountHash := range diff.states.accountData {
+				if lookupShard(accountHash) != shard {
+					continue
 				}
-				list = append(list, state)
-				l.storages[key] = list
+				accounts[accountHash] = append(accounts[accountHash], state)
 			}
-		}
-	}()
+			for accountHash, slots := range diff.states.storageData {
+				if lookupShard(accountHash) != shard {
+					continue
+				}
+				for slotHash := range slots {
+					key := storageKey(accountHash, slotHash)
+					storages[key] = append(storages[key], state)
+				}
+			}
+		}()
+	}
 	wg.Wait()
 }
 
@@ -248,37 +254,42 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 		eg    errgroup.Group
 		state = diff.rootHash()
 	)
-	eg.Go(func() error {
-		for accountHash := range diff.states.accountData {
-			found, list := removeFromList(l.accounts[accountHash], state)
-			if !found {
-				return fmt.Errorf("account lookup is not found, %x, state: %x", accountHash, state)
-			}
-			if len(list) != 0 {
-				l.accounts[accountHash] = list
-			} else {
-				delete(l.accounts, accountHash)
-			}
-		}
-		return nil
-	})
-
-	eg.Go(func() error {
-		for accountHash, slots := range diff.states.storageData {
-			for slotHash := range slots {
-				key := storageKey(accountHash, slotHash)
-				found, list := removeFromList(l.storages[key], state)
+	for shard := range lookupShards {
+		eg.Go(func() error {
+			accounts, storages := l.accounts[shard], l.storages[shard]
+			for accountHash := range diff.states.accountData {
+				if lookupShard(accountHash) != shard {
+					continue
+				}
+				found, list := removeFromList(accounts[accountHash], state)
 				if !found {
-					return fmt.Errorf("storage lookup is not found, %x %x, state: %x", accountHash, slotHash, state)
+					return fmt.Errorf("account lookup is not found, %x, state: %x", accountHash, state)
 				}
 				if len(list) != 0 {
-					l.storages[key] = list
+					accounts[accountHash] = list
 				} else {
-					delete(l.storages, key)
+					delete(accounts, accountHash)
 				}
 			}
-		}
-		return nil
-	})
+			for accountHash, slots := range diff.states.storageData {
+				if lookupShard(accountHash) != shard {
+					continue
+				}
+				for slotHash := range slots {
+					key := storageKey(accountHash, slotHash)
+					found, list := removeFromList(storages[key], state)
+					if !found {
+						return fmt.Errorf("storage lookup is not found, %x %x, state: %x", accountHash, slotHash, state)
+					}
+					if len(list) != 0 {
+						storages[key] = list
+					} else {
+						delete(storages, key)
+					}
+				}
+			}
+			return nil
+		})
+	}
 	return eg.Wait()
 }

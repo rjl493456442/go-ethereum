@@ -58,10 +58,39 @@ func copyNodeSet(set *NodeSet) *NodeSet {
 		Leaves:  slices.Clone(set.Leaves),
 		updates: set.updates,
 		deletes: set.deletes,
+		size:    set.size,
 		Nodes:   maps.Clone(set.Nodes),
 		Origins: maps.Clone(set.Origins),
 	}
 	return cpy
+}
+
+// TestNodeSetDataSize ensures the tracked size matches the held nodes after
+// the insertions and the merges.
+func TestNodeSetDataSize(t *testing.T) {
+	var shared [][]byte
+	for i := 0; i < 4; i++ {
+		shared = append(shared, testrand.Bytes(10))
+	}
+	check := func(set *NodeSet) {
+		t.Helper()
+		var size int
+		for path, n := range set.Nodes {
+			size += len(path) + len(n.Blob)
+		}
+		if set.DataSize() != size {
+			t.Fatalf("Unexpected size, want: %d, got: %d", size, set.DataSize())
+		}
+	}
+	owner := testrand.Hash()
+	set := makeTestSet(owner, 20, shared)
+	check(set)
+
+	set.Merge(makeTestSet(owner, 20, shared)) // overwrites the shared paths
+	check(set)
+
+	set.MergeDisjoint(makeTestSet(owner, 20, nil))
+	check(set)
 }
 
 func TestNodeSetMerge(t *testing.T) {

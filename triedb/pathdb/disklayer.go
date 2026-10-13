@@ -327,8 +327,9 @@ func (dl *diskLayer) update(root common.Hash, id uint64, block uint64, nodes *no
 	return newDiffLayer(dl, root, id, block, nodes, states)
 }
 
-// writeHistory stores the specified history and indexes if indexing is
-// permitted.
+// writeHistory schedules the specified history to be stored, indexed if indexing
+// is permitted, and the history tail to be truncated beyond the configured limit,
+// all in background in the commit order.
 //
 // What's more, this function also returns a flag indicating whether the
 // buffer flushing is required, ensuring the persistent state ID is always
@@ -364,60 +365,69 @@ func (dl *diskLayer) writeHistory(typ historyType, diff *diffLayer) (bool, error
 	if freezer == nil {
 		return false, nil
 	}
-	// Bail out with an error if writing the state history fails.
-	// This can happen, for example, if the device is full.
-	err := writeFunc(freezer, diff)
-	if err != nil {
-		return false, err
-	}
-	// Notify the history indexer for newly created history
-	if indexer != nil {
-		if err := indexer.extend(diff.stateID()); err != nil {
+	// Determine whether the persisted history object exceeds the configured
+	// limitation once the history is stored. The tail read here may lag behind
+	// the scheduled truncations, which yields the same truncation target.
+	var (
+		id       = diff.stateID()
+		newFirst uint64 // the id of first history **after truncation**, 0 for no truncation
+		flush    bool
+	)
+	if limit != 0 {
+		tail, err := freezer.Tail(rawdb.DefaultHistoryGroup)
+		if err != nil {
 			return false, err
+		} // firstID = tail+1
+
+		// length = id-firstID+1 = id-tail
+		if id-tail > limit {
+			newFirst = id - limit + 1
+
+			// In a rare case where the ID of the first history object (after tail
+			// truncation) exceeds the persisted state ID, we must take corrective
+			// steps:
+			//
+			// - Skip tail truncation temporarily, avoid the scenario that associated
+			//   history of persistent state is removed
+			//
+			// - Force a commit of the cached dirty states into persistent state
+			//
+			// These measures ensure the persisted state ID always remains greater
+			// than or equal to the first history ID.
+			if persistentID := rawdb.ReadPersistentStateID(dl.db.diskdb); persistentID < newFirst {
+				log.Debug("Skip tail truncation", "type", typ, "persistentID", persistentID, "tailID", tail+1, "headID", id, "limit", limit)
+				newFirst, flush = 0, true
+			}
 		}
 	}
-	// Determine if the persisted history object has exceeded the
-	// configured limitation.
-	if limit == 0 {
-		return false, nil
-	}
-	tail, err := freezer.Tail(rawdb.DefaultHistoryGroup)
-	if err != nil {
-		return false, err
-	} // firstID = tail+1
-
-	// length = diff.stateID()-firstID+1 = diff.stateID()-tail
-	if diff.stateID()-tail <= limit {
-		return false, nil
-	}
-	newFirst := diff.stateID() - limit + 1 // the id of first history **after truncation**
-
-	// In a rare case where the ID of the first history object (after tail
-	// truncation) exceeds the persisted state ID, we must take corrective
-	// steps:
-	//
-	// - Skip tail truncation temporarily, avoid the scenario that associated
-	//   history of persistent state is removed
-	//
-	// - Force a commit of the cached dirty states into persistent state
-	//
-	// These measures ensure the persisted state ID always remains greater
-	// than or equal to the first history ID.
-	if persistentID := rawdb.ReadPersistentStateID(dl.db.diskdb); persistentID < newFirst {
-		log.Debug("Skip tail truncation", "type", typ, "persistentID", persistentID, "tailID", tail+1, "headID", diff.stateID(), "limit", limit)
-		return true, nil
-	}
-	pruned, err := truncateFromTail(freezer, typ, newFirst-1)
-	if err != nil {
-		return false, err
-	}
-	// Notify the index pruner about the new tail so that stale index
-	// blocks referencing the pruned histories can be cleaned up.
-	if indexer != nil && pruned > 0 {
-		indexer.prune(newFirst)
-	}
-	log.Debug("Pruned history", "type", typ, "items", pruned, "tailid", newFirst)
-	return false, nil
+	err := dl.db.historyWriter.submit(func() error {
+		// Bail out with an error if writing the state history fails.
+		// This can happen, for example, if the device is full.
+		if err := writeFunc(freezer, diff); err != nil {
+			return err
+		}
+		// Notify the history indexer for newly created history
+		if indexer != nil {
+			if err := indexer.extend(id); err != nil {
+				return err
+			}
+		}
+		if newFirst == 0 {
+			return nil
+		}
+		pruned, err := truncateFromTail(freezer, typ, newFirst-1)
+		if err != nil {
+			return err
+		}
+		// Notify the index pruner about the new tail so that stale index
+		// blocks referencing the pruned histories can be cleaned up.
+		if indexer != nil && pruned > 0 {
+			indexer.prune(newFirst)
+		}
+		log.Debug("Pruned history", "type", typ, "items", pruned, "tailid", newFirst)
+		return nil
+	})
+	return flush, err
 }
 
 // commit merges the given bottom-most diff layer into the node buffer
@@ -500,7 +510,7 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 
 		// Freeze the live buffer and schedule background flushing
 		dl.frozen = combined
-		dl.frozen.flush(bottom.root, dl.db.diskdb, []ethdb.AncientWriter{dl.db.stateFreezer, dl.db.trienodeFreezer}, progress, dl.nodes, dl.states, bottom.stateID(), func() {
+		dl.frozen.flush(bottom.root, dl.db.diskdb, dl.db.persistHistory, progress, dl.nodes, dl.states, bottom.stateID(), func() {
 			// Resume the background generation if it's not completed yet.
 			// The generator is assumed to be available if the progress is
 			// not nil.

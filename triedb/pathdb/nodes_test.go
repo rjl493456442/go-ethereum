@@ -174,3 +174,21 @@ func TestEncodeShortNodeCompressed(t *testing.T) {
 		t.Fatalf("Indices are not matched")
 	}
 }
+
+// TestMergedNodeSetSize ensures the node set constructed from a merged set
+// carries the same size as the one derived by iterating the nodes.
+func TestMergedNodeSetSize(t *testing.T) {
+	merged := trienode.NewMergedNodeSet()
+	for _, owner := range []common.Hash{{}, testrand.Hash(), testrand.Hash()} {
+		set := trienode.NewNodeSet(owner)
+		for i := 0; i < 16; i++ {
+			blob := testrand.Bytes(rand.Intn(100)) // empty blob marks a deletion
+			set.AddNode(testrand.Bytes(8), trienode.NewNodeWithPrev(crypto.Keccak256Hash(blob), blob, nil))
+		}
+		merged.Merge(set)
+	}
+	want := newNodeSet(merged.Nodes()).size
+	if got := newMergedNodeSet(merged).size; got != want {
+		t.Fatalf("Unexpected size, want: %d, got: %d", want, got)
+	}
+}

@@ -65,6 +65,25 @@ func newNodeSet(nodes map[common.Hash]map[string]*trienode.Node) *nodeSet {
 	return s
 }
 
+// newMergedNodeSet constructs the set with the trie nodes of the provided merged
+// set, taking the sizes tracked by the subsets instead of iterating the nodes.
+func newMergedNodeSet(merged *trienode.MergedNodeSet) *nodeSet {
+	s := &nodeSet{
+		accountNodes: make(map[string]*trienode.Node),
+		storageNodes: make(map[common.Hash]map[string]*trienode.Node, len(merged.Sets)),
+	}
+	for owner, subset := range merged.Sets {
+		s.size += uint64(subset.DataSize())
+		if owner == (common.Hash{}) {
+			s.accountNodes = subset.Nodes
+		} else {
+			s.storageNodes[owner] = subset.Nodes
+			s.size += uint64(common.HashLength * len(subset.Nodes))
+		}
+	}
+	return s
+}
+
 // computeSize calculates the database size of the held trie nodes.
 func (s *nodeSet) computeSize() {
 	var size uint64
@@ -308,12 +327,17 @@ type nodeSetWithOrigin struct {
 
 // NewNodeSetWithOrigin constructs the state set with the provided data.
 func NewNodeSetWithOrigin(nodes map[common.Hash]map[string]*trienode.Node, origins map[common.Hash]map[string][]byte) *nodeSetWithOrigin {
+	return newNodeSetWithOrigin(newNodeSet(nodes), origins)
+}
+
+// newNodeSetWithOrigin wraps the node set with the provided original values.
+func newNodeSetWithOrigin(nodes *nodeSet, origins map[common.Hash]map[string][]byte) *nodeSetWithOrigin {
 	// Don't panic for the lazy callers, initialize the nil maps instead.
 	if origins == nil {
 		origins = make(map[common.Hash]map[string][]byte)
 	}
 	set := &nodeSetWithOrigin{
-		nodeSet:    newNodeSet(nodes),
+		nodeSet:    nodes,
 		nodeOrigin: origins,
 	}
 	set.computeSize()

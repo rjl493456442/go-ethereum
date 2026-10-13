@@ -224,6 +224,9 @@ func (db *Database) HistoricReader(root common.Hash) (*HistoricalStateReader, er
 	}
 	// Ensure the requested state is canonical, historical states on side chain
 	// are not accessible.
+	if err := db.waitHistory(); err != nil {
+		return nil, err
+	}
 	meta, err := readStateHistoryMeta(db.stateFreezer, *id+1)
 	if err != nil {
 		return nil, err // e.g., the referred state history has been pruned

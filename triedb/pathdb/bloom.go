@@ -130,14 +130,14 @@ func newBloomFilter(bits uint64) *bloomFilter {
 	return &bloomFilter{blocks: make([][8]uint64, bits/512+1)}
 }
 
-// bloomBits returns the bloom bit count for the given buffer memory allowance:
-// 12 bits per entry with a conservative average entry size of 48 bytes, that
-// is limit/48*12 = limit/4 bits, giving ~1% false positive rate with 3 probes.
-// The count grows with the allowance, with a floor for the tiny buffers in tests.
-// An allowance above maxBufferSize (only in tests, the config is sanitized
-// against it) is sized as the maximum.
+// bloomBits returns the bloom bit count for the given buffer memory allowance.
+// The mainnet buffer measured ~100-160 bits per distinct key with limit/4 bits
+// (fp ~0.001%), limit/32 bits leaves 12-20 bits per key (fp ~0.3-1.2%). The
+// count has a floor for the tiny buffers in tests; an allowance above the
+// maxBufferSize (only in tests, the config is sanitized against it) is sized
+// as the maximum.
 func bloomBits(limit uint64) uint64 {
-	return max(min(limit, maxBufferSize)/4, 1<<17)
+	return max(min(limit, maxBufferSize)/32, 1<<17)
 }
 
 // newBufferBloom constructs the buffer-wide filter for the given buffer memory

@@ -209,6 +209,10 @@ func newTester(t *testing.T, config *testerConfig) *tester {
 		obj.nodes = append(obj.nodes, nodes)
 		obj.states = append(obj.states, states)
 	}
+	// Wait for the histories written in background
+	if err := db.waitHistory(); err != nil {
+		panic(fmt.Errorf("failed to write histories, err: %w", err))
+	}
 	return obj
 }
 
@@ -1110,6 +1114,9 @@ func TestDatabaseIndexRecovery(t *testing.T) {
 		if err := env.db.Update(roots[i], roots[i-1], uint64(i), env.nodes[i], env.states[i]); err != nil {
 			panic(fmt.Errorf("failed to update state changes, err: %w", err))
 		}
+	}
+	if err := env.db.waitHistory(); err != nil {
+		t.Fatalf("Failed to write histories, %v", err)
 	}
 	remain, _, err = env.db.IndexProgress()
 	if err != nil {
