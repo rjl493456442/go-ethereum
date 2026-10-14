@@ -19,6 +19,7 @@ package pathdb
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -36,6 +37,8 @@ type diffLayer struct {
 	block  uint64              // Associated block number
 	nodes  *nodeSetWithOrigin  // Cached trie nodes indexed by owner and path
 	states *StateSetWithOrigin // Associated state changes along with origin value
+	keys   []uint64            // Bloom keys of the trie nodes and states
+	bloom  *bloomFilter        // Filter over the bloom keys, reused by the buffer set once persisted
 
 	parent layer        // Parent layer modified by this one, never nil, **can be changed**
 	lock   sync.RWMutex // Lock used to protect parent
@@ -43,6 +46,8 @@ type diffLayer struct {
 
 // newDiffLayer creates a new diff layer on top of an existing layer.
 func newDiffLayer(parent layer, root common.Hash, id uint64, block uint64, nodes *nodeSetWithOrigin, states *StateSetWithOrigin) *diffLayer {
+	start := time.Now()
+	keys := appendBloomKeys(nil, nodes.nodeSet, states.stateSet)
 	dl := &diffLayer{
 		root:   root,
 		id:     id,
@@ -50,7 +55,10 @@ func newDiffLayer(parent layer, root common.Hash, id uint64, block uint64, nodes
 		parent: parent,
 		nodes:  nodes,
 		states: states,
+		keys:   keys,
+		bloom:  newSetBloom(keys),
 	}
+	layerBloomTimer.UpdateSince(start)
 	dirtyNodeWriteMeter.Mark(int64(nodes.size))
 	dirtyStateWriteMeter.Mark(int64(states.size))
 	log.Debug("Created new diff layer", "id", id, "block", block, "nodesize", common.StorageSize(nodes.size), "statesize", common.StorageSize(states.size))

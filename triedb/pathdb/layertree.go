@@ -33,18 +33,8 @@ import (
 type layerTree struct {
 	base   *diskLayer
 	layers map[common.Hash]layer
-
-	// descendants is a two-dimensional map where the keys represent
-	// an ancestor state root, and the values are the state roots of
-	// all its descendants.
-	//
-	// For example: r -> [c1, c2, ..., cn], where c1 through cn are
-	// the descendants of state r.
-	//
-	// This map includes all the existing diff layers and the disk layer.
-	descendants map[common.Hash]map[common.Hash]struct{}
-	lookup      *lookup
-	lock        sync.RWMutex
+	gate   *layerGate // filter over the keys of the live diff layers
+	lock   sync.RWMutex
 }
 
 // newLayerTree constructs the layerTree with the given head layer.
@@ -61,11 +51,9 @@ func (tree *layerTree) init(head layer) {
 
 	current := head
 	tree.layers = make(map[common.Hash]layer)
-	tree.descendants = make(map[common.Hash]map[common.Hash]struct{})
 
 	for {
 		tree.layers[current.rootHash()] = current
-		tree.fillAncestors(current)
 
 		parent := current.parentLayer()
 		if parent == nil {
@@ -74,7 +62,45 @@ func (tree *layerTree) init(head layer) {
 		current = parent
 	}
 	tree.base = current.(*diskLayer) // panic if it's not a disk layer
-	tree.lookup = newLookup(head, tree.isDescendant)
+	tree.rebuildGate(maxDiffLayers/layerGateWindow + 3)
+}
+
+// addGate inserts the keys of the given diff layer into the gate, which is
+// regrown if the live layers span more windows than it covers.
+//
+// This function assumes the write lock has been held.
+func (tree *layerTree) addGate(dl *diffLayer) {
+	defer func(start time.Time) {
+		layerGateAddTimer.UpdateSince(start)
+	}(time.Now())
+
+	if !tree.gate.add(dl.id, dl.keys, tree.base.id) {
+		tree.rebuildGate(2 * len(tree.gate.gens))
+	}
+}
+
+// rebuildGate reconstructs the gate with at least the given number of
+// generations from the live diff layers.
+//
+// This function assumes the write lock has been held.
+func (tree *layerTree) rebuildGate(gens int) {
+	for {
+		var (
+			gate = newLayerGate(gens)
+			ok   = true
+		)
+		for _, l := range tree.layers {
+			if dl, isDiff := l.(*diffLayer); isDiff && !gate.add(dl.id, dl.keys, tree.base.id) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			tree.gate = gate
+			return
+		}
+		gens *= 2
+	}
 }
 
 // get retrieves a layer belonging to the given state root.
@@ -83,43 +109,6 @@ func (tree *layerTree) get(root common.Hash) layer {
 	defer tree.lock.RUnlock()
 
 	return tree.layers[root]
-}
-
-// isDescendant returns whether the specified layer with given root is a
-// descendant of a specific ancestor.
-//
-// This function assumes the read lock has been held.
-func (tree *layerTree) isDescendant(root common.Hash, ancestor common.Hash) bool {
-	subset := tree.descendants[ancestor]
-	if subset == nil {
-		return false
-	}
-	_, ok := subset[root]
-	return ok
-}
-
-// fillAncestors identifies the ancestors of the given layer and populates the
-// descendants set. The ancestors include the diff layers below the supplied
-// layer and also the disk layer.
-//
-// This function assumes the write lock has been held.
-func (tree *layerTree) fillAncestors(layer layer) {
-	hash := layer.rootHash()
-	for {
-		parent := layer.parentLayer()
-		if parent == nil {
-			break
-		}
-		layer = parent
-
-		phash := parent.rootHash()
-		subset := tree.descendants[phash]
-		if subset == nil {
-			subset = make(map[common.Hash]struct{})
-			tree.descendants[phash] = subset
-		}
-		subset[hash] = struct{}{}
-	}
 }
 
 // forEach iterates the stored layers inside and applies the
@@ -155,9 +144,7 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	// If a layer with this root already exists, skip the insertion. Fork blocks
 	// can produce the same state root as the canonical block (same parent, same
 	// coinbase, zero txs); overwriting tree.layers[root] would corrupt the parent
-	// chain for any child layers already built on top of the existing one, and
-	// appending a duplicate root to the lookup indices causes accountTip/storageTip
-	// to resolve the wrong layer.
+	// chain for any child layers already built on top of the existing one.
 	if tree.get(root) != nil {
 		return nil
 	}
@@ -170,14 +157,9 @@ func (tree *layerTree) add(root common.Hash, parentRoot common.Hash, block uint6
 	tree.lock.Lock()
 	defer tree.lock.Unlock()
 
-	// Link the given layer into the layer set
+	// Link the given layer into the layer set and the gate
 	tree.layers[l.rootHash()] = l
-
-	// Link the given layer into its ancestors (up to the current disk layer)
-	tree.fillAncestors(l)
-
-	// Link the given layer into the state mutation history
-	tree.lookup.addLayer(l)
+	tree.addGate(l)
 	return nil
 }
 
@@ -210,10 +192,7 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		tree.layers = map[common.Hash]layer{
 			base.rootHash(): base,
 		}
-		// Resets the descendants map, since there's only a single disk layer
-		// with no descendants.
-		tree.descendants = make(map[common.Hash]map[common.Hash]struct{})
-		tree.lookup = newLookup(base, tree.isDescendant)
+		tree.rebuildGate(len(tree.gate.gens))
 		return nil
 	}
 	// Dive until we run out of layers or reach the persistent database
@@ -229,9 +208,8 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 	// We're out of layers, flatten anything below, stopping if it's the disk or if
 	// the memory limit is not yet exceeded.
 	var (
-		err      error
-		replaced layer
-		newBase  *diskLayer
+		err     error
+		newBase *diskLayer
 	)
 	switch parent := diff.parentLayer().(type) {
 	case *diskLayer:
@@ -241,9 +219,6 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		// Hold the lock to prevent any read operations until the new
 		// parent is linked correctly.
 		diff.lock.Lock()
-
-		// Hold the reference of the original layer being replaced
-		replaced = parent
 
 		// Replace the original parent layer with new disk layer. The procedure
 		// can be illustrated as below:
@@ -284,19 +259,11 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 			children[parent] = append(children[parent], root)
 		}
 	}
-	clearDiff := func(layer layer) {
-		diff, ok := layer.(*diffLayer)
-		if !ok {
-			return
-		}
-		tree.lookup.removeLayer(diff)
-	}
+	// The keys of the removed diff layers are left in the gate, they expire
+	// along with the window once the disk layer moves beyond it.
 	var remove func(root common.Hash)
 	remove = func(root common.Hash) {
-		clearDiff(tree.layers[root])
-
 		// Unlink the layer from the layer tree and cascade to its children
-		delete(tree.descendants, root)
 		delete(tree.layers, root)
 		for _, child := range children[root] {
 			remove(child)
@@ -304,7 +271,6 @@ func (tree *layerTree) cap(root common.Hash, layers int) error {
 		delete(children, root)
 	}
 	remove(tree.base.rootHash()) // remove the old/stale disk layer
-	clearDiff(replaced)          // remove the lookup data of the stale parent being replaced
 	tree.base = newBase          // update the base layer with newly constructed one
 	return nil
 }
@@ -317,38 +283,82 @@ func (tree *layerTree) bottom() *diskLayer {
 	return tree.base
 }
 
-// lookupAccount returns the layer that is guaranteed to contain the account data
-// corresponding to the specified state root being queried.
-func (tree *layerTree) lookupAccount(accountHash common.Hash, state common.Hash) (layer, error) {
+// layerGateDepth is the number of the topmost layers walked through before the
+// gate is consulted.
+const layerGateDepth = 4
+
+// lookup returns the layer holding the entry with the given bloom key in the
+// specified state, along with its distance from the state, or the disk layer if
+// no diff layer holds it. has reports whether a diff layer holds the entry, it's
+// consulted only for the layers whose filter fails to rule the key out.
+func (tree *layerTree) lookup(state common.Hash, key uint64, has func(*diffLayer) bool) (layer, int, error) {
 	// Hold the read lock to prevent the unexpected layer changes
 	tree.lock.RLock()
 	defer tree.lock.RUnlock()
 
-	tip, ok := tree.lookup.accountTip(accountHash, state, tree.base.root)
-	if !ok {
-		return nil, fmt.Errorf("[%#x] %w", state, errSnapshotStale)
-	}
-	l := tree.layers[tip]
+	l := tree.layers[state]
 	if l == nil {
-		return nil, fmt.Errorf("triedb layer [%#x] missing", tip)
+		return nil, 0, fmt.Errorf("[%#x] %w", state, errSnapshotStale)
 	}
-	return l, nil
+	// Walk down the layers, the parent links are stable with the lock held.
+	// The gate is consulted once the topmost layers, holding the recently
+	// modified entries, are passed; from then on, the layers in the windows
+	// ruled out by the gate generations are skipped without probing.
+	var (
+		depth  int
+		window = ^uint64(0) // the window of the layers being walked through
+		maybe  = true       // whether the window possibly holds the key
+	)
+	for {
+		dl, ok := l.(*diffLayer)
+		if !ok {
+			break
+		}
+		if depth >= layerGateDepth {
+			if depth == layerGateDepth && !tree.gate.contains(key, tree.base.id) {
+				layerGateShortMeter.Mark(1)
+				return tree.base, int(l.stateID() - tree.base.id), nil
+			}
+			if w := (dl.id - 1) / layerGateWindow; w != window {
+				window, maybe = w, tree.gate.windowContains(dl.id, key)
+			}
+		}
+		if maybe && dl.bloom.contains(key) && has(dl) {
+			break
+		}
+		l, depth = dl.parent, depth+1
+	}
+	layerGateWalkMeter.Mark(1)
+	layerGateDepthMeter.Mark(int64(depth))
+	return l, depth, nil
+}
+
+// lookupAccount returns the layer that is guaranteed to contain the account data
+// corresponding to the specified state root being queried.
+func (tree *layerTree) lookupAccount(accountHash common.Hash, state common.Hash) (layer, error) {
+	l, _, err := tree.lookup(state, bloomAccountKey(accountHash), func(dl *diffLayer) bool {
+		_, ok := dl.states.account(accountHash)
+		return ok
+	})
+	return l, err
 }
 
 // lookupStorage returns the layer that is guaranteed to contain the storage slot
 // data corresponding to the specified state root being queried.
 func (tree *layerTree) lookupStorage(accountHash common.Hash, slotHash common.Hash, state common.Hash) (layer, error) {
-	// Hold the read lock to prevent the unexpected layer changes
-	tree.lock.RLock()
-	defer tree.lock.RUnlock()
+	l, _, err := tree.lookup(state, bloomStorageKey(accountHash, slotHash), func(dl *diffLayer) bool {
+		_, ok := dl.states.storage(accountHash, slotHash)
+		return ok
+	})
+	return l, err
+}
 
-	tip, ok := tree.lookup.storageTip(accountHash, slotHash, state, tree.base.root)
-	if !ok {
-		return nil, fmt.Errorf("[%#x] %w", state, errSnapshotStale)
-	}
-	l := tree.layers[tip]
-	if l == nil {
-		return nil, fmt.Errorf("triedb layer [%#x] missing", tip)
-	}
-	return l, nil
+// lookupNode returns the layer that is guaranteed to contain the trie node
+// corresponding to the specified state root being queried, along with its
+// distance from the state.
+func (tree *layerTree) lookupNode(owner common.Hash, path []byte, state common.Hash) (layer, int, error) {
+	return tree.lookup(state, bloomNodeKey(owner, path), func(dl *diffLayer) bool {
+		_, ok := dl.nodes.node(owner, path)
+		return ok
+	})
 }

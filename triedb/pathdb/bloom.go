@@ -19,7 +19,6 @@ package pathdb
 import (
 	"encoding/binary"
 	"slices"
-	"sync"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -147,16 +146,10 @@ func newBufferBloom(limit uint64) *bloomFilter {
 }
 
 // newSetBloom constructs the filter over the provided keys, with 12 bits per key.
-func newSetBloom(keys ...[]uint64) *bloomFilter {
-	var n int
-	for _, part := range keys {
-		n += len(part)
-	}
-	b := newBloomFilter(uint64(n) * 12)
-	for _, part := range keys {
-		for _, key := range part {
-			b.insert(key)
-		}
+func newSetBloom(keys []uint64) *bloomFilter {
+	b := newBloomFilter(uint64(len(keys)) * 12)
+	for _, key := range keys {
+		b.insert(key)
 	}
 	return b
 }
@@ -212,39 +205,16 @@ func (b *bloomFilter) insertSet(nodes *nodeSet, states *stateSet) {
 	}
 }
 
-// bloomParts is the number of the partitions the bloom keys of a committed set
-// are derived and inserted in, concurrently.
-const bloomParts = 4
-
 // appendBloomKeys appends the bloom keys of all the entries aggregated in the
 // provided node set and state set to dst.
 func appendBloomKeys(dst []uint64, nodes *nodeSet, states *stateSet) []uint64 {
 	dst = slices.Grow(dst, bloomKeyCount(nodes, states))
-	return appendBloomKeysPart(dst, nodes, states, 0, 1)
-}
-
-// appendBloomKeysPart appends the bloom keys of the given partition (out of
-// parts) of the entries to dst. With multiple partitions, the partition 0 covers
-// the account trie and the accounts, the others split the storage tries and the
-// slots by the owner; a single partition covers all the entries.
-func appendBloomKeysPart(dst []uint64, nodes *nodeSet, states *stateSet, part int, parts int) []uint64 {
-	var (
-		accounts = part == 0
-		storage  = func(owner common.Hash) bool {
-			return parts == 1 || part > 0 && int(owner[0])%(parts-1) == part-1
-		}
-	)
 	if nodes != nil {
-		if accounts {
-			seed := bloomNodeSeed(common.Hash{})
-			for path := range nodes.accountNodes {
-				dst = append(dst, bloomPathKey(seed, path))
-			}
+		seed := bloomNodeSeed(common.Hash{})
+		for path := range nodes.accountNodes {
+			dst = append(dst, bloomPathKey(seed, path))
 		}
 		for owner, subset := range nodes.storageNodes {
-			if !storage(owner) {
-				continue
-			}
 			seed := bloomNodeSeed(owner)
 			for path := range subset {
 				dst = append(dst, bloomPathKey(seed, path))
@@ -252,15 +222,10 @@ func appendBloomKeysPart(dst []uint64, nodes *nodeSet, states *stateSet, part in
 		}
 	}
 	if states != nil {
-		if accounts {
-			for hash := range states.accountData {
-				dst = append(dst, bloomAccountKey(hash))
-			}
+		for hash := range states.accountData {
+			dst = append(dst, bloomAccountKey(hash))
 		}
 		for accountHash, slots := range states.storageData {
-			if !storage(accountHash) {
-				continue
-			}
 			seed := bloomStorageSeed(accountHash)
 			for storageHash := range slots {
 				dst = append(dst, bloomSlotKey(seed, storageHash))
@@ -289,6 +254,86 @@ func bloomKeyCount(nodes *nodeSet, states *stateSet) int {
 	return n
 }
 
-// bloomKeyPool recycles the key slices staged between the key derivation and
-// the construction of the filter of a committed set, one per partition.
-var bloomKeyPool = sync.Pool{New: func() any { return new([bloomParts][]uint64) }}
+// layerGateWindow is the number of the consecutive diff layers (by state id)
+// whose keys are tracked by one generation of the layer gate.
+const layerGateWindow = 16
+
+// layerGateBits is the number of the bits allocated per key in a generation.
+// With up to ~10 generations probed per lookup, the false positive rate of
+// the whole gate stays around 1%.
+const layerGateBits = 24
+
+// layerGate is the bloom filter over the keys of the live diff layers, letting
+// the lookups of the entries outside all the diff layers go to the disk layer
+// directly. As keys can't be removed from a bloom filter, the gate is split into
+// generations by the state id; a generation is cleared and reused once all the
+// layers in its window are persisted into the disk layer.
+//
+// It's not thread-safe, the tree lock guards the access.
+type layerGate struct {
+	gens []layerGateGen
+	keys int // the largest key count of a layer seen, for sizing the generations
+}
+
+// layerGateGen is a generation of the layer gate.
+type layerGateGen struct {
+	window uint64       // the window index covered, (state id - 1) / layerGateWindow
+	bloom  *bloomFilter // filter over the keys of the layers in the window, nil if unused
+}
+
+// newLayerGate constructs a gate with the given number of generations.
+func newLayerGate(gens int) *layerGate {
+	return &layerGate{gens: make([]layerGateGen, gens)}
+}
+
+// add inserts the keys of the layer with the given state id. False is returned
+// if the generation slot is still taken by a window holding live layers, above
+// the disk layer with the given state id.
+func (g *layerGate) add(id uint64, keys []uint64, disk uint64) bool {
+	g.keys = max(g.keys, len(keys))
+
+	window := (id - 1) / layerGateWindow
+	gen := &g.gens[window%uint64(len(g.gens))]
+	if gen.bloom == nil || gen.window != window {
+		if gen.bloom != nil && (gen.window+1)*layerGateWindow > disk {
+			return false
+		}
+		bits := uint64(layerGateWindow * g.keys * layerGateBits)
+		if gen.bloom != nil && uint64(len(gen.bloom.blocks))*512 >= bits {
+			clear(gen.bloom.blocks)
+		} else {
+			gen.bloom = newBloomFilter(bits)
+		}
+		gen.window = window
+	}
+	for _, key := range keys {
+		gen.bloom.insert(key)
+	}
+	return true
+}
+
+// windowContains reports whether the key is possibly held by any layer in the
+// window of the given state id.
+func (g *layerGate) windowContains(id uint64, key uint64) bool {
+	window := (id - 1) / layerGateWindow
+	gen := &g.gens[window%uint64(len(g.gens))]
+	if gen.bloom == nil || gen.window != window {
+		return true // unknown window, can't rule the key out
+	}
+	return gen.bloom.contains(key)
+}
+
+// contains reports whether the key is possibly held by any live diff layer,
+// above the disk layer with the given state id.
+func (g *layerGate) contains(key uint64, disk uint64) bool {
+	for i := range g.gens {
+		gen := &g.gens[i]
+		if gen.bloom == nil || (gen.window+1)*layerGateWindow <= disk {
+			continue // unused, or all the layers persisted
+		}
+		if gen.bloom.contains(key) {
+			return true
+		}
+	}
+	return false
+}
