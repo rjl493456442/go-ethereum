@@ -464,11 +464,31 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Store the root->id lookup afterwards. All stored lookups are identified
 	// by the **unique** state root. It's impossible that in the same chain
 	// blocks are not adjacent but have the same root.
+	//
+	// The lookups are only consumed by the historical access, which waits for
+	// the scheduled history writes, so they're written along with the histories
+	// in background, keeping the key-value store writes off the commit path.
 	start = time.Now()
-	if dl.id == 0 {
-		rawdb.WriteStateID(dl.db.diskdb, dl.root, 0)
+	var (
+		baseRoot = dl.root
+		baseID   = dl.id
+		root     = bottom.rootHash()
+		id       = bottom.stateID()
+	)
+	writeStateID := func() error {
+		if baseID == 0 {
+			rawdb.WriteStateID(dl.db.diskdb, baseRoot, 0)
+		}
+		rawdb.WriteStateID(dl.db.diskdb, root, id)
+		return nil
 	}
-	rawdb.WriteStateID(dl.db.diskdb, bottom.rootHash(), bottom.stateID())
+	if dl.db.historyWriter != nil {
+		if err := dl.db.historyWriter.submit(writeStateID); err != nil {
+			return nil, err
+		}
+	} else {
+		writeStateID()
+	}
 	updateStateIDTimer.UpdateSince(start)
 
 	// Merge the trie nodes and flat states of the bottom-most diff layer into the

@@ -24,7 +24,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -658,6 +660,67 @@ func TestDatabaseRecoverable(t *testing.T) {
 		if result != c.expect {
 			t.Fatalf("case: %d, unexpected result, want %t, got %t", i, c.expect, result)
 		}
+	}
+}
+
+// TestDatabaseRecoverableBackground checks that the recoverability is reported
+// correctly while the state lookups and histories are still being written in
+// background.
+func TestDatabaseRecoverableBackground(t *testing.T) {
+	// Redefine the diff layer depth allowance for faster testing.
+	maxDiffLayers = 4
+	defer func() {
+		maxDiffLayers = 128
+	}()
+
+	tester := newTester(t, &testerConfig{layers: 12})
+	defer tester.release()
+
+	// Stall the history writer, queueing the writes of the following commits.
+	// It's resumed before the database is closed, even if the test fails.
+	var (
+		release = make(chan struct{})
+		once    sync.Once
+		resume  = func() { once.Do(func() { close(release) }) }
+	)
+	defer resume()
+
+	if err := tester.db.historyWriter.submit(func() error {
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("Failed to stall the history writer: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		parent := tester.roots[len(tester.roots)-1]
+		root, nodes, states := tester.generate(parent, true)
+		if err := tester.db.Update(root, parent, uint64(len(tester.roots)), nodes, states); err != nil {
+			t.Fatalf("Failed to update state changes: %v", err)
+		}
+		tester.roots = append(tester.roots, root)
+		tester.nodes = append(tester.nodes, nodes)
+		tester.states = append(tester.states, states)
+	}
+	// The layer persisted by the first commit is below the disk layer now,
+	// with both its lookup and its history still queued.
+	target := tester.roots[tester.bottomIndex()-1]
+
+	result := make(chan bool, 1)
+	go func() { result <- tester.db.Recoverable(target) }()
+	select {
+	case <-result:
+		t.Fatal("Recoverable returned before the queued writes are done")
+	case <-time.After(50 * time.Millisecond):
+	}
+	resume()
+
+	select {
+	case ok := <-result:
+		if !ok {
+			t.Fatal("State is expected to be recoverable")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Recoverable is stuck")
 	}
 }
 

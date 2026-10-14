@@ -572,7 +572,11 @@ func (db *Database) Recoverable(root common.Hash) bool {
 	if db.waitSync {
 		return false
 	}
-	// Ensure the requested state is a known state.
+	// Ensure the requested state is a known state. The lookup and the history
+	// are written in background, wait for the scheduled writes first.
+	if err := db.waitHistory(); err != nil {
+		return false
+	}
 	id := rawdb.ReadStateID(db.diskdb, root)
 	if id == nil {
 		return false
@@ -589,9 +593,6 @@ func (db *Database) Recoverable(root common.Hash) bool {
 	// in certain cases.
 	// TODO(rjl493456442): Implement the in-memory ancient store.
 	if db.stateFreezer == nil {
-		return false
-	}
-	if err := db.waitHistory(); err != nil {
 		return false
 	}
 	blob := rawdb.ReadStateHistoryMeta(db.stateFreezer, *id+1)
