@@ -34,6 +34,7 @@ type hasher struct {
 	encbuf    rlp.EncoderBuffer
 	parallel  bool // Whether to use parallel threads when hashing
 	cacheBlob bool // Whether to stash each node's encoding for the committer
+	hashed    int  // Number of nodes hashed, excluding the ones embedded in parents
 }
 
 // hasherPool holds pureHashers
@@ -51,6 +52,7 @@ func newHasher(parallel, cacheBlob bool) *hasher {
 	h := hasherPool.Get().(*hasher)
 	h.parallel = parallel
 	h.cacheBlob = cacheBlob
+	h.hashed = 0
 	return h
 }
 
@@ -82,6 +84,7 @@ func (h *hasher) hash(n node, force bool) []byte {
 		if h.cacheBlob {
 			n.flags.blob = common.CopyBytes(enc)
 		}
+		h.hashed++
 		return hash
 
 	case *fullNode:
@@ -100,6 +103,7 @@ func (h *hasher) hash(n node, force bool) []byte {
 		if h.cacheBlob {
 			n.flags.blob = common.CopyBytes(enc)
 		}
+		h.hashed++
 		return hash
 
 	case hashNode:
@@ -148,7 +152,10 @@ func (h *hasher) encodeFullNode(n *fullNode) []byte {
 	fn.reset()
 
 	if h.parallel {
-		var wg sync.WaitGroup
+		var (
+			wg     sync.WaitGroup
+			hashed [16]int
+		)
 		for i := 0; i < 16; i++ {
 			if n.Children[i] == nil {
 				continue
@@ -159,10 +166,15 @@ func (h *hasher) encodeFullNode(n *fullNode) []byte {
 
 				h2 := newHasher(false, h.cacheBlob)
 				fn.Children[i] = h2.hash(n.Children[i], false)
+				hashed[i] = h2.hashed
 				returnHasherToPool(h2)
 			}(i)
 		}
 		wg.Wait()
+
+		for _, count := range hashed {
+			h.hashed += count
+		}
 	} else {
 		for i := 0; i < 16; i++ {
 			if child := n.Children[i]; child != nil {

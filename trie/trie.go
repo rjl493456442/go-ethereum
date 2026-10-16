@@ -54,6 +54,11 @@ type Trie struct {
 	// uncommitted is the number of updates since last commit.
 	uncommitted int
 
+	// hashedNodes is the number of nodes hashed since last commit, used as the
+	// size hint of the node set for commit. It overestimates the number of
+	// dirty nodes if some hashed nodes are modified again before the commit.
+	hashedNodes int
+
 	// cacheBlob makes the hasher cache encoded trie nodes.
 	// Saves re-encoding on commit. Can be turned off for
 	// Trie's that are never committed (e.g. for snap sync).
@@ -80,6 +85,7 @@ func (t *Trie) Copy() *Trie {
 		committed:      t.committed,
 		unhashed:       t.unhashed,
 		uncommitted:    t.uncommitted,
+		hashedNodes:    t.hashedNodes,
 		cacheBlob:      t.cacheBlob,
 		reader:         t.reader,
 		opTracer:       t.opTracer.copy(),
@@ -850,13 +856,18 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 		t.root = hashedNode
 		return rootHash, nil
 	}
-	nodes := trienode.NewNodeSet(t.owner)
-	for _, path := range t.deletedNodes() {
+	var (
+		deleted = t.deletedNodes()
+		size    = t.hashedNodes + len(deleted)
+		nodes   = trienode.NewNodeSetWithSize(t.owner, size)
+	)
+	for _, path := range deleted {
 		nodes.AddNode(path, trienode.NewDeletedWithPrev(t.prevalueTracer.Get(path)))
 	}
 	// If the number of changes is below 100, we let one thread handle it
-	t.root = newCommitter(nodes, t.prevalueTracer, collectLeaf).Commit(t.root, t.uncommitted > 100)
+	t.root = newCommitter(nodes, t.prevalueTracer, collectLeaf, size).Commit(t.root, t.uncommitted > 100)
 	t.uncommitted = 0
+	t.hashedNodes = 0
 	return rootHash, nodes
 }
 
@@ -868,6 +879,7 @@ func (t *Trie) hashRoot() []byte {
 	// If the number of changes is below 100, we let one thread handle it
 	h := newHasher(t.unhashed >= 100, t.cacheBlob)
 	defer func() {
+		t.hashedNodes += h.hashed
 		returnHasherToPool(h)
 		t.unhashed = 0
 	}()
@@ -885,6 +897,7 @@ func (t *Trie) reset() {
 	t.owner = common.Hash{}
 	t.unhashed = 0
 	t.uncommitted = 0
+	t.hashedNodes = 0
 	t.opTracer.reset()
 	t.prevalueTracer.Reset()
 	t.committed = false

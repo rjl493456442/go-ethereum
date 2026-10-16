@@ -214,6 +214,20 @@ func (t *StateTrie) UpdateStorage(_ common.Address, key, value []byte) error {
 	return nil
 }
 
+// UpdateStorageWithHash is the variant of UpdateStorage, which takes the hash
+// of the key computed by the caller to avoid hashing it again.
+func (t *StateTrie) UpdateStorageWithHash(key []byte, hash common.Hash, value []byte) error {
+	v, _ := rlp.EncodeToBytes(value)
+	err := t.trie.Update(hash[:], v)
+	if err != nil {
+		return err
+	}
+	if t.preimages != nil {
+		t.secKeyCache[hash] = common.CopyBytes(key)
+	}
+	return nil
+}
+
 // UpdateStorageBatch attempts to update a list storages in the batch manner.
 func (t *StateTrie) UpdateStorageBatch(_ common.Address, keys [][]byte, values [][]byte) error {
 	var (
@@ -299,6 +313,15 @@ func (t *StateTrie) DeleteStorage(_ common.Address, key []byte) error {
 		delete(t.secKeyCache, common.Hash(hk))
 	}
 	return t.trie.Delete(hk)
+}
+
+// DeleteStorageWithHash is the variant of DeleteStorage, which takes the hash
+// of the key computed by the caller to avoid hashing it again.
+func (t *StateTrie) DeleteStorageWithHash(hash common.Hash) error {
+	if t.preimages != nil {
+		delete(t.secKeyCache, hash)
+	}
+	return t.trie.Delete(hash[:])
 }
 
 // DeleteAccount abstracts an account deletion from the trie.

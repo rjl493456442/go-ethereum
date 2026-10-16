@@ -95,6 +95,43 @@ func TestSecureDelete(t *testing.T) {
 	}
 }
 
+// Tests that updating and deleting storage slots with the precomputed key hashes
+// is equivalent to the plain variants.
+func TestSecureStorageWithHash(t *testing.T) {
+	var (
+		plain  = newEmptySecure()
+		hashed = newEmptySecure()
+		keys   [][]byte
+	)
+	for i := byte(0); i < 16; i++ {
+		key, val := common.LeftPadBytes([]byte{i}, 32), []byte{i + 1}
+		keys = append(keys, key)
+		if err := plain.UpdateStorage(common.Address{}, key, val); err != nil {
+			t.Fatal(err)
+		}
+		if err := hashed.UpdateStorageWithHash(key, crypto.Keccak256Hash(key), val); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < len(keys); i += 2 {
+		if err := plain.DeleteStorage(common.Address{}, keys[i]); err != nil {
+			t.Fatal(err)
+		}
+		if err := hashed.DeleteStorageWithHash(crypto.Keccak256Hash(keys[i])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if plain.Hash() != hashed.Hash() {
+		t.Fatalf("root mismatch: plain %x, hashed %x", plain.Hash(), hashed.Hash())
+	}
+	for _, key := range keys {
+		seckey := crypto.Keccak256(key)
+		if want, got := plain.GetKey(seckey), hashed.GetKey(seckey); !bytes.Equal(want, got) {
+			t.Fatalf("preimage mismatch for %x: want %x, got %x", key, want, got)
+		}
+	}
+}
+
 func TestSecureGetKey(t *testing.T) {
 	trie := newEmptySecure()
 	trie.MustUpdate([]byte("foo"), []byte("bar"))

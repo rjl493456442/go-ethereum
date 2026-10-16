@@ -24,7 +24,6 @@ import (
 	"maps"
 	"slices"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1288,7 +1287,6 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 		storageTrieNodesUpdated int
 		storageTrieNodesDeleted int
 
-		lock    sync.Mutex                                               // protect two maps below
 		nodes   = trienode.NewMergedNodeSet()                            // aggregated trie nodes
 		updates = make(map[common.Hash]*AccountUpdate, len(s.mutations)) // aggregated account updates
 
@@ -1299,15 +1297,10 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 		// may already exist. In such cases, these two sets are combined, with
 		// the later one overwriting the previous one if any nodes are modified
 		// or deleted in both sets.
-		//
-		// merge run concurrently across  all the state objects and account trie.
 		merge = func(set *trienode.NodeSet) error {
 			if set == nil {
 				return nil
 			}
-			lock.Lock()
-			defer lock.Unlock()
-
 			updates, deletes := set.Size()
 			if set.Owner == (common.Hash{}) {
 				accountTrieNodesUpdated += updates
@@ -1336,8 +1329,9 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 	// off some milliseconds from the commit operation. Also accumulate the code
 	// writes to run in parallel with the computations.
 	var (
-		start   = time.Now()
-		workers errgroup.Group
+		start      = time.Now()
+		workers    errgroup.Group
+		accountSet *trienode.NodeSet
 	)
 	// Schedule the account trie first since that will be the biggest, so give
 	// it the most time to crunch.
@@ -1350,20 +1344,14 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 	// code didn't anticipate for.
 	workers.Go(func() error {
 		// Write the account trie changes, measuring the amount of wasted time
-		_, set := s.trie.Commit(true)
-		if err := merge(set); err != nil {
-			return err
-		}
+		_, accountSet = s.trie.Commit(true)
 		s.AccountCommits = time.Since(start)
 		return nil
 	})
-	// Schedule each of the storage tries that need to be updated, so they can
-	// run concurrently to one another.
-	//
-	// TODO(karalabe): Experimentally, the account commit takes approximately the
-	// same time as all the storage commits combined, so we could maybe only have
-	// 2 threads in total. But that kind of depends on the account commit being
-	// more expensive than it should be, so let's fix that and revisit this todo.
+	// Gather the state objects to commit. Only the ones with storage changes
+	// have a storage trie to commit, the rest carry account changes only and
+	// are too cheap to be worth a goroutine of their own.
+	var withStorage, withoutStorage []*stateObject
 	for addr, op := range s.mutations {
 		if op.isDelete() {
 			continue
@@ -1373,27 +1361,63 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 		if obj == nil {
 			return nil, errors.New("missing state object")
 		}
-		// Run the storage updates concurrently to one another
-		workers.Go(func() error {
-			// Write any storage changes in the state object to its storage trie
-			update, set, err := obj.commit()
+		if len(obj.pendingStorage) > 0 {
+			withStorage = append(withStorage, obj)
+		} else {
+			withoutStorage = append(withoutStorage, obj)
+		}
+	}
+	// Schedule each of the storage tries that need to be updated, so they can
+	// run concurrently to one another, and commit the remaining objects inline
+	// in the meantime. The results are collected per object and aggregated once
+	// everything is done, so that the workers don't contend on a shared lock.
+	//
+	// TODO(karalabe): Experimentally, the account commit takes approximately the
+	// same time as all the storage commits combined, so we could maybe only have
+	// 2 threads in total. But that kind of depends on the account commit being
+	// more expensive than it should be, so let's fix that and revisit this todo.
+	type objectCommit struct {
+		update  *AccountUpdate
+		set     *trienode.NodeSet
+		elapsed time.Duration
+	}
+	var (
+		objects      = append(withStorage, withoutStorage...)
+		results      = make([]objectCommit, len(objects))
+		commitObject = func(i int) error {
+			update, set, err := objects[i].commit()
 			if err != nil {
 				return err
 			}
-			if err := merge(set); err != nil {
-				return err
-			}
-			lock.Lock()
-			updates[obj.addrHash()] = update
-			s.StorageCommits = time.Since(start) // overwrite with the longest storage commit runtime
-			lock.Unlock()
+			results[i] = objectCommit{update: update, set: set, elapsed: time.Since(start)}
 			return nil
-		})
+		}
+	)
+	for i := range withStorage {
+		workers.Go(func() error { return commitObject(i) })
 	}
-	// Wait for everything to finish and update the metrics
+	for i := len(withStorage); i < len(objects); i++ {
+		if err := commitObject(i); err != nil {
+			return nil, err
+		}
+	}
+	// Wait for everything to finish and aggregate the results
 	if err := workers.Wait(); err != nil {
 		return nil, err
 	}
+	if err := merge(accountSet); err != nil {
+		return nil, err
+	}
+	var storageCommits time.Duration
+	for i, obj := range objects {
+		if err := merge(results[i].set); err != nil {
+			return nil, err
+		}
+		updates[obj.addrHash()] = results[i].update
+		storageCommits = max(storageCommits, results[i].elapsed) // the longest object commit runtime
+	}
+	s.StorageCommits = storageCommits
+
 	accountReadMeters.Mark(int64(s.AccountLoaded))
 	storageReadMeters.Mark(int64(s.StorageLoaded))
 	accountUpdatedMeter.Mark(int64(s.AccountUpdated))

@@ -101,10 +101,16 @@ type NodeSet struct {
 // NewNodeSet initializes a node set. The owner is zero for the account trie and
 // the owning account address hash for storage tries.
 func NewNodeSet(owner common.Hash) *NodeSet {
+	return NewNodeSetWithSize(owner, 0)
+}
+
+// NewNodeSetWithSize initializes a node set with the space preallocated for the
+// given number of nodes.
+func NewNodeSetWithSize(owner common.Hash, size int) *NodeSet {
 	return &NodeSet{
 		Owner:   owner,
-		Nodes:   make(map[string]*Node),
-		Origins: make(map[string][]byte),
+		Nodes:   make(map[string]*Node, size),
+		Origins: make(map[string][]byte, size),
 	}
 }
 

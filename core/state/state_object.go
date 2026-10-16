@@ -61,6 +61,11 @@ type stateObject struct {
 	dirtyStorage   Storage // Storage entries that have been modified within the current transaction
 	pendingStorage Storage // Storage entries that have been modified within the current block
 
+	// pendingStorageHashes caches the hashes of the pending storage slot keys.
+	// They are computed when the slots are flushed into the merkle storage trie
+	// and reused by the commit later, avoiding hashing the keys again.
+	pendingStorageHashes map[common.Hash]common.Hash
+
 	// uncommittedStorage tracks a set of storage entries that have been modified
 	// but not yet committed since the "last commit operation", along with their
 	// original values before mutation.
@@ -348,6 +353,12 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		deletions []common.Hash
 		used      = make([]common.Hash, 0, len(s.uncommittedStorage))
 	)
+	// The merkle storage trie is keyed by the hashes of the slot keys, which are
+	// required by the commit as well. Hash the keys only once and share them.
+	st, _ := tr.(*trie.StateTrie)
+	if st != nil && s.pendingStorageHashes == nil {
+		s.pendingStorageHashes = make(map[common.Hash]common.Hash, len(s.uncommittedStorage))
+	}
 	for key, origin := range s.uncommittedStorage {
 		// Skip noop changes, persist actual changes
 		value, exist := s.pendingStorage[key]
@@ -359,8 +370,19 @@ func (s *stateObject) updateTrie() (Trie, error) {
 			log.Error("Storage slot is not found in pending area", "address", s.address, "slot", key)
 			continue
 		}
+		var hash common.Hash
+		if st != nil {
+			hash = crypto.Keccak256Hash(key[:])
+			s.pendingStorageHashes[key] = hash
+		}
 		if (value != common.Hash{}) {
-			if err := tr.UpdateStorage(s.address, key[:], common.TrimLeftZeroes(value[:])); err != nil {
+			var err error
+			if st != nil {
+				err = st.UpdateStorageWithHash(key[:], hash, common.TrimLeftZeroes(value[:]))
+			} else {
+				err = tr.UpdateStorage(s.address, key[:], common.TrimLeftZeroes(value[:]))
+			}
+			if err != nil {
 				s.db.setError(err)
 				return nil, err
 			}
@@ -372,7 +394,13 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		used = append(used, key) // Copy needed for closure
 	}
 	for _, key := range deletions {
-		if err := tr.DeleteStorage(s.address, key[:]); err != nil {
+		var err error
+		if st != nil {
+			err = st.DeleteStorageWithHash(s.pendingStorageHashes[key])
+		} else {
+			err = tr.DeleteStorage(s.address, key[:])
+		}
+		if err != nil {
 			s.db.setError(err)
 			return nil, err
 		}
@@ -408,7 +436,10 @@ func (s *stateObject) commitStorage(op *AccountUpdate) {
 		if val == s.originStorage[key] {
 			continue
 		}
-		hash := crypto.Keccak256Hash(key[:])
+		hash, ok := s.pendingStorageHashes[key]
+		if !ok {
+			hash = crypto.Keccak256Hash(key[:])
+		}
 		if op.Storages == nil {
 			op.Storages = make(map[common.Hash]common.Hash)
 		}
@@ -428,6 +459,7 @@ func (s *stateObject) commitStorage(op *AccountUpdate) {
 		s.originStorage[key] = val
 	}
 	s.pendingStorage = make(Storage)
+	s.pendingStorageHashes = nil
 }
 
 // commit obtains the account changes (metadata, storage slots, code) caused by
@@ -509,19 +541,20 @@ func (s *stateObject) setBalance(amount *uint256.Int) {
 
 func (s *stateObject) deepCopy(db *StateDB) *stateObject {
 	obj := &stateObject{
-		db:                 db,
-		address:            s.address,
-		addressHash:        nil,
-		origin:             s.origin,
-		data:               s.data,
-		code:               s.code,
-		originStorage:      s.originStorage.Copy(),
-		pendingStorage:     s.pendingStorage.Copy(),
-		dirtyStorage:       s.dirtyStorage.Copy(),
-		uncommittedStorage: s.uncommittedStorage.Copy(),
-		dirtyCode:          s.dirtyCode,
-		selfDestructed:     s.selfDestructed,
-		newContract:        s.newContract,
+		db:                   db,
+		address:              s.address,
+		addressHash:          nil,
+		origin:               s.origin,
+		data:                 s.data,
+		code:                 s.code,
+		originStorage:        s.originStorage.Copy(),
+		pendingStorage:       s.pendingStorage.Copy(),
+		pendingStorageHashes: maps.Clone(s.pendingStorageHashes),
+		dirtyStorage:         s.dirtyStorage.Copy(),
+		uncommittedStorage:   s.uncommittedStorage.Copy(),
+		dirtyCode:            s.dirtyCode,
+		selfDestructed:       s.selfDestructed,
+		newContract:          s.newContract,
 	}
 
 	switch s.trie.(type) {

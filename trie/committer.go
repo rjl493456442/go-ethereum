@@ -31,14 +31,16 @@ type committer struct {
 	nodes       *trienode.NodeSet
 	tracer      *PrevalueTracer
 	collectLeaf bool
+	size        int // Estimated number of nodes to commit, used for preallocation
 }
 
 // newCommitter creates a new committer or picks one from the pool.
-func newCommitter(nodeset *trienode.NodeSet, tracer *PrevalueTracer, collectLeaf bool) *committer {
+func newCommitter(nodeset *trienode.NodeSet, tracer *PrevalueTracer, collectLeaf bool, size int) *committer {
 	return &committer{
 		nodes:       nodeset,
 		tracer:      tracer,
 		collectLeaf: collectLeaf,
+		size:        size,
 	}
 }
 
@@ -112,9 +114,14 @@ func (c *committer) commitChildren(path []byte, n *fullNode, parallel bool) {
 			go func(index int) {
 				defer wg.Done()
 
-				p := append(path, byte(index))
-				childSet := trienode.NewNodeSet(c.nodes.Owner)
-				childCommitter := newCommitter(childSet, c.tracer, c.collectLeaf)
+				// Assume the nodes are evenly distributed among the children
+				// for preallocating the node sets.
+				var (
+					p              = append(path, byte(index))
+					childSize      = c.size / 16
+					childSet       = trienode.NewNodeSetWithSize(c.nodes.Owner, childSize)
+					childCommitter = newCommitter(childSet, c.tracer, c.collectLeaf, childSize)
+				)
 				n.Children[index] = childCommitter.commit(p, child, false)
 
 				nodesMu.Lock()

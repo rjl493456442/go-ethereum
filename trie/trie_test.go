@@ -1303,6 +1303,48 @@ func TestCommitCorrect(t *testing.T) {
 		t.Fatalf("have != want\nhave %q\nwant %q", have[i:], want[i:])
 	}
 }
+
+// Tests that the number of hashed nodes, used as the size hint of the node set
+// for commit, matches the number of committed nodes, in both the sequential and
+// the parallel hashing and committing.
+func TestCommitSizeHint(t *testing.T) {
+	commit := func(tr *Trie) (common.Hash, *trienode.NodeSet) {
+		t.Helper()
+		tr.Hash()
+		hint := tr.hashedNodes
+		root, set := tr.Commit(false)
+		if updates, _ := set.Size(); updates != hint {
+			t.Fatalf("size hint mismatch, want %d, got %d", updates, hint)
+		}
+		return root, set
+	}
+	db := newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.HashScheme)
+	tr := NewEmpty(db)
+	keys := make([][]byte, 2000)
+	for i := range keys {
+		keys[i] = testrand.Bytes(32)
+		tr.MustUpdate(keys[i], testrand.Bytes(32))
+	}
+	root, set := commit(tr)
+	if err := db.Update(root, types.EmptyRootHash, trienode.NewWithNodeSet(set)); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{10, 500} {
+		tr, err := New(TrieID(root), db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < n; i++ {
+			if i%5 == 0 {
+				tr.MustDelete(keys[i])
+			} else {
+				tr.MustUpdate(keys[i], testrand.Bytes(32))
+			}
+		}
+		commit(tr)
+	}
+}
+
 func printSet(set *trienode.NodeSet) string {
 	var out = new(strings.Builder)
 	fmt.Fprintf(out, "nodeset owner: %v\n", set.Owner)
