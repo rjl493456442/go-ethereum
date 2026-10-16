@@ -105,8 +105,10 @@ var (
 	trienodeUnindexHistoryTimer    = metrics.NewRegisteredResettingTimer("pathdb/history/trienode/unindex/time", nil)
 	trienodePruneHistoryIndexTimer = metrics.NewRegisteredResettingTimer("pathdb/history/trienode/prune/time", nil)
 
-	lookupAddLayerTimer    = metrics.NewRegisteredResettingTimer("pathdb/lookup/add/time", nil)
-	lookupRemoveLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/lookup/remove/time", nil)
+	layerBloomTimer           = metrics.NewRegisteredResettingTimer("pathdb/layer/bloom/time", nil)
+	layerIndexTimer           = metrics.NewRegisteredResettingTimer("pathdb/layer/index/time", nil)
+	layerLookupUnindexedMeter = metrics.NewRegisteredMeter("pathdb/layer/lookup/unindexed", nil)
+	layerLookupCandidateMeter = metrics.NewRegisteredMeter("pathdb/layer/lookup/candidate", nil)
 
 	// Temporary timers breaking down the database update
 	updateStateSetTimer    = metrics.NewRegisteredResettingTimer("pathdb/update/stateset", nil)
@@ -114,7 +116,6 @@ var (
 	updateNodeSetTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/nodeset", nil)
 	updateAddTimer         = metrics.NewRegisteredResettingTimer("pathdb/update/add", nil)
 	updateAddLockTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/add/lock", nil)
-	updateAncestorsTimer   = metrics.NewRegisteredResettingTimer("pathdb/update/add/ancestors", nil)
 	updateCapTimer         = metrics.NewRegisteredResettingTimer("pathdb/update/cap", nil)
 	updateCapLockTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/cap/lock", nil)
 	updateCapDiffLockTimer = metrics.NewRegisteredResettingTimer("pathdb/update/cap/difflock", nil)

@@ -204,8 +204,8 @@ func (b *bloomFilter) contains(key uint64) bool {
 	return true
 }
 
-// bloomParts is the number of the partitions the bloom keys of a committed set
-// are derived and inserted in, concurrently.
+// bloomParts is the number of the partitions the bloom keys of a diff layer are
+// derived and inserted in, concurrently.
 const bloomParts = 4
 
 // appendBloomKeys appends the bloom keys of all the entries aggregated in the
@@ -213,6 +213,24 @@ const bloomParts = 4
 func appendBloomKeys(dst []uint64, nodes *nodeSet, states *stateSet) []uint64 {
 	dst = slices.Grow(dst, bloomKeyCount(nodes, states))
 	return appendBloomKeysPart(dst, nodes, states, 0, 1)
+}
+
+// deriveBloomKeys derives the bloom keys of all the entries aggregated in the
+// provided node set and state set, in partitions concurrently.
+func deriveBloomKeys(nodes *nodeSet, states *stateSet) [][]uint64 {
+	var (
+		wg   sync.WaitGroup
+		keys = make([][]uint64, bloomParts)
+	)
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keys[i] = appendBloomKeysPart(nil, nodes, states, i, bloomParts)
+		}()
+	}
+	wg.Wait()
+	return keys
 }
 
 // appendBloomKeysPart appends the bloom keys of the given partition (out of
@@ -280,7 +298,3 @@ func bloomKeyCount(nodes *nodeSet, states *stateSet) int {
 	}
 	return n
 }
-
-// bloomKeyPool recycles the key slices staged between the key derivation and
-// the construction of the filter of a committed set, one per partition.
-var bloomKeyPool = sync.Pool{New: func() any { return new([bloomParts][]uint64) }}
