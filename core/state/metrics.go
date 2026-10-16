@@ -29,4 +29,9 @@ var (
 	storageTriesUpdatedMeter = metrics.NewRegisteredMeter("state/update/storagenodes", nil)
 	accountTrieDeletedMeter  = metrics.NewRegisteredMeter("state/delete/accountnodes", nil)
 	storageTriesDeletedMeter = metrics.NewRegisteredMeter("state/delete/storagenodes", nil)
+
+	// Temporary timers breaking down the database commit
+	commitCodeTimer   = metrics.NewRegisteredResettingTimer("state/commit/code", nil)
+	commitEncodeTimer = metrics.NewRegisteredResettingTimer("state/commit/encode", nil)
+	commitTriedbTimer = metrics.NewRegisteredResettingTimer("state/commit/triedb", nil)
 )

@@ -17,6 +17,8 @@
 package state
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -147,6 +149,7 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 	}
 	// Commit dirty contract code if any exists
 	if len(update.Codes) > 0 {
+		start := time.Now()
 		batch := db.codedb.NewBatchWithSize(len(update.Codes))
 		for _, code := range update.Codes {
 			batch.Put(code.Hash, code.Blob)
@@ -154,9 +157,12 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 		if err := batch.Commit(); err != nil {
 			return err
 		}
+		commitCodeTimer.UpdateSince(start)
 	}
 	// Encode the state mutations in the MPT format
+	start := time.Now()
 	accounts, accountOrigin, storages, storageOrigin := update.EncodeMPTState()
+	commitEncodeTimer.UpdateSince(start)
 
 	// If snapshotting is enabled, update the snapshot tree with this new version
 	if db.snap != nil && db.snap.Snapshot(update.OriginRoot) != nil {
@@ -171,6 +177,7 @@ func (db *MPTDatabase) Commit(update *StateUpdate) error {
 			log.Warn("Failed to cap snapshot tree", "root", update.Root, "layers", TriesInMemory, "err", err)
 		}
 	}
+	defer commitTriedbTimer.UpdateSince(time.Now())
 	return db.triedb.Update(update.Root, update.OriginRoot, update.BlockNumber, update.Nodes, &triedb.StateSet{
 		Accounts:       accounts,
 		AccountsOrigin: accountOrigin,
