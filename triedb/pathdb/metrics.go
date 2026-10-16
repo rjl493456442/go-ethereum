@@ -108,6 +108,22 @@ var (
 	lookupAddLayerTimer    = metrics.NewRegisteredResettingTimer("pathdb/lookup/add/time", nil)
 	lookupRemoveLayerTimer = metrics.NewRegisteredResettingTimer("pathdb/lookup/remove/time", nil)
 
+	// Temporary timers breaking down the database update
+	updateStateSetTimer    = metrics.NewRegisteredResettingTimer("pathdb/update/stateset", nil)
+	updateLockTimer        = metrics.NewRegisteredResettingTimer("pathdb/update/lock", nil)
+	updateNodeSetTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/nodeset", nil)
+	updateAddTimer         = metrics.NewRegisteredResettingTimer("pathdb/update/add", nil)
+	updateAddLockTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/add/lock", nil)
+	updateAncestorsTimer   = metrics.NewRegisteredResettingTimer("pathdb/update/add/ancestors", nil)
+	updateCapTimer         = metrics.NewRegisteredResettingTimer("pathdb/update/cap", nil)
+	updateCapLockTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/cap/lock", nil)
+	updateCapDiffLockTimer = metrics.NewRegisteredResettingTimer("pathdb/update/cap/difflock", nil)
+	updatePersistTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/cap/persist", nil)
+	updateCleanupTimer     = metrics.NewRegisteredResettingTimer("pathdb/update/cap/cleanup", nil)
+	commitLockTimer        = metrics.NewRegisteredResettingTimer("pathdb/commit/lock", nil)
+	commitWriteTimer       = metrics.NewRegisteredResettingTimer("pathdb/commit/write", nil)
+	commitScheduleTimer    = metrics.NewRegisteredResettingTimer("pathdb/commit/schedule", nil)
+
 	historicalAccountReadTimer  = metrics.NewRegisteredResettingTimer("pathdb/history/account/reads", nil)
 	historicalStorageReadTimer  = metrics.NewRegisteredResettingTimer("pathdb/history/storage/reads", nil)
 	historicalTrienodeReadTimer = metrics.NewRegisteredResettingTimer("pathdb/history/trienode/reads", nil)

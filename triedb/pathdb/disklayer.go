@@ -474,15 +474,19 @@ func (dl *diskLayer) write(diff *diffLayer) (bool, error) {
 // and returns a newly constructed disk layer. Note the current disk
 // layer must be tagged as stale first to prevent re-access.
 func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
+	start := time.Now()
 	dl.lock.Lock()
 	defer dl.lock.Unlock()
+	commitLockTimer.UpdateSince(start)
 
 	// Schedule the writes of the bottom-most diff layer, e.g. the histories
 	// and the root->id lookups.
+	start = time.Now()
 	flush, err := dl.write(bottom)
 	if err != nil {
 		return nil, err
 	}
+	commitWriteTimer.UpdateSince(start)
 
 	// Mark the diskLayer as stale before applying any mutations on top.
 	dl.stale = true
@@ -494,6 +498,8 @@ func (dl *diskLayer) commit(bottom *diffLayer, force bool) (*diskLayer, error) {
 	// Terminate the background state snapshot generation before mutating the
 	// persistent state.
 	if combined.full() || force || flush {
+		defer commitScheduleTimer.UpdateSince(time.Now())
+
 		// Wait until the previous frozen buffer is fully flushed
 		if dl.frozen != nil {
 			start := time.Now()

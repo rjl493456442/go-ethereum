@@ -22,6 +22,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/common"
@@ -500,6 +501,8 @@ type StateSetWithOrigin struct {
 
 // NewStateSetWithOrigin constructs the state set with the provided data.
 func NewStateSetWithOrigin(accounts map[common.Hash][]byte, storages map[common.Hash]map[common.Hash][]byte, accountOrigin map[common.Address][]byte, storageOrigin map[common.Address]map[common.Hash][]byte, rawStorageKey bool) *StateSetWithOrigin {
+	defer updateStateSetTimer.UpdateSince(time.Now())
+
 	// Don't panic for the lazy callers, initialize the nil maps instead.
 	if accountOrigin == nil {
 		accountOrigin = make(map[common.Address][]byte)
