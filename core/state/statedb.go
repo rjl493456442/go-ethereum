@@ -1364,6 +1364,15 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 	// same time as all the storage commits combined, so we could maybe only have
 	// 2 threads in total. But that kind of depends on the account commit being
 	// more expensive than it should be, so let's fix that and revisit this todo.
+	type storageCommit struct {
+		obj    *stateObject
+		update *AccountUpdate
+		set    *trienode.NodeSet
+	}
+	var (
+		storages []*storageCommit
+		storage  errgroup.Group
+	)
 	for addr, op := range s.mutations {
 		if op.isDelete() {
 			continue
@@ -1373,23 +1382,38 @@ func (s *StateDB) commit(rules params.Rules, blockNumber uint64) (*StateUpdate, 
 		if obj == nil {
 			return nil, errors.New("missing state object")
 		}
-		// Run the storage updates concurrently to one another
-		workers.Go(func() error {
-			// Write any storage changes in the state object to its storage trie
+		// Commit the accounts without storage changes inline
+		if len(obj.pendingStorage) == 0 {
 			update, set, err := obj.commit()
 			if err != nil {
-				return err
+				return nil, err
 			}
-			if err := merge(set); err != nil {
-				return err
-			}
-			lock.Lock()
 			updates[obj.addrHash()] = update
-			s.StorageCommits = time.Since(start) // overwrite with the longest storage commit runtime
-			lock.Unlock()
-			return nil
+			if err := merge(set); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		// Run the storage updates concurrently to one another
+		res := &storageCommit{obj: obj}
+		storages = append(storages, res)
+		storage.Go(func() error {
+			var err error
+			res.update, res.set, err = res.obj.commit()
+			return err
 		})
 	}
+	if err := storage.Wait(); err != nil {
+		return nil, err
+	}
+	for _, res := range storages {
+		updates[res.obj.addrHash()] = res.update
+		if err := merge(res.set); err != nil {
+			return nil, err
+		}
+	}
+	s.StorageCommits = time.Since(start)
+
 	// Wait for everything to finish and update the metrics
 	if err := workers.Wait(); err != nil {
 		return nil, err
