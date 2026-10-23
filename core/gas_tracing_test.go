@@ -171,7 +171,7 @@ func Example_plainCall() {
 }
 
 // Creating a slot with an empty reservoir spills the state charge into gas_left.
-// Clearing it again refills gas_left: the opcode run ends higher than it began.
+// Clearing it again refills the reservoir, never gas_left.
 func Example_stateGasRefill() {
 	runTraced(types.GenesisAlloc{traceCallee: {Code: concat(setSlot0, clrSlot0, opStop)}}, callTx(0, traceCallee, 0, 400_000, nil))
 	// Output:
@@ -181,16 +181,17 @@ func Example_stateGasRefill() {
 	// d0 enter CALL gas=<385000,0>
 	// d1 CallInitialBalance     <0,0> -> <385000,0>
 	// d1 CallOpCode x5          <385000,0> -> <274968,0>
-	// d1 CallOpCode             <274968,0> -> <372788,0>
-	// d1 CallOpCode x1          <372788,0> -> <372788,0>
-	// d1 CallLeftOverReturned   <372788,0> -> <0,0>
-	// d0 exit gasLeft=<372788,0>
-	// d0 CallLeftOverRefunded   <0,0> -> <372788,0>
+	// d1 CallOpCode             <274968,0> -> <274868,97920>
+	// d1 CallOpCode x1          <274868,97920> -> <274868,97920>
+	// d1 CallLeftOverReturned   <274868,97920> -> <0,0>
+	// d0 exit gasLeft=<274868,97920>
+	// d0 CallLeftOverRefunded   <0,0> -> <274868,97920>
 	// d0 TxRefunds              <372788,0> -> <378230,0>
 	// d0 TxLeftOverReturned     <378230,0> -> <0,0>
 }
 
-// A reverting child is refilled the state gas of the creations it rolled back.
+// A reverting child refills the reservoir with the state gas of the creations it
+// rolled back, including the part it borrowed from gas_left.
 func Example_childRevert() {
 	runTraced(types.GenesisAlloc{
 		traceCallee: {Code: concat(callAll(traceChild), opStop)},
@@ -206,14 +207,14 @@ func Example_childRevert() {
 	// d1 enter CALL gas=<376012,0>
 	// d2 CallInitialBalance     <0,0> -> <376012,0>
 	// d2 CallOpCode x6          <376012,0> -> <265980,0>
-	// d2 RefundRevertedState    <265980,0> -> <363900,0>
-	// d2 CallLeftOverReturned   <363900,0> -> <0,0>
-	// d1 exit gasLeft=<363900,0>
-	// d1 CallLeftOverRefunded   <5968,0> -> <369868,0>
-	// d1 CallOpCode x2          <369868,0> -> <369866,0>
-	// d1 CallLeftOverReturned   <369866,0> -> <0,0>
-	// d0 exit gasLeft=<369866,0>
-	// d0 CallLeftOverRefunded   <0,0> -> <369866,0>
+	// d2 RefundRevertedState    <265980,0> -> <265980,97920>
+	// d2 CallLeftOverReturned   <265980,97920> -> <0,0>
+	// d1 exit gasLeft=<265980,97920>
+	// d1 CallLeftOverRefunded   <5968,0> -> <271948,97920>
+	// d1 CallOpCode x2          <271948,97920> -> <271946,97920>
+	// d1 CallLeftOverReturned   <271946,97920> -> <0,0>
+	// d0 exit gasLeft=<271946,97920>
+	// d0 CallLeftOverRefunded   <0,0> -> <271946,97920>
 	// d0 TxRefunds              <369866,0> -> <369866,0>
 	// d0 TxLeftOverReturned     <369866,0> -> <0,0>
 }
@@ -278,9 +279,8 @@ func Example_valueCallStipend() {
 
 // The caller creates a slot with an empty reservoir, spilling the state charge
 // into its gas_left, and a DELEGATECALL'd child clears that slot. The refill
-// lands in the child's reservoir, since the child owes nothing itself, and is
-// handed back with the leftover. The merge then repays the caller's gas_left
-// from it, as a separate movement.
+// lands in the child's reservoir and is handed back with the leftover, where it
+// stays: the merge does not repay the caller's gas_left.
 func Example_crossFrameRefill() {
 	runTraced(types.GenesisAlloc{
 		traceCallee: {Code: concat(setSlot0, delegateAll(traceChild), opStop)},
@@ -301,11 +301,10 @@ func Example_crossFrameRefill() {
 	// d2 CallLeftOverReturned   <267602,97920> -> <0,0>
 	// d1 exit gasLeft=<267602,97920>
 	// d1 CallLeftOverRefunded   <4249,0> -> <271851,97920>
-	// d1 StateGasRepaid         <271851,97920> -> <369771,0>
-	// d1 CallOpCode x2          <369771,0> -> <369769,0>
-	// d1 CallLeftOverReturned   <369769,0> -> <0,0>
-	// d0 exit gasLeft=<369769,0>
-	// d0 CallLeftOverRefunded   <0,0> -> <369769,0>
+	// d1 CallOpCode x2          <271851,97920> -> <271849,97920>
+	// d1 CallLeftOverReturned   <271849,97920> -> <0,0>
+	// d0 exit gasLeft=<271849,97920>
+	// d0 CallLeftOverRefunded   <0,0> -> <271849,97920>
 	// d0 TxRefunds              <369769,0> -> <375815,0>
 	// d0 TxLeftOverReturned     <375815,0> -> <0,0>
 }

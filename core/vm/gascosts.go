@@ -56,7 +56,7 @@ type GasBudget struct {
 
 	// Spilled tracks how much of this frame's execution gas (gas_left)
 	// has been borrowed to cover state-gas charges that exceeded the
-	// reservoir. It is non-zero only while the reservoir is empty.
+	// reservoir. Refills never repay it; they land in the reservoir.
 	Spilled uint64
 }
 
@@ -156,19 +156,21 @@ func (g *GasBudget) IsZero() bool {
 	return g.ExecutionGas == 0 && g.StateGas == 0
 }
 
-// RefundState applies an inline state-gas refund (e.g., SSTORE 0->A->0).
+// RefundState applies an inline state-gas refund (e.g., SSTORE 0->A->0). The
+// refill always lands in the reservoir.
 func (g *GasBudget) RefundState(s uint64) {
-	repay := min(s, g.Spilled)
-	g.ExecutionGas += repay
-	g.Spilled -= repay
-	g.StateGas += s - repay
+	g.StateGas += s
 	g.UsedStateGas -= int64(s)
 }
 
-// DrainExecution burns the remaining execution-gas.
+// DrainExecution burns the remaining execution-gas, including the borrowed
+// execution gas that has been refilled into the reservoir.
 func (g *GasBudget) DrainExecution() {
-	g.UsedExecutionGas += g.ExecutionGas
+	d := min(g.StateGas, g.Spilled)
+	g.UsedExecutionGas += g.ExecutionGas + d
 	g.ExecutionGas = 0
+	g.StateGas -= d
+	g.Spilled -= d
 }
 
 // Forward drains `execution` gas and the entire state reservoir from
@@ -206,32 +208,31 @@ func (g GasBudget) ExitSuccess() GasBudget {
 }
 
 // ExitRevert produces the leftover for a REVERT exit. The frame's state
-// changes are discarded, so all state gas it charged is refilled with LIFO
-// mechanism: up to Spilled is returned to ExecutionGas (the execution gas it
-// borrowed), and the remainder restores the reservoir.
+// changes are discarded, so all state gas it charged is refilled into the
+// reservoir, including the execution gas it borrowed. The borrowed amount
+// stays recorded in Spilled, so it is never handed back as execution gas.
 func (g GasBudget) ExitRevert() GasBudget {
-	reservoir := int64(g.StateGas) + g.UsedStateGas - int64(g.Spilled)
+	reservoir := int64(g.StateGas) + g.UsedStateGas
 	if reservoir < 0 {
 		// Reservoir should never be negative. By construction it equals
-		// the initial state-gas allocation.
+		// the initial state-gas allocation plus the borrowed execution gas.
 		reservoir = 0
 		log.Warn("Negative reservoir at revert", "remaining", g.StateGas, "used", g.UsedStateGas, "borrowed", g.Spilled)
 	}
 	return GasBudget{
-		ExecutionGas:     g.ExecutionGas + g.Spilled,
+		ExecutionGas:     g.ExecutionGas,
 		StateGas:         uint64(reservoir),
 		UsedExecutionGas: g.UsedExecutionGas,
 		UsedStateGas:     0,
-		Spilled:          0,
+		Spilled:          g.Spilled,
 	}
 }
 
 // ExitHalt produces the leftover for an exceptional halt. As with a revert, the
-// frame's state changes are rolled back and its state gas is refilled with LIFO
-// mechanism. The difference is that the frame's execution gas is consumed rather
-// than returned. The portion refilled to ExecutionGas is therefore burned along
-// with the rest of execution gas, leaving only the reservoir portion to survive,
-// which equals the reservoir's value at the start of the frame.
+// frame's state changes are rolled back. The difference is that all execution
+// gas the frame received is consumed rather than returned, including the part
+// borrowed for state gas, leaving the reservoir at its value at the start of
+// the frame.
 func (g GasBudget) ExitHalt() GasBudget {
 	reservoir := int64(g.StateGas) + g.UsedStateGas - int64(g.Spilled)
 	if reservoir < 0 {
@@ -280,24 +281,7 @@ func (g *GasBudget) Absorb(child GasBudget, logger *tracing.Hooks) {
 	g.UsedExecutionGas -= child.Spilled
 	g.Spilled += child.Spilled
 
-	// Sanitize the state gas counters after merging the child frame. The child may
-	// have refilled a charge this frame funded from its execution gas, in which case
-	// the gas ends up in the child's reservoir and is handed back to the parent. The
-	// parent's state reservoir can then be non-zero while it still has outstanding
-	// debt from the execution gas.
-	merged := *g
-	d := min(g.StateGas, g.Spilled)
-	g.ExecutionGas += d
-	g.StateGas -= d
-	g.Spilled -= d
-
-	if !logger.HasGasHook() {
-		return
-	}
-	if prior.AsTracing() != merged.AsTracing() {
-		logger.EmitGasChange(prior.AsTracing(), merged.AsTracing(), tracing.GasChangeCallLeftOverRefunded)
-	}
-	if merged.AsTracing() != g.AsTracing() {
-		logger.EmitGasChange(merged.AsTracing(), g.AsTracing(), tracing.GasChangeStateGasRepaid)
+	if logger.HasGasHook() && prior.AsTracing() != g.AsTracing() {
+		logger.EmitGasChange(prior.AsTracing(), g.AsTracing(), tracing.GasChangeCallLeftOverRefunded)
 	}
 }

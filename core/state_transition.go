@@ -868,9 +868,9 @@ func (st *stateTransition) executeCreate(rules params.Rules, value *uint256.Int)
 	}
 	// If the top-most frame halted, drain the leftover execution gas rather
 	// than returning it to the sender. The frame exit itself already burned
-	// its gas left, but the refill above repays the execution gas the charge
-	// originally borrowed, and on a halt that repayment must be burned as
-	// well. The state dimension is left untouched.
+	// its gas left, but the refill above moves the execution gas the charge
+	// originally borrowed into the reservoir, and on a halt it must be burned
+	// as well.
 	if rules.IsAmsterdam && vmerr != nil && vmerr != vm.ErrExecutionReverted {
 		prior = st.gasRemaining
 		st.gasRemaining.DrainExecution()
@@ -928,9 +928,9 @@ func (st *stateTransition) executeCall(rules params.Rules, value *uint256.Int) (
 	}
 	// If the top-most frame halted, drain the leftover execution gas rather
 	// than returning it to the sender. The frame exit itself already burned
-	// its gas left, but the refill above repays the execution gas the charge
-	// originally borrowed, and on a halt that repayment must be burned as
-	// well.
+	// its gas left, but the refill above moves the execution gas the charge
+	// originally borrowed into the reservoir, and on a halt it must be burned
+	// as well.
 	if rules.IsAmsterdam && vmerr != nil && vmerr != vm.ErrExecutionReverted {
 		prior = st.gasRemaining
 		st.gasRemaining.DrainExecution()

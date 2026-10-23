@@ -103,11 +103,6 @@ func assertBudgetSane(t *testing.T, initial, got GasBudget) {
 		t.Fatalf("scalar mismatch: used=%d, usedR=%d usedS=%d",
 			got.Used(initial), got.UsedExecutionGas, got.UsedStateGas)
 	}
-	// An outstanding spill and a non-empty reservoir cannot coexist: state-gas
-	// owed to gas_left is returned on every refill and every successful merge.
-	if got.Spilled != 0 && got.StateGas != 0 {
-		t.Fatalf("state-gas stranded: reservoir=%d while spilled=%d", got.StateGas, got.Spilled)
-	}
 }
 
 // hugeBudget is a budget that never runs out, with a separate state reservoir.
@@ -558,16 +553,17 @@ func TestGasOpcodeExcludesReservoir(t *testing.T) {
 	}
 }
 
-// Refills are LIFO: borrowed execution gas is repaid before the reservoir. With a
-// zero reservoir, a 0->x->0 SSTORE repays the spill and leaves the reservoir at 0.
-func TestLIFORefillOrder(t *testing.T) {
+// Refills land in the reservoir: with a zero reservoir, a 0->x->0 SSTORE leaves
+// the borrowed execution gas in the reservoir instead of repaying gas_left.
+func TestRefillLandsInReservoir(t *testing.T) {
 	code := append(sstore(0, 1), sstore(0, 0)...)
 	_, res, err := run8037(t, code, NewGasBudget(1_000_000, 0), new(uint256.Int), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Spilled != 0 || res.StateGas != 0 || res.UsedStateGas != 0 {
-		t.Fatalf("after LIFO refill: spilled=%d reservoir=%d used=%d, want 0/0/0", res.Spilled, res.StateGas, res.UsedStateGas)
+	if res.Spilled != uint64(stateGasNewSlot) || res.StateGas != uint64(stateGasNewSlot) || res.UsedStateGas != 0 {
+		t.Fatalf("after refill: spilled=%d reservoir=%d used=%d, want %d/%d/0",
+			res.Spilled, res.StateGas, res.UsedStateGas, stateGasNewSlot, stateGasNewSlot)
 	}
 }
 
@@ -598,12 +594,12 @@ func TestStateGasMeteredAtFrameBoundary(t *testing.T) {
 	}
 }
 
-// ===================== LIFO refill vector invariant =========================
+// ======================= Refill vector invariant ============================
 
 // Charge A then B (both spilling into execution because the reservoir is too
-// small), then refill only A. The refill must repay the borrowed execution gas
-// first (Spilled -> 0) before crediting the reservoir, leaving B outstanding.
-func TestLIFORefillRepaysExecutionBeforeReservoir(t *testing.T) {
+// small), then refill only A. The refill must credit the reservoir only, leaving
+// gas_left and the borrowed amount untouched.
+func TestRefillDoesNotRepayExecution(t *testing.T) {
 	initial := NewGasBudget(1000, 100) // reservoir covers only 100 of state gas
 	b := initial
 
@@ -613,21 +609,21 @@ func TestLIFORefillRepaysExecutionBeforeReservoir(t *testing.T) {
 		t.Fatalf("after A+B: spilled=%d reservoir=%d, want 80/0", b.Spilled, b.StateGas)
 	}
 
-	b.RefundState(150) // refill A: repay 80 to execution first, 70 tops reservoir
-	if b.Spilled != 0 {
-		t.Fatalf("spilled=%d, want 0 (execution repaid before reservoir)", b.Spilled)
+	b.RefundState(150) // refill A: all 150 tops the reservoir
+	if b.Spilled != 80 || b.ExecutionGas != 920 {
+		t.Fatalf("spilled=%d gas_left=%d, want 80/920 (execution not repaid)", b.Spilled, b.ExecutionGas)
 	}
-	if b.StateGas != 70 {
-		t.Fatalf("reservoir=%d, want 70 (remainder after repaying execution)", b.StateGas)
+	if b.StateGas != 150 {
+		t.Fatalf("reservoir=%d, want 150", b.StateGas)
 	}
 	assertBudgetSane(t, initial, b)
 }
 
-// Fuzz arbitrary sequences of state/execution charges and LIFO refills around the
+// Fuzz arbitrary sequences of state/execution charges and refills around the
 // reservoir/spill boundary: the GasBudget vector must stay self-consistent after
 // every op and across all three frame-exit forms, and refilling every charge
-// must restore the state side exactly (reservoir to initial, nothing borrowed).
-func TestLIFOVectorInvariantUnderRandomOps(t *testing.T) {
+// must leave the reservoir holding its initial value plus everything borrowed.
+func TestRefillVectorInvariantUnderRandomOps(t *testing.T) {
 	rng := rand.New(rand.NewSource(8037))
 	for trial := 0; trial < 2000; trial++ {
 		initial := NewGasBudget(1_000_000, uint64(rng.Intn(1000)))
@@ -644,7 +640,7 @@ func TestLIFOVectorInvariantUnderRandomOps(t *testing.T) {
 				if r := uint64(rng.Intn(400)); b.CanAfford(GasCosts{ExecutionGas: r}) {
 					b.ChargeExecution(r)
 				}
-			case 2: // LIFO refill of part of the outstanding state gas
+			case 2: // refill of part of the outstanding state gas
 				if outstanding > 0 {
 					s := uint64(rng.Int63n(outstanding) + 1)
 					b.RefundState(s)
@@ -659,8 +655,8 @@ func TestLIFOVectorInvariantUnderRandomOps(t *testing.T) {
 		if outstanding > 0 {
 			b.RefundState(uint64(outstanding))
 		}
-		if b.Spilled != 0 || b.StateGas != initial.StateGas || b.UsedStateGas != 0 {
-			t.Fatalf("trial %d: after full refill spilled=%d reservoir=%d used=%d, want 0/%d/0",
+		if b.StateGas != initial.StateGas+b.Spilled || b.UsedStateGas != 0 {
+			t.Fatalf("trial %d: after full refill spilled=%d reservoir=%d used=%d, want reservoir %d+spilled, used 0",
 				trial, b.Spilled, b.StateGas, b.UsedStateGas, initial.StateGas)
 		}
 	}
@@ -757,11 +753,10 @@ func TestHaltFrameTerminalStateFuzz(t *testing.T) {
 
 // ================= cross-frame state-gas return on merge ==================
 
-// A child clearing a slot its parent allocated refills into its own reservoir,
-// because Spilled is frame-local while slot original values are measured from the
-// start of the transaction. Merging the child must move that state-gas back to the
-// pool the charge was funded from, whatever the split between the two pools was.
-func TestAbsorbReturnsStateGas(t *testing.T) {
+// A child clearing a slot its parent allocated refills into its own reservoir.
+// Merging the child keeps that state-gas in the reservoir: the execution gas the
+// parent borrowed for the charge is not handed back to gas_left.
+func TestAbsorbKeepsRefillInReservoir(t *testing.T) {
 	setup := func(db *state.StateDB, self common.Address) {
 		db.CreateAccount(childAddr)
 		db.SetCode(childAddr, concat(sstore(0, 0), stop), tracing.CodeChangeUnspecified)
@@ -782,17 +777,16 @@ func TestAbsorbReturnsStateGas(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reservoir %d: %v", reservoir, err)
 		}
-		// After the merge the debt must be settled and the reservoir back at the
-		// value the frame started with.
-		if res.StateGas != reservoir || res.Spilled != 0 || res.UsedStateGas != 0 {
-			t.Fatalf("reservoir %d: got reservoir=%d spilled=%d used=%d, want %d/0/0",
-				reservoir, res.StateGas, res.Spilled, res.UsedStateGas, reservoir)
+		// After the merge the whole charge sits in the reservoir, and the borrowed
+		// part stays recorded as spilled.
+		borrowed := uint64(stateGasNewSlot) - reservoir
+		if res.StateGas != uint64(stateGasNewSlot) || res.Spilled != borrowed || res.UsedStateGas != 0 {
+			t.Fatalf("reservoir %d: got reservoir=%d spilled=%d used=%d, want %d/%d/0",
+				reservoir, res.StateGas, res.Spilled, res.UsedStateGas, stateGasNewSlot, borrowed)
 		}
-		// A fully refilled state charge must cost no execution gas, so gas_left ends
-		// up exactly where the reference run left it.
-		if res.ExecutionGas != ref.ExecutionGas {
-			t.Fatalf("reservoir %d: gas_left = %d, want %d (%d stranded in the reservoir)",
-				reservoir, res.ExecutionGas, ref.ExecutionGas, ref.ExecutionGas-res.ExecutionGas)
+		// The borrowed execution gas is parked in the reservoir, not returned.
+		if res.ExecutionGas+borrowed != ref.ExecutionGas {
+			t.Fatalf("reservoir %d: gas_left = %d, want %d", reservoir, res.ExecutionGas, ref.ExecutionGas-borrowed)
 		}
 	}
 }
