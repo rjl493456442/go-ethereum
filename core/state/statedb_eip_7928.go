@@ -90,6 +90,19 @@ func (s *StateDB) applyBlockAccessList(list bal.BlockAccessList, threads int) er
 		// Skip the read-only account. It is a cheap validation by checking
 		// purely with the access list. Whether the account is truly mutated
 		// is only known once its pre-state value is read.
+		//
+		// Note the access list can't tell a touched EIP-161 empty account apart
+		// from a merely read one, so the state clearing of the former (done by
+		// the sequential execution) is not reproduced here. Empty accounts are
+		// undefined post-merge (EIP-7523) and never exist on mainnet; a chain
+		// seeding them in genesis must clear them or disable parallel execution.
+		//
+		// Should the clearing ever be needed, take it from the execution rather
+		// than the access list: the ephemeral states (transactions and pre/post
+		// execution) finalise the touched empty accounts into stateObjectsDestruct.
+		// Collect them with the earliest block access index, mark them deleted
+		// after the access list is applied, and rebuild the ones mutated afterwards
+		// from a fresh object with the final values of the access list.
 		if !entry.mutated() {
 			continue
 		}
