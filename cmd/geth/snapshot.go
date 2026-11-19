@@ -31,7 +31,8 @@ import (
 	"syscall"
 	"time"
 
-	pebbleimpl "github.com/cockroachdb/pebble"
+	pebblev1 "github.com/cockroachdb/pebble"
+	pebblev2 "github.com/cockroachdb/pebble/v2"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -40,6 +41,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -100,6 +102,10 @@ In other words, this command does the snapshot to trie conversion.
 					&cli.BoolFlag{
 						Name:  "keep",
 						Usage: "Keep the checkpoint directory after the run (debugging)",
+					},
+					&cli.BoolFlag{
+						Name:  "batch",
+						Usage: "Benchmark ordinary batch writes instead of the default trie writer",
 					},
 					&cli.BoolFlag{
 						Name:  "pprof",
@@ -306,8 +312,11 @@ func verifyState(ctx *cli.Context) error {
 }
 
 // benchGenerateTrie runs triedb.GenerateTrie against a hard-linked checkpoint
-// of the chaindata so the source datadir is never written to.
+// of the chaindata so generated trie nodes only go to the checkpoint.
 func benchGenerateTrie(ctx *cli.Context) error {
+	if ctx.NArg() > 1 {
+		return errors.New("expected at most one state root")
+	}
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
@@ -328,32 +337,6 @@ func benchGenerateTrie(ctx *cli.Context) error {
 		return fmt.Errorf("chaindata not found at %s: %w", srcDir, err)
 	} else if !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", srcDir)
-	}
-
-	// Default to snapshot root, not head: that's what GenerateTrie actually
-	// reconstructs from flat state. On a fully-synced node they match.
-	var root common.Hash
-	if ctx.NArg() == 1 {
-		r, err := parseRoot(ctx.Args().First())
-		if err != nil {
-			return fmt.Errorf("parse root: %w", err)
-		}
-		root = r
-	} else {
-		chaindb := utils.MakeChainDatabase(ctx, stack, true)
-		snapRoot := rawdb.ReadSnapshotRoot(chaindb)
-		head := rawdb.ReadHeadBlock(chaindb)
-		chaindb.Close()
-		switch {
-		case snapRoot != (common.Hash{}):
-			root = snapRoot
-			log.Info("using snapshot root", "root", root)
-		case head != nil:
-			root = head.Root()
-			log.Info("using head block root", "number", head.Number(), "root", root)
-		default:
-			return errors.New("no snapshot or head block found; pass <root> explicitly")
-		}
 	}
 
 	// Default checkpoint sits next to chaindata so hard links work.
@@ -397,32 +380,79 @@ func benchGenerateTrie(ctx *cli.Context) error {
 		close(cancelCh)
 	}()
 
-	// Open the checkpoint writable. Reuse source ancient. Checkpoint only
-	// hard-links the pebble SSTs (not the freezer), and GenerateTrie never
-	// writes to ancient, so sharing it is safe.
-	srcAncient := stack.ResolveAncient("chaindata", "")
-	kv, err := pebble.New(ckpt, 4096, 1024, "gentrie-bench", false)
+	// Only the checkpoint's key-value store is writable. An existing chain
+	// freezer is needed for scheme detection on old hash-scheme databases.
+	var kv ethdb.KeyValueStore
+	var err error
+	if pebble.NeedsV1(ckpt) {
+		kv, err = pebble.NewV1(ckpt, 4096, 1024, "gentrie-bench", false)
+	} else {
+		kv, err = pebble.New(ckpt, 4096, 1024, "gentrie-bench", false)
+	}
 	if err != nil {
 		return fmt.Errorf("open checkpoint: %w", err)
 	}
+	srcAncient := stack.ResolveAncient("chaindata", ctx.String(utils.AncientFlag.Name))
+	if _, err := os.Stat(srcAncient); os.IsNotExist(err) {
+		srcAncient = "" // A flat-state-only source has no freezer to share.
+	}
 	chaindb, err := rawdb.Open(kv, rawdb.OpenOptions{
 		Ancient:          srcAncient,
+		Era:              ctx.String(utils.EraFlag.Name),
+		ReadOnly:         true,
 		MetricsNamespace: "gentrie-bench",
 	})
 	if err != nil {
 		kv.Close()
-		return fmt.Errorf("rawdb.Open checkpoint: %w", err)
+		return fmt.Errorf("open checkpoint with read-only freezer: %w", err)
 	}
 	defer chaindb.Close()
 
-	// Pick up the trie scheme already in use (path or hash).
-	triedbInst := utils.MakeTrieDatabase(ctx, stack, chaindb, false, true, false)
-	scheme := triedbInst.Scheme()
-	triedbInst.Close()
-
-	log.Info("running GenerateTrie", "scheme", scheme, "root", root)
+	var root common.Hash
+	if ctx.NArg() == 1 {
+		root, err = parseRoot(ctx.Args().First())
+		if err != nil {
+			return fmt.Errorf("parse root: %w", err)
+		}
+	} else if root = rawdb.ReadSnapshotRoot(chaindb); root == (common.Hash{}) {
+		head := rawdb.ReadHeadBlock(chaindb)
+		if head == nil {
+			return errors.New("no snapshot or head block found; pass <root> explicitly")
+		}
+		root = head.Root()
+	}
+	scheme, err := rawdb.ParseStateScheme(ctx.String(utils.StateSchemeFlag.Name), chaindb)
+	if err != nil {
+		return err
+	}
+	generate := triedb.GenerateTrie
+	writer := "batch"
+	if ctx.Bool("batch") {
+		generate = triedb.GenerateTrieWithBatch
+	} else if scheme == rawdb.PathScheme && rawdb.Ingester(chaindb) != nil {
+		writer = "ingest"
+	}
+	if scheme == rawdb.PathScheme {
+		// Mirror snap/2's resetTrienodes on the disposable checkpoint, including
+		// its range tombstones, so both writers see the same initial state.
+		batch := chaindb.NewBatch()
+		defer batch.Close()
+		for _, prefix := range [][]byte{rawdb.TrieNodeAccountPrefix, rawdb.TrieNodeStoragePrefix} {
+			if err := batch.DeleteRange(prefix, []byte{prefix[0] + 1}); err != nil {
+				return err
+			}
+		}
+		if err := batch.Write(); err != nil {
+			return err
+		}
+	}
+	log.Info("running GenerateTrie", "scheme", scheme, "writer", writer, "root", root)
 	runStart := time.Now()
-	stats, err := triedb.GenerateTrie(chaindb, scheme, root, cancelCh)
+	stats, err := generate(chaindb, scheme, root, cancelCh)
+	if err == nil && writer == "batch" {
+		// Ingestion already waits for durability at the end of generation.
+		err = chaindb.SyncKeyValue()
+	}
 	elapsed := time.Since(runStart)
 
 	status := "root matched"
@@ -433,10 +463,14 @@ func benchGenerateTrie(ctx *cli.Context) error {
 
 	fmt.Printf("\n=== generate-trie benchmark ===\n")
 	fmt.Printf("scheme:    %s\n", scheme)
+	fmt.Printf("writer:    %s\n", writer)
 	fmt.Printf("root:      %s\n", root.Hex())
 	fmt.Printf("status:    %s\n", status)
 	fmt.Printf("accounts:  %d (%d updated)\n", stats.Scanned, stats.Updated)
 	fmt.Printf("wall time: %s\n", elapsed)
+	if stats, err := kv.Stat(); err == nil {
+		fmt.Printf("\nPebble after generation\n%s\n", stats)
+	}
 	return err
 }
 
@@ -448,7 +482,15 @@ func benchGenerateTrie(ctx *cli.Context) error {
 // Checkpoint then fails trying to hard-link the missing OPTIONS file. The
 // read-write open does no more than a normal geth startup would.
 func makeCheckpoint(srcDir, dstDir string) error {
-	db, err := pebbleimpl.Open(srcDir, &pebbleimpl.Options{})
+	if !pebble.NeedsV1(srcDir) {
+		db, err := pebblev2.Open(srcDir, &pebblev2.Options{ErrorIfNotExists: true, DisableAutomaticCompactions: true})
+		if err != nil {
+			return fmt.Errorf("open source pebble: %w", err)
+		}
+		defer db.Close()
+		return db.Checkpoint(dstDir)
+	}
+	db, err := pebblev1.Open(srcDir, &pebblev1.Options{ErrorIfNotExists: true, DisableAutomaticCompactions: true})
 	if err != nil {
 		return fmt.Errorf("open source pebble: %w", err)
 	}

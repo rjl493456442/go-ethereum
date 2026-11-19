@@ -73,6 +73,70 @@ type nodeRec struct {
 	blob []byte
 }
 
+func TestReverseStackTrie(t *testing.T) {
+	type builder interface {
+		Update([]byte, []byte) error
+		Hash() common.Hash
+	}
+	builders := []struct {
+		name    string
+		forward func(OnTrieNode) builder
+		reverse func(OnTrieNode) builder
+	}{
+		{"full", func(cb OnTrieNode) builder { return NewStackTrie(cb) },
+			func(cb OnTrieNode) builder { return NewReverseStackTrie(cb) }},
+		{"partition", func(cb OnTrieNode) builder { return NewPartialStackTrie(3, cb) },
+			func(cb OnTrieNode) builder { return NewReversePartialStackTrie(3, cb) }},
+	}
+	// Include short embedded leaves, branches with missing siblings and
+	// extensions split at different depths.
+	keys, vals := sortedPairs([]string{"30", "3004", "3110", "3115", "3115fa", "311b", "3a", "3fe", strings.Repeat("3", 63) + "0", strings.Repeat("3", 63) + "1"})
+	for i := range vals {
+		if i%2 == 0 {
+			vals[i] = vals[i][:1]
+		}
+	}
+	for _, tc := range builders {
+		t.Run(tc.name, func(t *testing.T) {
+			var expected common.Hash
+			nodes := collect(func(onNode OnTrieNode) {
+				b := tc.forward(onNode)
+				for i := range keys {
+					if err := b.Update(keys[i], vals[i]); err != nil {
+						t.Fatal(err)
+					}
+				}
+				expected = b.Hash()
+			})
+			var last []byte
+			b := tc.reverse(func(path []byte, hash common.Hash, blob []byte) {
+				if last != nil && bytes.Compare(last, path) <= 0 {
+					t.Fatalf("paths not descending: %x followed by %x", last, path)
+				}
+				last = append(last[:0], path...)
+				n, ok := nodes[string(path)]
+				if !ok || n.hash != hash || !bytes.Equal(n.blob, blob) {
+					t.Fatalf("unexpected node at %x: hash %x, blob %x", path, hash, blob)
+				}
+				delete(nodes, string(path))
+			})
+			for i := len(keys) - 1; i >= 0; i-- {
+				if err := b.Update(keys[i], vals[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, key := range [][]byte{keys[0], keys[1]} {
+				if err := b.Update(key, vals[0]); err == nil {
+					t.Fatalf("accepted non-descending key %x", key)
+				}
+			}
+			if root := b.Hash(); root != expected || len(nodes) != 0 {
+				t.Fatalf("got root %x, want %x, missing %d nodes", root, expected, len(nodes))
+			}
+		})
+	}
+}
+
 // collect builds a trie via the given updater and records every committed node
 // keyed by its path.
 func collect(update func(onNode OnTrieNode)) map[string]nodeRec {

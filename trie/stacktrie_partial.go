@@ -68,6 +68,14 @@ func NewPartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
 	return p
 }
 
+// NewReversePartialStackTrie builds the partition from descending keys and
+// emits nodes in strictly descending order of their nibble-prefixed paths.
+func NewReversePartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
+	p := NewPartialStackTrie(nibble, onTrieNode)
+	p.inner.reverse = true
+	return p
+}
+
 // Update inserts a (key, value) pair, stripping the key's leading nibble, which
 // is implied by the partition. The key must begin with the partition nibble.
 func (p *PartialStackTrie) Update(key, value []byte) error {

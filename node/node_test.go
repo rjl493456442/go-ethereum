@@ -27,6 +27,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -164,6 +165,26 @@ func TestNodeCloseClosesDB(t *testing.T) {
 	stack.Close()
 	if err = db.Put([]byte{}, []byte{}); err == nil {
 		t.Fatal("Put succeeded after node is closed")
+	}
+}
+
+// The syncer receives a tracked database, which must preserve Pebble's optional
+// ingestion capability through both the freezer and lifecycle wrappers.
+func TestNodeDatabaseIngestion(t *testing.T) {
+	config := testNodeConfig()
+	config.DataDir = t.TempDir()
+	stack, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stack.Close()
+	db, err := stack.OpenDatabaseWithOptions("chaindata", DatabaseOptions{Cache: 16, Handles: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if rawdb.Ingester(db) == nil {
+		t.Fatal("tracked Pebble database does not expose ingestion")
 	}
 }
 

@@ -21,7 +21,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,6 +94,10 @@ type Database struct {
 	quitLock sync.RWMutex    // Mutex protecting the quit channel and the closed flag
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
 	closed   bool            // keep track of whether we're Closed
+
+	ingestDir  string          // Directory holding the sstables to be ingested
+	ingestOpts *pebble.Options // Options for writing the sstables to be ingested
+	ingestSeq  atomic.Uint64   // Sequence number for naming the sstables to be ingested
 
 	log log.Logger // Contextual logger tracking the database path
 
@@ -355,6 +362,20 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 	}
 	db.db = innerDB
 
+	// Build external sstables with the same options as Pebble's own tables.
+	db.ingestDir = filepath.Join(file, ingestDirName)
+	db.ingestOpts = opt.Clone()
+	db.ingestOpts.EnsureDefaults()
+
+	// Staged files left by an interrupted ingestion are no longer needed once
+	// Pebble has recovered its manifest and acquired the database lock.
+	if !readonly {
+		if err := os.RemoveAll(db.ingestDir); err != nil {
+			innerDB.Close()
+			return nil, err
+		}
+	}
+
 	db.compTimeMeter = metrics.GetOrRegisterMeter(namespace+"compact/time", nil)
 	db.compReadMeter = metrics.GetOrRegisterMeter(namespace+"compact/input", nil)
 	db.compWriteMeter = metrics.GetOrRegisterMeter(namespace+"compact/output", nil)
@@ -601,6 +622,7 @@ func (d *Database) meter(refresh time.Duration, namespace string) {
 		for _, levelMetrics := range stats.Levels {
 			nWrite += int64(levelMetrics.TableBytesCompacted)
 			nWrite += int64(levelMetrics.TableBytesFlushed)
+			nWrite += int64(levelMetrics.TableBytesIngested)
 			compWrite += int64(levelMetrics.TableBytesCompacted)
 			compRead += int64(levelMetrics.TableBytesRead)
 		}
@@ -778,6 +800,7 @@ func (b *batch) Close() {
 type pebbleIterator struct {
 	iter     *pebble.Iterator
 	moved    bool
+	reverse  bool
 	released bool
 }
 
@@ -793,12 +816,38 @@ func (d *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 	return &pebbleIterator{iter: iter, moved: true, released: false}
 }
 
+// NewReverseIterator implements ethdb.ReverseIteratee.
+func (d *Database) NewReverseIterator(prefix, start []byte) ethdb.Iterator {
+	var limit []byte
+	if start == nil {
+		limit = upperBound(prefix)
+	} else {
+		// The immediate successor of an exact byte key is that key plus a
+		// zero byte. This includes the start key but excludes its extensions.
+		limit = slices.Concat(prefix, start, []byte{0})
+	}
+	iter, _ := d.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: limit,
+	})
+	iter.Last()
+
+	return &pebbleIterator{
+		iter:    iter,
+		moved:   true,
+		reverse: true,
+	}
+}
+
 // Next moves the iterator to the next key/value pair. It returns whether the
 // iterator is exhausted.
 func (iter *pebbleIterator) Next() bool {
 	if iter.moved {
 		iter.moved = false
 		return iter.iter.Valid()
+	}
+	if iter.reverse {
+		return iter.iter.Prev()
 	}
 	return iter.iter.Next()
 }

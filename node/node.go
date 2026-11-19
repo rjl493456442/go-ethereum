@@ -786,6 +786,12 @@ func (db *closeTrackingDB) Close() error {
 func (n *Node) wrapDatabase(db ethdb.Database) ethdb.Database {
 	wrapper := &closeTrackingDB{db, n}
 	n.databases[wrapper] = struct{}{}
+	if ingester := rawdb.Ingester(db); ingester != nil {
+		return struct {
+			*closeTrackingDB
+			ethdb.Ingester
+		}{wrapper, ingester}
+	}
 	return wrapper
 }
 

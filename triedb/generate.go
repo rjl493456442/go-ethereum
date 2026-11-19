@@ -58,12 +58,8 @@ const numPartitions = 16
 
 // Each partition covers 1/16 of the account hash space. We track progress
 // by interpreting the top 8 bytes of an account hash as a uint64, so each
-// partition spans 2^64 / 16 = 2^60. partitionFinished is stored in a
-// partition's position when it completes.
-const (
-	partitionRangeSize = uint64(1) << 60
-	partitionFinished  = ^uint64(0)
-)
+// partition spans 2^64 / 16 = 2^60.
+const partitionRangeSize = uint64(1) << 60
 
 // genCounters bundles the progress counters threaded through a GenerateTrie run.
 type genCounters struct {
@@ -77,31 +73,30 @@ type genCounters struct {
 	storageTrieNodes atomic.Int64 // generated storage trie nodes
 	storageTrieBytes atomic.Int64 // generated storage trie bytes
 
-	progress [numPartitions]atomic.Uint64 // per-partition keyspace position
+	progress [numPartitions]atomic.Uint64 // distance scanned from each partition's starting bound
 }
 
 // rangeIterators bundles the per-partition account and storage iterators.
 type rangeIterators struct {
-	db   ethdb.Database
-	acct *internal.HoldableIterator
-	stor *internal.HoldableIterator
+	newIterator func(prefix, start []byte) ethdb.Iterator
+	acct        *internal.HoldableIterator
+	stor        *internal.HoldableIterator
 }
 
-func openRangeIterators(db ethdb.Database, start common.Hash) *rangeIterators {
-	return &rangeIterators{
-		db:   db,
-		acct: openFlatIterator(db, rawdb.SnapshotAccountPrefix, start[:], common.HashLength),
-		stor: openFlatIterator(db, rawdb.SnapshotStoragePrefix, start[:], 2*common.HashLength),
+func openRangeIterators(db ethdb.Database, start, end common.Hash, ingester ethdb.Ingester) *rangeIterators {
+	r := &rangeIterators{
+		newIterator: db.NewIterator,
 	}
-}
+	accountStart, storageStart := start[:], start[:]
 
-// reopen releases both iterators and reopens them at their current
-// positions. Invoked after each batch flush so pebble compactions aren't
-// blocked by long-lived iterator snapshots. Follows the same pattern as
-// triedb/pathdb/context.go.
-func (r *rangeIterators) reopen() {
-	r.acct = reopenFlatIterator(r.db, r.acct, rawdb.SnapshotAccountPrefix, common.HashLength)
-	r.stor = reopenFlatIterator(r.db, r.stor, rawdb.SnapshotStoragePrefix, 2*common.HashLength)
+	if ingester != nil {
+		r.newIterator = ingester.NewReverseIterator
+		accountStart = end[:]
+		storageStart = append(end[:], common.MaxHash[:]...)
+	}
+	r.acct = r.open(rawdb.SnapshotAccountPrefix, accountStart, common.HashLength)
+	r.stor = r.open(rawdb.SnapshotStoragePrefix, storageStart, 2*common.HashLength)
+	return r
 }
 
 func (r *rangeIterators) release() {
@@ -109,39 +104,40 @@ func (r *rangeIterators) release() {
 	r.stor.Release()
 }
 
-// flushIfFull writes and resets the batch once it grows past IdealBatchSize,
-// then reopens the iterators.
-func (r *rangeIterators) flushIfFull(batch ethdb.Batch, where string) error {
-	if batch.ValueSize() <= ethdb.IdealBatchSize {
-		return nil
+// refresh releases the iterators' read state after a flush so compaction can
+// reclaim obsolete files. Each replacement starts at the next unconsumed key,
+// including a storage record held for the next account.
+func (r *rangeIterators) refresh(flushed bool, err error) error {
+	if err != nil || !flushed {
+		return err
 	}
-	if err := batch.Write(); err != nil {
-		return fmt.Errorf("flush batch (%s): %w", where, err)
+	r.acct, err = r.reopen(r.acct, rawdb.SnapshotAccountPrefix, common.HashLength)
+	if err != nil {
+		return err
 	}
-	batch.Reset()
-	r.reopen()
-	return nil
+	r.stor, err = r.reopen(r.stor, rawdb.SnapshotStoragePrefix, 2*common.HashLength)
+	return err
 }
 
-// openFlatIterator opens a length-filtered HoldableIterator over a snapshot
-// prefix, seeked to the given start key (relative to the prefix).
-func openFlatIterator(db ethdb.Database, prefix, start []byte, suffixLen int) *internal.HoldableIterator {
-	it := db.NewIterator(prefix, start)
+// open creates a length-filtered iterator starting at an inclusive key relative
+// to the prefix, in the direction chosen for this generation.
+func (r *rangeIterators) open(prefix, start []byte, suffixLen int) *internal.HoldableIterator {
+	it := r.newIterator(prefix, start)
 	return internal.NewHoldableIterator(rawdb.NewKeyLengthIterator(it, len(prefix)+suffixLen))
 }
 
-// reopenFlatIterator releases `old` and returns a new HoldableIterator
-// positioned at the same key, or an empty iterator if `old` is exhausted.
-func reopenFlatIterator(db ethdb.Database, old *internal.HoldableIterator, prefix []byte, suffixLen int) *internal.HoldableIterator {
+func (r *rangeIterators) reopen(old *internal.HoldableIterator, prefix []byte, suffixLen int) (*internal.HoldableIterator, error) {
 	if !old.Next() {
+		if err := old.Error(); err != nil {
+			return old, err
+		}
 		old.Release()
-		return internal.NewHoldableIterator(memorydb.New().NewIterator(nil, nil))
+		return internal.NewHoldableIterator(memorydb.New().NewIterator(nil, nil)), nil
 	}
-	// pebble's Key() slice is invalidated by Release. Copy first so the new
-	// iterator's lower bound isn't seeded from freed memory.
-	next := common.CopyBytes(old.Key())
+	// The backend can invalidate Key on Release.
+	next := common.CopyBytes(old.Key()[len(prefix):])
 	old.Release()
-	return openFlatIterator(db, prefix, next[len(prefix):], suffixLen)
+	return r.open(prefix, next, suffixLen), nil
 }
 
 // generatePartition walks accounts whose first nibble equals `partition`,
@@ -149,12 +145,19 @@ func reopenFlatIterator(db ethdb.Database, old *internal.HoldableIterator, prefi
 // both per-account storage subtries and the partition's slice of the
 // account trie. Returns the partition's stripped subtree root blob, or
 // nil if the partition had no accounts at all.
-func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Database, scheme string, partition byte, rangeStart, rangeEnd common.Hash, c *genCounters) ([]byte, error) {
-	iters := openRangeIterators(db, rangeStart)
+func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Database, scheme string, partition byte, rangeStart, rangeEnd common.Hash, c *genCounters, ingester ethdb.Ingester) ([]byte, error) {
+	iters := openRangeIterators(db, rangeStart, rangeEnd, ingester)
 	defer iters.release()
 
-	batch := db.NewBatchWithSize(ethdb.IdealBatchSize)
+	batches := newPartitionBatches(db, ingester)
+	defer batches.close()
 
+	newStorageTrie := trie.NewStackTrie
+	newAccountTrie := trie.NewPartialStackTrie
+	if ingester != nil {
+		newStorageTrie = trie.NewReverseStackTrie
+		newAccountTrie = trie.NewReversePartialStackTrie
+	}
 	// Account-trie builder for this partition. It is fed account keys with
 	// their leading nibble stripped and emits nodes at their absolute path
 	// (prefixed with the partition nibble), so they line up with the full
@@ -165,7 +168,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 	// bytes for assembleRoot, which needs them to either reference it or,
 	// in the single-partition case, fold the leading nibble back in.
 	var root []byte
-	acctTrie := trie.NewPartialStackTrie(partition, func(path []byte, hash common.Hash, blob []byte) {
+	acctTrie := newAccountTrie(partition, func(path []byte, hash common.Hash, blob []byte) {
 		if len(path) == 1 {
 			root = common.CopyBytes(blob)
 		}
@@ -176,7 +179,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		} else {
 			c.accountTrieBytes.Add(int64(common.HashLength + len(blob)))
 		}
-		rawdb.WriteTrieNode(batch, common.Hash{}, path, hash, blob, scheme)
+		rawdb.WriteTrieNode(batches.accounts, common.Hash{}, path, hash, blob, scheme)
 	})
 
 	// Iterate through all the accounts.
@@ -191,11 +194,15 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		key := iters.acct.Key()
 		var accountHash common.Hash
 		copy(accountHash[:], key[len(rawdb.SnapshotAccountPrefix):])
-		if bytes.Compare(accountHash[:], rangeEnd[:]) > 0 {
+		if accountHash[0]>>4 != partition {
 			break
 		}
 		c.accounts.Add(1)
-		c.progress[partition].Store(binary.BigEndian.Uint64(accountHash[:8]))
+		position := binary.BigEndian.Uint64(accountHash[:8]) % partitionRangeSize
+		if ingester != nil {
+			position = partitionRangeSize - 1 - position
+		}
+		c.progress[partition].Store(position)
 
 		// Decode the account object
 		account, err := types.FullAccount(iters.acct.Value())
@@ -204,16 +211,17 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		}
 
 		// Build the account's storage trie from the flat storage snapshot.
-		// StackTrie's onTrieNode callback persists nodes as they finalize.
-		storageTrie := trie.NewStackTrie(func(path []byte, hash common.Hash, blob []byte) {
+		// StackTrie's callback adds completed nodes to the current write window.
+		storageTrie := newStorageTrie(func(path []byte, hash common.Hash, blob []byte) {
 			c.storageTrieNodes.Add(1)
 
 			if scheme == rawdb.PathScheme {
 				c.storageTrieBytes.Add(int64(len(path) + common.HashLength + len(blob)))
+				rawdb.WriteStorageTrieNode(batches.storage, accountHash, path, blob)
 			} else {
 				c.storageTrieBytes.Add(int64(common.HashLength + len(blob)))
+				rawdb.WriteTrieNode(batches.storage, accountHash, path, hash, blob, scheme)
 			}
-			rawdb.WriteTrieNode(batch, accountHash, path, hash, blob, scheme)
 		})
 
 		// Compute the storage root by consuming matching slots from the
@@ -234,9 +242,11 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 				storageAccount = sk[len(rawdb.SnapshotStoragePrefix) : len(rawdb.SnapshotStoragePrefix)+common.HashLength]
 				cmp            = bytes.Compare(storageAccount, accountHash[:])
 			)
-			// The slot belongs to an account whose hash is smaller than the one
-			// currently being processed. This should be theoretically impossible,
-			// so log it loudly and delete the dangling entry from the flat state.
+			if ingester != nil {
+				cmp = -cmp
+			}
+			// The account iterator already passed this slot's owner. Remove the
+			// dangling entry from the flat state.
 			if cmp < 0 {
 				if !bytes.Equal(lastDanglingAccount, storageAccount) {
 					copy(lastDanglingAccount, storageAccount)
@@ -244,9 +254,9 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 				}
 				c.storageDeleted.Add(1)
 				slotHash := sk[len(rawdb.SnapshotStoragePrefix)+common.HashLength:]
-				rawdb.DeleteStorageSnapshot(batch, common.BytesToHash(storageAccount), common.BytesToHash(slotHash))
-				if err := iters.flushIfFull(batch, "dangling"); err != nil {
-					return nil, err
+				rawdb.DeleteStorageSnapshot(batches.flat, common.BytesToHash(storageAccount), common.BytesToHash(slotHash))
+				if err := iters.refresh(batches.flush(false)); err != nil {
+					return nil, fmt.Errorf("flush batch (dangling): %w", err)
 				}
 				continue
 			}
@@ -267,8 +277,8 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 				return nil, fmt.Errorf("storage stack trie update for %x: %w", accountHash, err)
 			}
 			c.slots.Add(1)
-			if err := iters.flushIfFull(batch, "storage"); err != nil {
-				return nil, err
+			if err := iters.refresh(batches.flush(false)); err != nil {
+				return nil, fmt.Errorf("flush batch (storage): %w", err)
 			}
 		}
 		if err := iters.stor.Error(); err != nil {
@@ -281,7 +291,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		// account trie.
 		if computed != account.Root {
 			account.Root = computed
-			rawdb.WriteAccountSnapshot(batch, accountHash, types.SlimAccountRLP(*account))
+			rawdb.WriteAccountSnapshot(batches.flat, accountHash, types.SlimAccountRLP(*account))
 			c.accountUpdated.Add(1)
 		}
 		fullAccount, err := rlp.EncodeToBytes(account)
@@ -291,8 +301,8 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		if err := acctTrie.Update(accountHash[:], fullAccount); err != nil {
 			return nil, fmt.Errorf("account stack trie update for %x: %w", accountHash, err)
 		}
-		if err := iters.flushIfFull(batch, "account"); err != nil {
-			return nil, err
+		if err := iters.refresh(batches.flush(false)); err != nil {
+			return nil, fmt.Errorf("flush batch (account): %w", err)
 		}
 	}
 	if err := iters.acct.Error(); err != nil {
@@ -314,7 +324,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		}
 		sk := iters.stor.Key()
 		acct := sk[len(rawdb.SnapshotStoragePrefix) : len(rawdb.SnapshotStoragePrefix)+common.HashLength]
-		if bytes.Compare(acct, rangeEnd[:]) > 0 {
+		if acct[0]>>4 != partition {
 			break
 		}
 		if !bytes.Equal(lastDanglingTail, acct) {
@@ -323,9 +333,9 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		}
 		c.storageDeleted.Add(1)
 		slotHash := sk[len(rawdb.SnapshotStoragePrefix)+common.HashLength:]
-		rawdb.DeleteStorageSnapshot(batch, common.BytesToHash(acct), common.BytesToHash(slotHash))
-		if err := iters.flushIfFull(batch, "dangling tail"); err != nil {
-			return nil, err
+		rawdb.DeleteStorageSnapshot(batches.flat, common.BytesToHash(acct), common.BytesToHash(slotHash))
+		if err := iters.refresh(batches.flush(false)); err != nil {
+			return nil, fmt.Errorf("flush batch (dangling tail): %w", err)
 		}
 	}
 	if err := iters.stor.Error(); err != nil {
@@ -337,7 +347,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 	// partition never emits any node and leaves rootBlob at nil.
 	acctTrie.Hash()
 
-	if err := batch.Write(); err != nil {
+	if _, err := batches.flush(true); err != nil {
 		return nil, fmt.Errorf("final partition batch write: %w", err)
 	}
 	return root, nil
@@ -376,14 +386,30 @@ func hashRanges(total int) [][2]common.Hash {
 // trie. Once every partition has produced its subtree root, the top-level
 // branch is assembled and its hash verified against the expected root.
 //
-// Generation is all or nothing: an interrupted run leaves no resume
-// state and the next run builds every partition from scratch.
+// Nodes become visible as their windows are written. An interrupted run
+// leaves no resume state and the next run rebuilds every partition.
 func GenerateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}) (GenerateStats, error) {
 	return GenerateTrieWithProgress(db, scheme, root, cancel, nil)
 }
 
 // GenerateTrieWithProgress is GenerateTrie with live progress reporting.
+// Path-scheme stores with reverse iteration and SST ingestion use them to
+// generate and install disjoint ranges of trie nodes.
 func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64) (GenerateStats, error) {
+	var ingester ethdb.Ingester
+	if scheme == rawdb.PathScheme {
+		ingester = rawdb.Ingester(db)
+	}
+	return generateTrie(db, scheme, root, cancel, prog, ingester)
+}
+
+// GenerateTrieWithBatch forces ordinary database batches for comparison with
+// the default writer in the offline generation benchmark.
+func GenerateTrieWithBatch(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}) (GenerateStats, error) {
+	return generateTrie(db, scheme, root, cancel, nil, nil)
+}
+
+func generateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64, ingester ethdb.Ingester) (GenerateStats, error) {
 	var (
 		start        = time.Now()
 		c            genCounters
@@ -396,6 +422,14 @@ func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash
 	go tickProgress(progressDone, start, &c, prog)
 	defer close(progressDone)
 
+	if ingester != nil {
+		// Persist the flat input, generation journal and trie range deletions
+		// before any worker installs nodes. A restart can then safely rebuild
+		// from that input after a partially ingested generation.
+		if err := db.SyncKeyValue(); err != nil {
+			return GenerateStats{}, fmt.Errorf("sync before trie ingestion: %w", err)
+		}
+	}
 	// Run every partition concurrently, each producing the subtree root
 	// blob that assembleRoot needs.
 	var (
@@ -407,13 +441,13 @@ func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash
 		rangeStart, rangeEnd := r[0], r[1]
 		eg.Go(func() error {
 			start := time.Now()
-			blob, err := generatePartition(ctx, cancel, db, scheme, partition, rangeStart, rangeEnd, &c)
+			blob, err := generatePartition(ctx, cancel, db, scheme, partition, rangeStart, rangeEnd, &c, ingester)
 			if err != nil {
 				return err
 			}
 			log.Info("Partition done", "partition", partition, "elapsed", common.PrettyDuration(time.Since(start)))
 
-			c.progress[partition].Store(partitionFinished)
+			c.progress[partition].Store(partitionRangeSize)
 			partitionBlobs[partition] = blob
 			return nil
 		})
@@ -435,7 +469,15 @@ func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash
 	if got != root {
 		return GenerateStats{}, fmt.Errorf("state root mismatch: got %x, want %x", got, root)
 	}
+	if ingester != nil {
+		// Flat repairs, the top-level root and any single-partition root cleanup
+		// use ordinary writes. Make these durable before journaling completion.
+		if err := db.SyncKeyValue(); err != nil {
+			return GenerateStats{}, err
+		}
+	}
 	log.Info("Generated state trie",
+		"ingest", ingester != nil,
 		"accounts", c.accounts.Load(), "slots", c.slots.Load(),
 		"account-nodes", c.accountTrieNodes.Load(), "storage-nodes", c.storageTrieNodes.Load(),
 		"account-nodebytes", common.StorageSize(c.accountTrieBytes.Load()), "storage-nodebytes", common.StorageSize(c.storageTrieBytes.Load()),
@@ -558,23 +600,8 @@ func tickProgress(done <-chan struct{}, start time.Time, c *genCounters, prog *a
 // hashes are uniform, so keyspace position is a good proxy for work done.
 func progressFraction(progress *[numPartitions]atomic.Uint64) float64 {
 	var total float64
-	for i := range numPartitions {
-		p := progress[i].Load()
-		switch {
-		case p == partitionFinished:
-			total += 1.0
-		case p == 0:
-			// not started yet
-		default:
-			rangeStart := uint64(i) * partitionRangeSize
-			if p > rangeStart {
-				rel := p - rangeStart
-				if rel > partitionRangeSize {
-					rel = partitionRangeSize
-				}
-				total += float64(rel) / float64(partitionRangeSize)
-			}
-		}
+	for i := range progress {
+		total += float64(progress[i].Load()) / float64(partitionRangeSize)
 	}
 	return total / float64(numPartitions)
 }

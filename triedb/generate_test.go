@@ -19,6 +19,7 @@ package triedb
 import (
 	"bytes"
 	"context"
+	"errors"
 	"math/big"
 	"sort"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/holiman/uint256"
@@ -80,6 +82,53 @@ func TestGenerateTrieEmpty(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 	if _, err := GenerateTrie(db, rawdb.HashScheme, types.EmptyRootHash, nil); err != nil {
 		t.Fatalf("GenerateTrie on empty state failed: %v", err)
+	}
+}
+
+type syncFailingStore struct {
+	*pebble.Database
+	syncCalls int
+	failAt    int
+	syncErr   error
+}
+
+func (s *syncFailingStore) SyncKeyValue() error {
+	s.syncCalls++
+	if s.syncCalls == s.failAt {
+		return s.syncErr
+	}
+	return s.Database.SyncKeyValue()
+}
+
+// The opening sync must succeed before any partition can install nodes. A
+// failed closing sync must be reported even after all nodes are visible.
+func TestGenerateTrieIngestSyncFailure(t *testing.T) {
+	accounts := []testAccount{
+		{hash: common.Hash{0x10}, account: *types.NewEmptyStateAccount()},
+		{hash: common.Hash{0xf0}, account: *types.NewEmptyStateAccount()},
+	}
+	root := buildExpectedRoot(t, accounts)
+	for name, failAt := range map[string]int{"before ingestion": 1, "after ingestion": 2} {
+		t.Run(name, func(t *testing.T) {
+			kv, err := pebble.New(t.TempDir(), 16, 16, "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &syncFailingStore{Database: kv, failAt: failAt, syncErr: errors.New("injected sync failure")}
+			db := rawdb.NewDatabase(store)
+			defer db.Close()
+			for _, a := range accounts {
+				rawdb.WriteAccountSnapshot(db, a.hash, types.SlimAccountRLP(a.account))
+			}
+			if _, err := GenerateTrie(db, rawdb.PathScheme, root, nil); !errors.Is(err, store.syncErr) {
+				t.Fatalf("GenerateTrie error = %v, want %v", err, store.syncErr)
+			}
+			for _, path := range [][]byte{nil, {1}, {15}} {
+				if got := rawdb.HasAccountTrieNode(db, path); got != (failAt == 2) {
+					t.Fatalf("account node at %x present = %v after sync %d failed", path, got, failAt)
+				}
+			}
+		})
 	}
 }
 
@@ -676,7 +725,7 @@ func TestGenerateTrieBatchFlush(t *testing.T) {
 			var c genCounters
 			ranges := hashRanges(numPartitions)
 			if _, err := generatePartition(context.Background(), nil, peakBatchDB{Database: db, peak: &peak},
-				rawdb.HashScheme, 0, ranges[0][0], ranges[0][1], &c); err != nil {
+				rawdb.HashScheme, 0, ranges[0][0], ranges[0][1], &c, nil); err != nil {
 				t.Fatalf("generatePartition: %v", err)
 			}
 

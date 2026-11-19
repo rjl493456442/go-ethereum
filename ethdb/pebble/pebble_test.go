@@ -18,6 +18,7 @@ package pebble
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/cockroachdb/pebble"
@@ -55,6 +56,59 @@ func TestPebbleDB(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestReverseIterator(t *testing.T) {
+	db, err := pebblev2.Open("", &pebblev2.Options{FS: vfsv2.NewMem()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := &Database{db: db}
+	keys := []string{"o", "p", "p\x00", "pa", "pa\x00", "p\xff", "p\xff\xff", "q", "\xff\xff", "\xff\xff\xff"}
+	for _, k := range keys {
+		if err := store.Put([]byte(k), []byte(k)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name, prefix string
+		start        []byte
+		want         []string
+	}{
+		{"prefix", "p", nil, []string{"p\xff\xff", "p\xff", "pa\x00", "pa", "p\x00", "p"}},
+		{"exact", "p", []byte("a"), []string{"pa", "p\x00", "p"}},
+		{"missing", "p", []byte("b"), []string{"pa\x00", "pa", "p\x00", "p"}},
+		{"empty suffix", "p", []byte{}, []string{"p"}},
+		{"trailing ff", "p", []byte{0xff}, []string{"p\xff", "pa\x00", "pa", "p\x00", "p"}},
+		{"unbounded prefix", "\xff\xff", nil, []string{"\xff\xff\xff", "\xff\xff"}},
+		{"absent prefix", "x", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			it := store.NewReverseIterator([]byte(tc.prefix), tc.start)
+			var got []string
+			for it.Next() {
+				if string(it.Key()) != string(it.Value()) {
+					t.Fatalf("key %x has value %x", it.Key(), it.Value())
+				}
+				got = append(got, string(it.Key()))
+				if len(got) == 1 {
+					// Resume inclusively after releasing the old read state.
+					start := []byte(got[0][len(tc.prefix):])
+					it.Release()
+					it = store.NewReverseIterator([]byte(tc.prefix), start)
+					if !it.Next() || string(it.Key()) != got[0] {
+						t.Fatalf("resume at %x returned %x (error %v)", got[0], it.Key(), it.Error())
+					}
+				}
+			}
+			err := it.Error()
+			it.Release()
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("got %x (error %v), want %x", got, err, tc.want)
+			}
+		})
+	}
 }
 
 func BenchmarkPebbleDB(b *testing.B) {

@@ -91,6 +91,20 @@ type nofreezedb struct {
 	ethdb.KeyValueStore
 }
 
+// Ingester returns the optional SST ingestion capability of the underlying
+// store. Prefixing tables and other wrappers must explicitly support ingestion.
+func Ingester(db ethdb.Database) ethdb.Ingester {
+	var store ethdb.KeyValueStore = db
+	switch db := db.(type) {
+	case *freezerdb:
+		store = db.KeyValueStore
+	case *nofreezedb:
+		store = db.KeyValueStore
+	}
+	ingester, _ := store.(ethdb.Ingester)
+	return ingester
+}
+
 // Ancient returns an error as we don't have a backing chain freezer.
 func (db *nofreezedb) Ancient(kind string, number uint64) ([]byte, error) {
 	return nil, errNotSupported

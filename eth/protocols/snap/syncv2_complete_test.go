@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/ethdb/pebble"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb"
@@ -65,10 +66,10 @@ type completeFixture struct {
 	bals             map[common.Hash]rlp.RawValue
 }
 
-func newCompleteFixture(t *testing.T, scheme string) *completeFixture {
+func newCompleteFixture(t *testing.T, db ethdb.Database, scheme string) *completeFixture {
 	t.Helper()
 	f := &completeFixture{
-		db:           rawdb.NewMemoryDatabase(),
+		db:           db,
 		scheme:       scheme,
 		contractAddr: common.HexToAddress("0x00000000000000000000000000000000c0ffee01"),
 		newAddr:      common.HexToAddress("0x00000000000000000000000000000000c0ffee02"),
@@ -411,8 +412,74 @@ func TestCompletePhasePivotMove(t *testing.T) {
 	testCompletePhasePivotMove(t, rawdb.PathScheme)
 }
 
+// countingIngestStore uses the real Pebble ingest writer and records whether a
+// sync actually requested one.
+type countingIngestStore struct {
+	*pebble.Database
+	batches atomic.Int32
+}
+
+func (db *countingIngestStore) NewIngestBatch(size int) ethdb.Batch {
+	db.batches.Add(1)
+	return db.Database.NewIngestBatch(size)
+}
+
+// TestIngestPivotRestart reopens the database at each pivot change. A forward
+// move updates the ingested trie with BALs, while a backward move discards the
+// newer trie and generates an earlier one from the downloaded state.
+func TestIngestPivotRestart(t *testing.T) {
+	dir := t.TempDir()
+	open := func() *countingIngestStore {
+		t.Helper()
+		kv, err := pebble.New(dir, 16, 16, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { kv.Close() })
+		return &countingIngestStore{Database: kv}
+	}
+	store := open()
+	f := newCompleteFixture(t, rawdb.NewDatabase(store), rawdb.PathScheme)
+	f.seed(t)
+	if store.batches.Load() == 0 {
+		t.Fatal("initial sync did not use Pebble ingestion")
+	}
+	reopen := func() {
+		t.Helper()
+		if err := f.db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		store = open()
+		f.db = rawdb.NewDatabase(store)
+	}
+	reopen()
+	f.assertPersistedRoot(t, f.hdrA.Root)
+	if err, reqs := f.move(t, f.hdrB); err != nil || reqs != 0 {
+		t.Fatalf("forward to B: err %v, state requests %d", err, reqs)
+	}
+	if store.batches.Load() != 0 {
+		t.Fatal("forward BAL catch-up regenerated the trie")
+	}
+	reopen()
+	f.assertJournal(t, f.hdrB)
+	f.assertPersistedRoot(t, f.hdrB.Root)
+	if err, reqs := f.move(t, f.hdrA); err != nil || reqs == 0 {
+		t.Fatalf("backward to A: err %v, state requests %d", err, reqs)
+	}
+	if store.batches.Load() == 0 {
+		t.Fatal("backward reset did not use Pebble ingestion")
+	}
+	reopen()
+	f.assertJournal(t, f.hdrA)
+	f.assertPersistedRoot(t, f.hdrA.Root)
+	f.assertStorage(t, f.hdrA.Root, f.stTrieA.Hash(), f.stElemA)
+	if f.flatAccount(t, f.newHash) != nil {
+		t.Fatal("account created at B survived reset to A")
+	}
+}
+
 func testCompletePhasePivotMove(t *testing.T, scheme string) {
-	f := newCompleteFixture(t, scheme)
+	f := newCompleteFixture(t, rawdb.NewMemoryDatabase(), scheme)
 	f.seed(t)
 
 	// A -> B: storage mutations, code, new and drained accounts.
@@ -511,7 +578,7 @@ func TestCompletePhaseRootMismatch(t *testing.T) {
 }
 
 func testCompletePhaseRootMismatch(t *testing.T, scheme string) {
-	f := newCompleteFixture(t, scheme)
+	f := newCompleteFixture(t, rawdb.NewMemoryDatabase(), scheme)
 	f.seed(t)
 
 	// Corrupt the root of C. The BAL is still valid against the header, so
