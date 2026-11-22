@@ -64,7 +64,22 @@ func TestReverseIterator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	store := &Database{db: db}
+	testReverseIterator(t, &Database{db: db})
+}
+
+func TestReverseIteratorV1(t *testing.T) {
+	db, err := pebblev1.Open("", &pebblev1.Options{FS: vfsv1.NewMem()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	testReverseIterator(t, &V1Database{db: db})
+}
+
+func testReverseIterator(t *testing.T, store interface {
+	ethdb.KeyValueWriter
+	ethdb.ReverseIteratee
+}) {
 	keys := []string{"o", "p", "p\x00", "pa", "pa\x00", "p\xff", "p\xff\xff", "q", "\xff\xff", "\xff\xff\xff"}
 	for _, k := range keys {
 		if err := store.Put([]byte(k), []byte(k)); err != nil {

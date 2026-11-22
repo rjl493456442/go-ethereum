@@ -536,6 +536,15 @@ func upperBound(prefix []byte) (limit []byte) {
 	return limit
 }
 
+// reverseUpperBound includes the exact start key but excludes its extensions.
+// A nil start includes the entire prefix.
+func reverseUpperBound(prefix, start []byte) []byte {
+	if start == nil {
+		return upperBound(prefix)
+	}
+	return slices.Concat(prefix, start, []byte{0})
+}
+
 // Stat returns the internal metrics of Pebble in a text format. It's a developer
 // method to read everything there is to read, independent of Pebble version.
 func (d *Database) Stat() (string, error) {
@@ -818,17 +827,9 @@ func (d *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 
 // NewReverseIterator implements ethdb.ReverseIteratee.
 func (d *Database) NewReverseIterator(prefix, start []byte) ethdb.Iterator {
-	var limit []byte
-	if start == nil {
-		limit = upperBound(prefix)
-	} else {
-		// The immediate successor of an exact byte key is that key plus a
-		// zero byte. This includes the start key but excludes its extensions.
-		limit = slices.Concat(prefix, start, []byte{0})
-	}
 	iter, _ := d.db.NewIter(&pebble.IterOptions{
 		LowerBound: prefix,
-		UpperBound: limit,
+		UpperBound: reverseUpperBound(prefix, start),
 	})
 	iter.Last()
 

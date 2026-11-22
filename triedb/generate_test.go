@@ -85,6 +85,61 @@ func TestGenerateTrieEmpty(t *testing.T) {
 	}
 }
 
+func TestGenerateTrieTo(t *testing.T) {
+	dir := t.TempDir()
+	kv, err := pebble.New(dir, 16, 16, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, orphan := common.Hash{0x42}, common.Hash{0x43}
+	slot := testSlot{hash: common.MaxHash, value: []byte{0x01}}
+	account := *types.NewEmptyStateAccount()
+	stale := types.SlimAccountRLP(account)
+	rawdb.WriteAccountSnapshot(kv, owner, stale)
+	rawdb.WriteStorageSnapshot(kv, owner, slot.hash, slot.value)
+	rawdb.WriteStorageSnapshot(kv, orphan, slot.hash, slot.value)
+	if err := kv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	src, err := pebble.New(dir, 16, 16, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	slots := []testSlot{slot}
+	account.Root = computeStorageRootFromSlots(slots)
+	accounts := []testAccount{{hash: owner, account: account, storage: slots}}
+	root := buildExpectedRoot(t, accounts)
+	for name, batch := range map[string]bool{"ingest": false, "batch": true} {
+		t.Run(name, func(t *testing.T) {
+			kv, err := pebble.New(t.TempDir(), 16, 16, "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dst := rawdb.NewDatabase(kv)
+			defer dst.Close()
+			stats, err := GenerateTrieTo(src, dst, rawdb.PathScheme, root, nil, batch)
+			if err != nil || stats != (GenerateStats{Scanned: 1}) {
+				t.Fatalf("generation: stats %+v, err %v", stats, err)
+			}
+			assertCanonicalNodes(t, dst, accounts)
+			it := dst.NewIterator(nil, nil)
+			defer it.Release()
+			for it.Next() {
+				if key := it.Key(); !bytes.HasPrefix(key, rawdb.TrieNodeAccountPrefix) && !bytes.HasPrefix(key, rawdb.TrieNodeStoragePrefix) {
+					t.Fatalf("unexpected non-trie record %x", key)
+				}
+			}
+			if err := it.Error(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if !bytes.Equal(rawdb.ReadAccountSnapshot(src, owner), stale) || !bytes.Equal(rawdb.ReadStorageSnapshot(src, orphan, slot.hash), slot.value) {
+		t.Fatal("source flat state changed")
+	}
+}
+
 type syncFailingStore struct {
 	*pebble.Database
 	syncCalls int
@@ -724,8 +779,8 @@ func TestGenerateTrieBatchFlush(t *testing.T) {
 			peak := 0
 			var c genCounters
 			ranges := hashRanges(numPartitions)
-			if _, err := generatePartition(context.Background(), nil, peakBatchDB{Database: db, peak: &peak},
-				rawdb.HashScheme, 0, ranges[0][0], ranges[0][1], &c, nil); err != nil {
+			gen := trieGenerator{dst: peakBatchDB{Database: db, peak: &peak}, newIterator: db.NewIterator, inPlace: true}
+			if _, err := gen.generatePartition(context.Background(), nil, rawdb.HashScheme, 0, ranges[0][0], ranges[0][1], &c); err != nil {
 				t.Fatalf("generatePartition: %v", err)
 			}
 

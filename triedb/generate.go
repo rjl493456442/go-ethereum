@@ -78,19 +78,29 @@ type genCounters struct {
 
 // rangeIterators bundles the per-partition account and storage iterators.
 type rangeIterators struct {
-	newIterator func(prefix, start []byte) ethdb.Iterator
-	acct        *internal.HoldableIterator
-	stor        *internal.HoldableIterator
+	newIterator    func(prefix, start []byte) ethdb.Iterator
+	refreshOnFlush bool
+	acct           *internal.HoldableIterator
+	stor           *internal.HoldableIterator
 }
 
-func openRangeIterators(db ethdb.Database, start, end common.Hash, ingester ethdb.Ingester) *rangeIterators {
+// trieGenerator reads ordered flat records using newIterator and writes nodes
+// to dst. In-place generation also repairs the flat records in that database.
+type trieGenerator struct {
+	dst         ethdb.Database
+	newIterator func(prefix, start []byte) ethdb.Iterator
+	ingester    ethdb.Ingester
+	inPlace     bool
+}
+
+func (g *trieGenerator) openRangeIterators(start, end common.Hash) *rangeIterators {
 	r := &rangeIterators{
-		newIterator: db.NewIterator,
+		newIterator:    g.newIterator,
+		refreshOnFlush: g.inPlace,
 	}
 	accountStart, storageStart := start[:], start[:]
 
-	if ingester != nil {
-		r.newIterator = ingester.NewReverseIterator
+	if g.ingester != nil {
 		accountStart = end[:]
 		storageStart = append(end[:], common.MaxHash[:]...)
 	}
@@ -104,11 +114,11 @@ func (r *rangeIterators) release() {
 	r.stor.Release()
 }
 
-// refresh releases the iterators' read state after a flush so compaction can
-// reclaim obsolete files. Each replacement starts at the next unconsumed key,
-// including a storage record held for the next account.
+// During in-place generation, refresh releases the iterators' read state after
+// a flush so compaction can reclaim obsolete files. Each replacement starts
+// at the next unconsumed key, including a slot held for the next account.
 func (r *rangeIterators) refresh(flushed bool, err error) error {
-	if err != nil || !flushed {
+	if err != nil || !flushed || !r.refreshOnFlush {
 		return err
 	}
 	r.acct, err = r.reopen(r.acct, rawdb.SnapshotAccountPrefix, common.HashLength)
@@ -145,16 +155,16 @@ func (r *rangeIterators) reopen(old *internal.HoldableIterator, prefix []byte, s
 // both per-account storage subtries and the partition's slice of the
 // account trie. Returns the partition's stripped subtree root blob, or
 // nil if the partition had no accounts at all.
-func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Database, scheme string, partition byte, rangeStart, rangeEnd common.Hash, c *genCounters, ingester ethdb.Ingester) ([]byte, error) {
-	iters := openRangeIterators(db, rangeStart, rangeEnd, ingester)
+func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan struct{}, scheme string, partition byte, rangeStart, rangeEnd common.Hash, c *genCounters) ([]byte, error) {
+	iters := g.openRangeIterators(rangeStart, rangeEnd)
 	defer iters.release()
 
-	batches := newPartitionBatches(db, ingester)
+	batches := newPartitionBatches(g.dst, g.ingester)
 	defer batches.close()
 
 	newStorageTrie := trie.NewStackTrie
 	newAccountTrie := trie.NewPartialStackTrie
-	if ingester != nil {
+	if g.ingester != nil {
 		newStorageTrie = trie.NewReverseStackTrie
 		newAccountTrie = trie.NewReversePartialStackTrie
 	}
@@ -199,7 +209,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		}
 		c.accounts.Add(1)
 		position := binary.BigEndian.Uint64(accountHash[:8]) % partitionRangeSize
-		if ingester != nil {
+		if g.ingester != nil {
 			position = partitionRangeSize - 1 - position
 		}
 		c.progress[partition].Store(position)
@@ -242,12 +252,15 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 				storageAccount = sk[len(rawdb.SnapshotStoragePrefix) : len(rawdb.SnapshotStoragePrefix)+common.HashLength]
 				cmp            = bytes.Compare(storageAccount, accountHash[:])
 			)
-			if ingester != nil {
+			if g.ingester != nil {
 				cmp = -cmp
 			}
 			// The account iterator already passed this slot's owner. Remove the
 			// dangling entry from the flat state.
 			if cmp < 0 {
+				if !g.inPlace {
+					continue
+				}
 				if !bytes.Equal(lastDanglingAccount, storageAccount) {
 					copy(lastDanglingAccount, storageAccount)
 					log.Error("Unexpected storage entries for dangling account", "expected", accountHash, "got", common.BytesToHash(storageAccount))
@@ -286,13 +299,14 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 		}
 		computed := storageTrie.Hash()
 
-		// If account.Root was stale, rewrite the flat-state entry. Then feed
-		// the account, now with the correct Root, into this partition's
-		// account trie.
+		// Reconcile the root before encoding the account into the trie.
+		// In-place generation also repairs the account's flat-state entry.
 		if computed != account.Root {
 			account.Root = computed
-			rawdb.WriteAccountSnapshot(batches.flat, accountHash, types.SlimAccountRLP(*account))
-			c.accountUpdated.Add(1)
+			if g.inPlace {
+				rawdb.WriteAccountSnapshot(batches.flat, accountHash, types.SlimAccountRLP(*account))
+				c.accountUpdated.Add(1)
+			}
 		}
 		fullAccount, err := rlp.EncodeToBytes(account)
 		if err != nil {
@@ -314,7 +328,7 @@ func generatePartition(ctx context.Context, cancel <-chan struct{}, db ethdb.Dat
 	// within this partition's range. Those slots belong to no existing account
 	// and should be cleared.
 	lastDanglingTail := make([]byte, common.HashLength)
-	for iters.stor.Next() {
+	for g.inPlace && iters.stor.Next() {
 		select {
 		case <-cancel:
 			return nil, ErrCancelled
@@ -396,20 +410,39 @@ func GenerateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-c
 // Path-scheme stores with reverse iteration and SST ingestion use them to
 // generate and install disjoint ranges of trie nodes.
 func GenerateTrieWithProgress(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64) (GenerateStats, error) {
-	var ingester ethdb.Ingester
+	g := trieGenerator{dst: db, newIterator: db.NewIterator, inPlace: true}
 	if scheme == rawdb.PathScheme {
-		ingester = rawdb.Ingester(db)
+		g.ingester = rawdb.Ingester(db)
+		if g.ingester != nil {
+			g.newIterator = g.ingester.NewReverseIterator
+		}
 	}
-	return generateTrie(db, scheme, root, cancel, prog, ingester)
+	return g.generate(scheme, root, cancel, prog)
 }
 
-// GenerateTrieWithBatch forces ordinary database batches for comparison with
-// the default writer in the offline generation benchmark.
+// GenerateTrieWithBatch builds the trie in place using ordinary batches.
 func GenerateTrieWithBatch(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}) (GenerateStats, error) {
-	return generateTrie(db, scheme, root, cancel, nil, nil)
+	g := trieGenerator{dst: db, newIterator: db.NewIterator, inPlace: true}
+	return g.generate(scheme, root, cancel, nil)
 }
 
-func generateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64, ingester ethdb.Ingester) (GenerateStats, error) {
+// GenerateTrieTo builds trie nodes from a stable flat-state source into a
+// separate, empty destination and syncs it after verifying the root. Stale
+// account roots are recomputed in memory and dangling slots are skipped.
+// For path-based storage, a descending source iterator and an ingest-capable
+// destination enable SST ingestion. Set batch to force ordinary batches.
+func GenerateTrieTo(src ethdb.Iteratee, dst ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, batch bool) (GenerateStats, error) {
+	g := trieGenerator{dst: dst, newIterator: src.NewIterator}
+	if reverse, ok := src.(ethdb.ReverseIteratee); ok && !batch && scheme == rawdb.PathScheme {
+		g.ingester = rawdb.Ingester(dst)
+		if g.ingester != nil {
+			g.newIterator = reverse.NewReverseIterator
+		}
+	}
+	return g.generate(scheme, root, cancel, nil)
+}
+
+func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan struct{}, prog *atomic.Uint64) (GenerateStats, error) {
 	var (
 		start        = time.Now()
 		c            genCounters
@@ -422,11 +455,11 @@ func generateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-c
 	go tickProgress(progressDone, start, &c, prog)
 	defer close(progressDone)
 
-	if ingester != nil {
+	if g.inPlace && g.ingester != nil {
 		// Persist the flat input, generation journal and trie range deletions
 		// before any worker installs nodes. A restart can then safely rebuild
 		// from that input after a partially ingested generation.
-		if err := db.SyncKeyValue(); err != nil {
+		if err := g.dst.SyncKeyValue(); err != nil {
 			return GenerateStats{}, fmt.Errorf("sync before trie ingestion: %w", err)
 		}
 	}
@@ -441,7 +474,7 @@ func generateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-c
 		rangeStart, rangeEnd := r[0], r[1]
 		eg.Go(func() error {
 			start := time.Now()
-			blob, err := generatePartition(ctx, cancel, db, scheme, partition, rangeStart, rangeEnd, &c, ingester)
+			blob, err := g.generatePartition(ctx, cancel, scheme, partition, rangeStart, rangeEnd, &c)
 			if err != nil {
 				return err
 			}
@@ -462,22 +495,22 @@ func generateTrie(db ethdb.Database, scheme string, root common.Hash, cancel <-c
 	}
 	// Assemble the top-level root from the partition blobs and verify it
 	// matches the expected root.
-	got, err := assembleRoot(db, scheme, partitionBlobs)
+	got, err := assembleRoot(g.dst, scheme, partitionBlobs)
 	if err != nil {
 		return GenerateStats{}, fmt.Errorf("assemble root: %w", err)
 	}
 	if got != root {
 		return GenerateStats{}, fmt.Errorf("state root mismatch: got %x, want %x", got, root)
 	}
-	if ingester != nil {
-		// Flat repairs, the top-level root and any single-partition root cleanup
-		// use ordinary writes. Make these durable before journaling completion.
-		if err := db.SyncKeyValue(); err != nil {
+	if !g.inPlace || g.ingester != nil {
+		// Include ordinary writes such as the top-level root and any
+		// single-partition root cleanup in the durability guarantee.
+		if err := g.dst.SyncKeyValue(); err != nil {
 			return GenerateStats{}, err
 		}
 	}
 	log.Info("Generated state trie",
-		"ingest", ingester != nil,
+		"ingest", g.ingester != nil,
 		"accounts", c.accounts.Load(), "slots", c.slots.Load(),
 		"account-nodes", c.accountTrieNodes.Load(), "storage-nodes", c.storageTrieNodes.Load(),
 		"account-nodebytes", common.StorageSize(c.accountTrieBytes.Load()), "storage-nodebytes", common.StorageSize(c.storageTrieBytes.Load()),
