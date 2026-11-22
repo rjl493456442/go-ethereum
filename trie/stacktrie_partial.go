@@ -55,7 +55,7 @@ type PartialStackTrie struct {
 // its absolute path already prefixed with the partition nibble.
 func NewPartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
 	p := &PartialStackTrie{nibble: nibble}
-	p.inner = NewStackTrie(func(path []byte, hash common.Hash, blob []byte) {
+	p.inner = newStackTrie(func(path []byte, hash common.Hash, blob []byte) {
 		if onTrieNode == nil {
 			return
 		}
@@ -64,7 +64,7 @@ func NewPartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
 		p.pathBuf = append(p.pathBuf[:0], nibble)
 		p.pathBuf = append(p.pathBuf, path...)
 		onTrieNode(p.pathBuf, hash, blob)
-	})
+	}, newUnsafeBytesPool(common.HashLength, stackTrieHashPoolSize))
 	return p
 }
 
@@ -74,6 +74,15 @@ func NewReversePartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStac
 	p := NewPartialStackTrie(nibble, onTrieNode)
 	p.inner.reverse = true
 	return p
+}
+
+// NewStorageTrie creates a full trie with the partition's insertion order and
+// hash buffer pool. Use the partition and its storage tries serially so they
+// can reuse the buffers across successive accounts.
+func (p *PartialStackTrie) NewStorageTrie(onTrieNode OnTrieNode) *StackTrie {
+	t := newStackTrie(onTrieNode, p.inner.hashPool)
+	t.reverse = p.inner.reverse
+	return t
 }
 
 // Update inserts a (key, value) pair, stripping the key's leading nibble, which

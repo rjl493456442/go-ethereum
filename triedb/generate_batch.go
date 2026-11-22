@@ -33,16 +33,16 @@ type partitionBatches struct {
 	windows  []ethdb.Batch
 }
 
-func newPartitionBatches(db ethdb.Database, ingester ethdb.Ingester) *partitionBatches {
-	flat := db.NewBatchWithSize(ethdb.IdealBatchSize)
+func newPartitionBatches(db ethdb.Database, ingester ethdb.Ingester, timer *partitionTimer) *partitionBatches {
+	flat := timer.wrapBatch(db.NewBatchWithSize(ethdb.IdealBatchSize))
 	b := &partitionBatches{
 		flat:     flat,
 		accounts: flat,
 		storage:  flat,
 	}
 	if ingester != nil {
-		accounts := ingester.NewIngestBatch(trieIngestWindow)
-		storage := ingester.NewIngestBatch(trieIngestWindow)
+		accounts := timer.wrapBatch(ingester.NewIngestBatch(trieIngestWindow))
+		storage := timer.wrapBatch(ingester.NewIngestBatch(trieIngestWindow))
 		b.accounts, b.storage = accounts, storage
 		b.windows = []ethdb.Batch{accounts, storage}
 	}

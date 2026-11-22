@@ -80,8 +80,16 @@ func computeStorageRootFromSlots(slots []testSlot) common.Hash {
 
 func TestGenerateTrieEmpty(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
-	if _, err := GenerateTrie(db, rawdb.HashScheme, types.EmptyRootHash, nil); err != nil {
+	stats, err := GenerateTrie(db, rawdb.HashScheme, types.EmptyRootHash, nil)
+	if err != nil {
 		t.Fatalf("GenerateTrie on empty state failed: %v", err)
+	}
+	if stats.Timings != nil {
+		t.Fatalf("unexpected timings from in-place generation: %+v", stats.Timings)
+	}
+	stats, err = GenerateTrieTo(db, rawdb.NewMemoryDatabase(), rawdb.HashScheme, types.EmptyRootHash, nil, true)
+	if err != nil || stats.Scanned != 0 || stats.Timings == nil || stats.Timings.NodeWrite != 0 {
+		t.Fatalf("empty benchmark: stats %+v, err %v", stats, err)
 	}
 }
 
@@ -96,6 +104,8 @@ func TestGenerateTrieTo(t *testing.T) {
 	account := *types.NewEmptyStateAccount()
 	stale := types.SlimAccountRLP(account)
 	rawdb.WriteAccountSnapshot(kv, owner, stale)
+	other := testAccount{hash: common.Hash{0xa1}, account: *types.NewEmptyStateAccount()}
+	rawdb.WriteAccountSnapshot(kv, other.hash, types.SlimAccountRLP(other.account))
 	rawdb.WriteStorageSnapshot(kv, owner, slot.hash, slot.value)
 	rawdb.WriteStorageSnapshot(kv, orphan, slot.hash, slot.value)
 	if err := kv.Close(); err != nil {
@@ -108,7 +118,7 @@ func TestGenerateTrieTo(t *testing.T) {
 	defer src.Close()
 	slots := []testSlot{slot}
 	account.Root = computeStorageRootFromSlots(slots)
-	accounts := []testAccount{{hash: owner, account: account, storage: slots}}
+	accounts := []testAccount{{hash: owner, account: account, storage: slots}, other}
 	root := buildExpectedRoot(t, accounts)
 	for name, batch := range map[string]bool{"ingest": false, "batch": true} {
 		t.Run(name, func(t *testing.T) {
@@ -119,8 +129,15 @@ func TestGenerateTrieTo(t *testing.T) {
 			dst := rawdb.NewDatabase(kv)
 			defer dst.Close()
 			stats, err := GenerateTrieTo(src, dst, rawdb.PathScheme, root, nil, batch)
-			if err != nil || stats != (GenerateStats{Scanned: 1}) {
+			if err != nil || stats.Scanned != 2 || stats.Updated != 0 || stats.Deleted != 0 {
 				t.Fatalf("generation: stats %+v, err %v", stats, err)
+			}
+			tm := stats.Timings
+			if tm == nil || tm.FlatIteration <= 0 || tm.TrieBuild <= 0 || tm.Finalize <= 0 {
+				t.Fatalf("expected time in each generation phase, got %+v", tm)
+			}
+			if tm.NodeCommit <= 0 || tm.NodeCommit > tm.NodeWrite {
+				t.Fatalf("batch commit time %s inconsistent with node writes %s", tm.NodeCommit, tm.NodeWrite)
 			}
 			assertCanonicalNodes(t, dst, accounts)
 			it := dst.NewIterator(nil, nil)

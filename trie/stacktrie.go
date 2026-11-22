@@ -25,11 +25,20 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
+const stackTrieHashPoolSize = 100
+
 var (
 	stPool = sync.Pool{New: func() any { return new(stNode) }}
-	bPool  = newBytesPool(32, 100)
+	bPool  = newBytesPool(common.HashLength, stackTrieHashPoolSize)
 	_      = types.ListHasher((*StackTrie)(nil))
 )
+
+// A hash buffer holds either a child hash or a shorter embedded node.
+// get returns a slice with at least common.HashLength capacity.
+type stackTrieHashPool interface {
+	get() []byte
+	put([]byte)
+}
 
 // OnTrieNode is a callback method invoked when a trie node is committed
 // by the stack trie. The node is only committed if it's considered complete.
@@ -52,11 +61,16 @@ type StackTrie struct {
 	kBuf       []byte // buf space used for hex-key during insertions
 	pBuf       []byte // buf space used for path during insertions
 	vPool      *unsafeBytesPool
+	hashPool   stackTrieHashPool
 }
 
 // NewStackTrie creates a trie that accepts keys in strictly ascending order.
 // Committed nodes are discarded immediately if no callback is configured.
 func NewStackTrie(onTrieNode OnTrieNode) *StackTrie {
+	return newStackTrie(onTrieNode, bPool)
+}
+
+func newStackTrie(onTrieNode OnTrieNode, hashPool stackTrieHashPool) *StackTrie {
 	return &StackTrie{
 		root:       stPool.Get().(*stNode),
 		h:          newHasher(false),
@@ -64,6 +78,7 @@ func NewStackTrie(onTrieNode OnTrieNode) *StackTrie {
 		kBuf:       make([]byte, 64),
 		pBuf:       make([]byte, 64),
 		vPool:      newUnsafeBytesPool(300, 20),
+		hashPool:   hashPool,
 	}
 }
 
@@ -176,12 +191,12 @@ const (
 	hashedNode
 )
 
-func (n *stNode) reset() *stNode {
+func (n *stNode) reset(hashPool stackTrieHashPool) *stNode {
 	if n.typ == hashedNode {
 		// On hashnodes, we 'own' the val: it is guaranteed to be not held
 		// by external caller. Hence, when we arrive here, we can put it
 		// back into the pool
-		bPool.put(n.val)
+		hashPool.put(n.val)
 	}
 	n.key = n.key[:0]
 	n.val = nil
@@ -381,7 +396,7 @@ func (t *StackTrie) hash(st *stNode, path []byte) {
 				continue
 			}
 			st.children[i] = nil
-			stPool.Put(child.reset()) // Release child back to pool.
+			stPool.Put(child.reset(t.hashPool)) // Release child back to pool.
 		}
 
 	case extNode:
@@ -396,7 +411,7 @@ func (t *StackTrie) hash(st *stNode, path []byte) {
 		n.encode(t.h.encbuf)
 		blob = t.h.encodedBytes()
 
-		stPool.Put(st.children[0].reset()) // Release child back to pool.
+		stPool.Put(st.children[0].reset(t.hashPool)) // Release child back to pool.
 		st.children[0] = nil
 
 	case leafNode:
@@ -424,14 +439,14 @@ func (t *StackTrie) hash(st *stNode, path []byte) {
 
 	// Skip committing the non-root node if the size is smaller than 32 bytes
 	// as tiny nodes are always embedded in their parent except root node.
-	if len(blob) < 32 && len(path) > 0 {
-		st.val = bPool.getWithSize(len(blob))
+	if len(blob) < common.HashLength && len(path) > 0 {
+		st.val = t.hashPool.get()[:len(blob)]
 		copy(st.val, blob)
 		return
 	}
 	// Write the hash to the 'val'. We allocate a new val here to not mutate
 	// input values.
-	st.val = bPool.getWithSize(32)
+	st.val = t.hashPool.get()[:common.HashLength]
 	t.h.hashDataTo(st.val, blob)
 
 	// Invoke the callback it's provided. Notably, the path and blob slices are

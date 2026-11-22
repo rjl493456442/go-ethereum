@@ -28,9 +28,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
+	pebblev2 "github.com/cockroachdb/pebble/v2"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -411,9 +413,13 @@ func benchGenerateTrie(ctx *cli.Context) error {
 		writer = "batch"
 	}
 	log.Info("running GenerateTrie", "src", srcDir, "dst", outDir, "scheme", scheme, "writer", writer, "root", root)
+	stopReporting := monitorTrieCompactions(disk)
 	start := time.Now()
 	stats, err := triedb.GenerateTrieTo(src, dst, scheme, root, cancel.Done(), batch)
 	elapsed := time.Since(start)
+	outputMetrics := disk.Metrics()
+	stalls, stallTime := disk.WriteStallStats()
+	stopReporting()
 	status := "root matched"
 	if err != nil {
 		status = fmt.Sprintf("failed (%s)", err)
@@ -427,10 +433,90 @@ func benchGenerateTrie(ctx *cli.Context) error {
 	fmt.Printf("status:    %s\n", status)
 	fmt.Printf("accounts:  %d\n", stats.Scanned)
 	fmt.Printf("wall time: %s\n", elapsed)
-	if stats, err := disk.Stat(); err == nil {
-		fmt.Printf("\nOutput Pebble after generation\n%s\n", stats)
+	if tm := stats.Timings; tm != nil {
+		total := tm.FlatIteration + tm.TrieBuild + tm.NodeWrite
+		fmt.Printf("\nCumulative worker time: %s\n", total)
+		printPhase := func(name string, d time.Duration) {
+			var percent float64
+			if total > 0 {
+				percent = 100 * float64(d) / float64(total)
+			}
+			fmt.Printf("  %-25s %s (%.1f%%)\n", name, d, percent)
+		}
+		printPhase("flat state iteration", tm.FlatIteration)
+		printPhase("trie build + bookkeeping", tm.TrieBuild)
+		printPhase("trie node write", tm.NodeWrite)
+		fmt.Printf("    of which Batch.Write: %s\n", tm.NodeCommit)
+		fmt.Printf("Serial root assembly + sync: %s\n", tm.Finalize)
 	}
+	reportTrieCompactions(outputMetrics, stalls, stallTime, true)
 	return err
+}
+
+// monitorTrieCompactions samples the fresh output DB while the benchmark runs.
+// Its stop function joins the reporter before the caller closes the database.
+func monitorTrieCompactions(disk *pebble.Database) func() {
+	done, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				stalls, stallTime := disk.WriteStallStats()
+				reportTrieCompactions(disk.Metrics(), stalls, stallTime, false)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
+func trieCompactionRewriteRatio(compacted, initial uint64) string {
+	if initial == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.4f%%", 100*float64(compacted)/float64(initial))
+}
+
+func reportTrieCompactions(m *pebblev2.Metrics, stalls int64, stallTime time.Duration, final bool) {
+	total := m.Total()
+	// Pebble's Total().TableBytesFlushed also counts WAL and external SST
+	// writes. Only L0 receives SSTs from actual memtable flushes.
+	flushed := m.Levels[0].TableBytesFlushed
+	ratio := trieCompactionRewriteRatio(total.TableBytesCompacted, total.TableBytesIngested+flushed)
+	if !final {
+		log.Info("Output Pebble compaction", "ingested", common.StorageSize(total.TableBytesIngested), "flushed", common.StorageSize(flushed),
+			"compactions", m.Compact.Count, "sst-read", common.StorageSize(total.TableBytesRead), "sst-rewritten", common.StorageSize(total.TableBytesCompacted),
+			"rewrite-ratio", ratio, "active", m.Compact.NumInProgress, "debt", common.StorageSize(m.Compact.EstimatedDebt),
+			"write-stalls", stalls, "completed-stall-time", common.PrettyDuration(stallTime))
+		return
+	}
+	fmt.Println("\nOutput Pebble compaction at generation end")
+	fmt.Printf("  initial SSTs:          %d B ingested, %d B flushed\n", total.TableBytesIngested, flushed)
+	fmt.Printf("  SST compaction read:   %d B (input table bytes)\n", total.TableBytesRead)
+	fmt.Printf("  SST compaction write:  %d B\n", total.TableBytesCompacted)
+	fmt.Printf("  SST rewrite ratio:     %s (compacted / (ingested + flushed))\n", ratio)
+	fmt.Printf("  compactions:           %d (%d moves), cumulative time %s\n", m.Compact.Count, m.Compact.MoveCount, m.Compact.Duration)
+	fmt.Printf("  background work:       %d active compactions, %d active flushes, %d B estimated debt\n", m.Compact.NumInProgress, m.Flush.NumInProgress, m.Compact.EstimatedDebt)
+	fmt.Printf("  write stalls:          %d started, completed stall time %s\n", stalls, stallTime)
+	var levels []string
+	for i, level := range m.Levels {
+		if level.TablesIngested > 0 {
+			levels = append(levels, fmt.Sprintf("L%d %d SSTs (%d B)", i, level.TablesIngested, level.TableBytesIngested))
+		}
+	}
+	placement := "none"
+	if len(levels) > 0 {
+		placement = strings.Join(levels, ", ")
+	}
+	fmt.Printf("  initial ingest placement: %s\n", placement)
+	fmt.Printf("\nOutput Pebble after generation\n%s\n", m)
 }
 
 // checkDanglingStorage iterates the snap storage data, and verifies that all

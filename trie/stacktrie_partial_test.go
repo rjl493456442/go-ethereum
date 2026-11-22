@@ -18,6 +18,8 @@ package trie
 
 import (
 	"bytes"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -145,6 +147,68 @@ func collect(update func(onNode OnTrieNode)) map[string]nodeRec {
 		nodes[string(path)] = nodeRec{hash, common.CopyBytes(blob)}
 	})
 	return nodes
+}
+
+func TestPartitionStorageTrie(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		nibble  byte
+		reverse bool
+	}{{"ascending", 3, false}, {"descending", 9, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// The reference builds storage tries independently in ascending order.
+			// The partition shares buffers while its account trie is still live.
+			build := func(shared bool) (common.Hash, map[string]nodeRec) {
+				var root common.Hash
+				nodes := collect(func(onNode OnTrieNode) {
+					order := []byte{0, 1, 6, 15}
+					newAccountTrie := NewPartialStackTrie
+					newStorageTrie := NewStackTrie
+					if shared && tc.reverse {
+						slices.Reverse(order)
+						newAccountTrie = NewReversePartialStackTrie
+					}
+					p := newAccountTrie(tc.nibble, onNode)
+					if shared {
+						if p.inner.hashPool == newAccountTrie(tc.nibble, nil).inner.hashPool {
+							t.Fatal("partitions share a hash buffer pool")
+						}
+						newStorageTrie = p.NewStorageTrie
+					}
+					for _, account := range order {
+						st := newStorageTrie(func(path []byte, hash common.Hash, blob []byte) {
+							// Keep each account's storage nodes distinct from the nibble-prefixed account nodes.
+							onNode(append([]byte{16, account}, path...), hash, blob)
+						})
+						if shared && st.hashPool != p.inner.hashPool {
+							t.Fatal("storage trie uses a different hash buffer pool from its partition")
+						}
+						for _, slot := range order {
+							value := bytes.Repeat([]byte{account, slot}, 20)
+							if slot%2 == 0 {
+								value = value[:2] // exercise embedded as well as hashed children
+							}
+							if err := st.Update([]byte{slot}, value); err != nil {
+								t.Fatal(err)
+							}
+						}
+						h := st.Hash()
+						if err := p.Update([]byte{tc.nibble<<4 | account}, h[:]); err != nil {
+							t.Fatal(err)
+						}
+					}
+					root = p.Hash()
+				})
+				return root, nodes
+			}
+			wantRoot, wantNodes := build(false)
+			root, nodes := build(true)
+			if root != wantRoot || !reflect.DeepEqual(nodes, wantNodes) {
+				t.Fatalf("partition %x: got root %x and %d nodes, want %x and %d nodes", tc.nibble, root, len(nodes), wantRoot, len(wantNodes))
+			}
+		})
+	}
 }
 
 // nodeKind decodes a node blob into "branch", "extension" or "leaf".

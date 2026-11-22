@@ -50,6 +50,7 @@ type GenerateStats struct {
 	Scanned int64
 	Updated int64
 	Deleted int64
+	Timings *GenerateTimings // populated by GenerateTrieTo
 }
 
 // numPartitions is the number of slices the account hash space is divided
@@ -74,6 +75,7 @@ type genCounters struct {
 	storageTrieBytes atomic.Int64 // generated storage trie bytes
 
 	progress [numPartitions]atomic.Uint64 // distance scanned from each partition's starting bound
+	timers   *generationTimers            // separate-database benchmark only
 }
 
 // rangeIterators bundles the per-partition account and storage iterators.
@@ -93,10 +95,18 @@ type trieGenerator struct {
 	inPlace     bool
 }
 
-func (g *trieGenerator) openRangeIterators(start, end common.Hash) *rangeIterators {
+func (g *trieGenerator) openRangeIterators(start, end common.Hash, timer *partitionTimer) *rangeIterators {
 	r := &rangeIterators{
 		newIterator:    g.newIterator,
 		refreshOnFlush: g.inPlace,
+	}
+	if timer != nil {
+		r.newIterator = func(prefix, start []byte) ethdb.Iterator {
+			t := time.Now()
+			it := g.newIterator(prefix, start)
+			timer.flat += time.Since(t)
+			return &timedFlatIterator{Iterator: it, timer: timer}
+		}
 	}
 	accountStart, storageStart := start[:], start[:]
 
@@ -156,16 +166,19 @@ func (r *rangeIterators) reopen(old *internal.HoldableIterator, prefix []byte, s
 // account trie. Returns the partition's stripped subtree root blob, or
 // nil if the partition had no accounts at all.
 func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan struct{}, scheme string, partition byte, rangeStart, rangeEnd common.Hash, c *genCounters) ([]byte, error) {
-	iters := g.openRangeIterators(rangeStart, rangeEnd)
+	var timer *partitionTimer
+	if c.timers != nil {
+		timer = &partitionTimer{all: c.timers, start: time.Now()}
+		defer timer.publish()
+	}
+	iters := g.openRangeIterators(rangeStart, rangeEnd, timer)
 	defer iters.release()
 
-	batches := newPartitionBatches(g.dst, g.ingester)
+	batches := newPartitionBatches(g.dst, g.ingester, timer)
 	defer batches.close()
 
-	newStorageTrie := trie.NewStackTrie
 	newAccountTrie := trie.NewPartialStackTrie
 	if g.ingester != nil {
-		newStorageTrie = trie.NewReverseStackTrie
 		newAccountTrie = trie.NewReversePartialStackTrie
 	}
 	// Account-trie builder for this partition. It is fed account keys with
@@ -222,7 +235,7 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 
 		// Build the account's storage trie from the flat storage snapshot.
 		// StackTrie's callback adds completed nodes to the current write window.
-		storageTrie := newStorageTrie(func(path []byte, hash common.Hash, blob []byte) {
+		storageTrie := acctTrie.NewStorageTrie(func(path []byte, hash common.Hash, blob []byte) {
 			c.storageTrieNodes.Add(1)
 
 			if scheme == rawdb.PathScheme {
@@ -431,6 +444,7 @@ func GenerateTrieWithBatch(db ethdb.Database, scheme string, root common.Hash, c
 // account roots are recomputed in memory and dangling slots are skipped.
 // For path-based storage, a descending source iterator and an ingest-capable
 // destination enable SST ingestion. Set batch to force ordinary batches.
+// The returned timings break down the benchmark's cumulative worker time.
 func GenerateTrieTo(src ethdb.Iteratee, dst ethdb.Database, scheme string, root common.Hash, cancel <-chan struct{}, batch bool) (GenerateStats, error) {
 	g := trieGenerator{dst: dst, newIterator: src.NewIterator}
 	if reverse, ok := src.(ethdb.ReverseIteratee); ok && !batch && scheme == rawdb.PathScheme {
@@ -452,6 +466,9 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 		// the partition is empty.
 		partitionBlobs [numPartitions][]byte
 	)
+	if !g.inPlace {
+		c.timers = new(generationTimers)
+	}
 	go tickProgress(progressDone, start, &c, prog)
 	defer close(progressDone)
 
@@ -495,6 +512,7 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 	}
 	// Assemble the top-level root from the partition blobs and verify it
 	// matches the expected root.
+	finalizeStart := time.Now()
 	got, err := assembleRoot(g.dst, scheme, partitionBlobs)
 	if err != nil {
 		return GenerateStats{}, fmt.Errorf("assemble root: %w", err)
@@ -509,6 +527,13 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 			return GenerateStats{}, err
 		}
 	}
+	var timings *GenerateTimings
+	if c.timers != nil {
+		finalize := time.Since(finalizeStart)
+		total := c.timers.snapshot()
+		total.Finalize = finalize
+		timings = &total
+	}
 	log.Info("Generated state trie",
 		"ingest", g.ingester != nil,
 		"accounts", c.accounts.Load(), "slots", c.slots.Load(),
@@ -521,6 +546,7 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 		Scanned: c.accounts.Load(),
 		Updated: c.accountUpdated.Load(),
 		Deleted: c.storageDeleted.Load(),
+		Timings: timings,
 	}, nil
 }
 
@@ -624,6 +650,12 @@ func tickProgress(done <-chan struct{}, start time.Time, c *genCounters, prog *a
 				"account-updated", c.accountUpdated.Load(), "dangling-slots", c.storageDeleted.Load(),
 				"elapsed", common.PrettyDuration(elapsed),
 				"acct/s", uint64(float64(c.accounts.Load())/elapsed.Seconds()))
+			if c.timers != nil {
+				total := c.timers.snapshot()
+				log.Info("Cumulative trie worker time through completed batches", "flat-iteration", common.PrettyDuration(total.FlatIteration),
+					"trie-build", common.PrettyDuration(total.TrieBuild), "node-write", common.PrettyDuration(total.NodeWrite),
+					"of-which-commit", common.PrettyDuration(total.NodeCommit))
+			}
 		}
 	}
 }
