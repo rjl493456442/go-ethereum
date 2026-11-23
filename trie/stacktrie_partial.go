@@ -40,7 +40,7 @@ func NewPartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
 	return newPartialStackTrie([]byte{nibble}, false, onTrieNode)
 }
 
-// NewBytePartitionStackTrie builds the account subtree for one full leading
+// NewBytePartitionStackTrie builds the subtree for one full leading
 // byte. Reverse selects descending key and callback order.
 func NewBytePartitionStackTrie(partition byte, reverse bool, onTrieNode OnTrieNode) *PartialStackTrie {
 	return newPartialStackTrie([]byte{partition >> 4, partition & 0xf}, reverse, onTrieNode)

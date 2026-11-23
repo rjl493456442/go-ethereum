@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,6 +57,9 @@ type GenerateStats struct {
 // give the position used by the progress meter.
 const numPartitions = 256
 const partitionRangeSize = uint64(1) << 56
+
+// Run extra workers so generation can continue while others wait for I/O.
+const trieGenerationWorkers = 24
 
 // Each worker drains a contiguous range in descending order. An idle worker
 // takes the low half of the largest remaining range, leaving the donor's next
@@ -113,6 +115,7 @@ type genCounters struct {
 
 	progress [numPartitions]atomic.Uint64 // distance scanned from each partition's starting bound
 	timers   *generationTimers            // separate-database benchmark only
+	storage  *storageQueue
 }
 
 // rangeIterators bundles the per-partition account and storage iterators.
@@ -132,7 +135,7 @@ type trieGenerator struct {
 	inPlace     bool
 }
 
-func (g *trieGenerator) openRangeIterators(partition byte, timer *partitionTimer) *rangeIterators {
+func (g *trieGenerator) rangeIterators(timer *partitionTimer) *rangeIterators {
 	r := &rangeIterators{
 		newIterator:    g.newIterator,
 		refreshOnFlush: g.inPlace,
@@ -145,6 +148,11 @@ func (g *trieGenerator) openRangeIterators(partition byte, timer *partitionTimer
 			return &timedFlatIterator{Iterator: it, timer: timer}
 		}
 	}
+	return r
+}
+
+func (g *trieGenerator) openRangeIterators(partition byte, timer *partitionTimer) *rangeIterators {
+	r := g.rangeIterators(timer)
 	start := common.Hash{partition}
 	accountStart, storageStart := start[:], start[:]
 
@@ -160,8 +168,12 @@ func (g *trieGenerator) openRangeIterators(partition byte, timer *partitionTimer
 }
 
 func (r *rangeIterators) release() {
-	r.acct.Release()
-	r.stor.Release()
+	if r.acct != nil {
+		r.acct.Release()
+	}
+	if r.stor != nil {
+		r.stor.Release()
+	}
 }
 
 // During in-place generation, refresh releases the iterators' read state after
@@ -192,7 +204,7 @@ func (r *rangeIterators) reopen(old *internal.HoldableIterator, prefix []byte, s
 			return old, err
 		}
 		old.Release()
-		return internal.NewHoldableIterator(memorydb.New().NewIterator(nil, nil)), nil
+		return emptyRangeIterator(), nil
 	}
 	// The backend can invalidate Key on Release.
 	next := common.CopyBytes(old.Key()[len(prefix):])
@@ -200,14 +212,19 @@ func (r *rangeIterators) reopen(old *internal.HoldableIterator, prefix []byte, s
 	return r.open(prefix, next, suffixLen), nil
 }
 
+func emptyRangeIterator() *internal.HoldableIterator {
+	return internal.NewHoldableIterator(memorydb.New().NewIterator(nil, nil))
+}
+
 // generatePartition walks accounts whose first byte equals partition,
 // reconciling each account's Root with its flat storage and building
 // both per-account storage subtries and the partition's slice of the
 // account trie. Returns the partition's stripped subtree root blob, or
 // nil if the partition had no accounts at all.
-func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan struct{}, scheme string, partition byte, c *genCounters, batches *partitionBatches, timer *partitionTimer) ([]byte, error) {
+func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan struct{}, scheme string, partition byte, c *genCounters, w *generationWorker) ([]byte, error) {
 	start := time.Now()
-	iters := g.openRangeIterators(partition, timer)
+	batches := w.batches
+	iters := g.openRangeIterators(partition, w.timer)
 	defer iters.release()
 
 	// Keep the subtree root until assembly determines whether to reference it
@@ -254,15 +271,7 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		// Build the account's storage trie from the flat storage snapshot.
 		// StackTrie's callback adds completed nodes to the current write window.
 		storageTrie := acctTrie.NewStorageTrie(func(path []byte, hash common.Hash, blob []byte) {
-			c.storageTrieNodes.Add(1)
-
-			if scheme == rawdb.PathScheme {
-				c.storageTrieBytes.Add(int64(len(path) + common.HashLength + len(blob)))
-				rawdb.WriteStorageTrieNode(batches.storage, accountHash, path, blob)
-			} else {
-				c.storageTrieBytes.Add(int64(common.HashLength + len(blob)))
-				rawdb.WriteTrieNode(batches.storage, accountHash, path, hash, blob, scheme)
-			}
+			c.writeStorageNode(batches.storage, scheme, accountHash, path, hash, blob)
 		})
 
 		// Compute the storage root by consuming matching slots from the
@@ -270,6 +279,9 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		// (slot belongs to a later account) or exhaustion.
 		lastDanglingAccount := make([]byte, common.HashLength)
 		slotStart := slots
+		var computed common.Hash
+		var split bool
+		probing := c.storage != nil
 		for iters.stor.Next() {
 			// Re-check cancel.
 			select {
@@ -318,7 +330,33 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 
 			// The slot belongs to this account so we add it to the StackTrie.
 			slotHash := sk[len(rawdb.SnapshotStoragePrefix)+common.HashLength:]
-			if err := storageTrie.Update(slotHash, iters.stor.Value()); err != nil {
+			value := iters.stor.Value()
+			if probing {
+				if len(w.probe.slots) == storageProbeSlots {
+					if jobs := storageJobCount(slotHash, g.ingester != nil); jobs > 1 {
+						w.probe.reset()
+						var count int64
+						computed, count, err = g.splitStorage(ctx, cancel, scheme, c, w, iters, accountHash, jobs)
+						if err != nil {
+							return nil, fmt.Errorf("split storage account %x: %w", accountHash, err)
+						}
+						slots += count
+						split = true
+						break
+					}
+				} else if w.probe.add(slotHash, value) {
+					continue
+				}
+				// Finish moderate accounts and byte-capped probes with the
+				// streaming builder so their windows can span multiple owners.
+				count, err := w.probe.finish(storageTrie, c)
+				if err != nil {
+					return nil, fmt.Errorf("replay storage probe for %x: %w", accountHash, err)
+				}
+				slots += count
+				probing = false
+			}
+			if err := storageTrie.Update(slotHash, value); err != nil {
 				return nil, fmt.Errorf("storage stack trie update for %x: %w", accountHash, err)
 			}
 			c.slots.Add(1)
@@ -330,7 +368,14 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		if err := iters.stor.Error(); err != nil {
 			return nil, fmt.Errorf("storage iterator: %w", err)
 		}
-		computed := storageTrie.Hash()
+		if !split {
+			count, err := w.probe.finish(storageTrie, c)
+			if err != nil {
+				return nil, fmt.Errorf("replay storage probe for %x: %w", accountHash, err)
+			}
+			slots += count
+			computed = storageTrie.Hash()
+		}
 		maxAccountSlots = max(maxAccountSlots, slots-slotStart)
 
 		// Reconcile the root before encoding the account into the trie.
@@ -471,12 +516,14 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 		}
 	}
 	var (
-		workers = min(runtime.GOMAXPROCS(0), numPartitions)
-		queue   = newPartitionScheduler(workers)
+		queue   = newPartitionScheduler(trieGenerationWorkers)
 		eg, ctx = errgroup.WithContext(context.Background())
+		left    atomic.Int32
 	)
-	log.Info("Scheduling trie generation", "partitions", numPartitions, "workers", workers)
-	for worker := range workers {
+	c.storage = newStorageQueue()
+	left.Store(numPartitions)
+	log.Info("Scheduling trie generation", "partitions", numPartitions, "workers", trieGenerationWorkers)
+	for worker := range trieGenerationWorkers {
 		eg.Go(func() error {
 			var timer *partitionTimer
 			if c.timers != nil {
@@ -485,6 +532,7 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 			}
 			batches := newPartitionBatches(g.dst, g.ingester, timer)
 			defer batches.close()
+			w := &generationWorker{batches: batches, timer: timer}
 			previous := -1
 			for {
 				select {
@@ -493,6 +541,15 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 				case <-ctx.Done():
 					return ctx.Err()
 				default:
+				}
+				if job, _ := c.storage.take(); job.tree != nil {
+					if _, err := batches.flush(true); err != nil {
+						return fmt.Errorf("flush before storage job: %w", err)
+					}
+					if err := g.generateStorageJob(ctx, cancel, scheme, &c, w, job); err != nil {
+						return err
+					}
+					continue
 				}
 				i, ok := queue.next(worker)
 				// A window may span adjacent descending prefixes, but never a
@@ -503,14 +560,17 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 					}
 				}
 				if !ok {
-					return nil
+					return g.helpStorage(ctx, cancel, c.storage.allDone, scheme, &c, w)
 				}
-				blob, err := g.generatePartition(ctx, cancel, scheme, byte(i), &c, batches, timer)
+				blob, err := g.generatePartition(ctx, cancel, scheme, byte(i), &c, w)
 				if err != nil {
 					return err
 				}
 				c.progress[i].Store(partitionRangeSize)
 				partitionBlobs[i] = blob
+				if left.Add(-1) == 0 {
+					close(c.storage.allDone)
+				}
 				previous = i
 			}
 		})
@@ -579,15 +639,25 @@ func (c *genCounters) writeAccountNode(dst ethdb.KeyValueWriter, scheme string, 
 func assembleRoot(db ethdb.Database, scheme string, partitions *[numPartitions][]byte, c *genCounters) (common.Hash, error) {
 	batch := db.NewBatch()
 	defer batch.Close()
+	hash, err := assemblePartitionRoots(partitions, func(path []byte, hash common.Hash, blob []byte) {
+		c.writeAccountNode(batch, scheme, path, hash, blob)
+	})
+	if err != nil || batch.ValueSize() == 0 {
+		return hash, err
+	}
+	return hash, batch.Write()
+}
+
+func assemblePartitionRoots(partitions *[numPartitions][]byte, write trie.OnTrieNode) (common.Hash, error) {
 	var groups [16][]byte
 	for i := range groups {
-		blob, err := joinAccountSubtrees(batch, scheme, []byte{byte(i)}, partitions[i*16:(i+1)*16], c)
+		blob, err := joinSubtrees([]byte{byte(i)}, partitions[i*16:(i+1)*16], write)
 		if err != nil {
 			return common.Hash{}, err
 		}
 		groups[i] = blob
 	}
-	root, err := joinAccountSubtrees(batch, scheme, nil, groups[:], c)
+	root, err := joinSubtrees(nil, groups[:], write)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -595,14 +665,13 @@ func assembleRoot(db ethdb.Database, scheme string, partitions *[numPartitions][
 		return types.EmptyRootHash, nil
 	}
 	hash := crypto.Keccak256Hash(root)
-	c.writeAccountNode(batch, scheme, nil, hash, root)
-	return hash, batch.Write()
+	write(nil, hash, root)
+	return hash, nil
 }
 
-// joinAccountSubtrees returns the root at path, writing only the children
-// referenced by it. Account RLPs contain a storage root and code hash, so
-// every non-empty account subtree is large enough to be referenced by hash.
-func joinAccountSubtrees(dst ethdb.KeyValueWriter, scheme string, path []byte, blobs [][]byte, c *genCounters) ([]byte, error) {
+// joinSubtrees returns the root at path and writes any children referenced
+// by hash. Short children are embedded or folded into a compressed path.
+func joinSubtrees(path []byte, blobs [][]byte, write trie.OnTrieNode) ([]byte, error) {
 	var count, last int
 	for i, blob := range blobs {
 		if blob != nil {
@@ -619,16 +688,20 @@ func joinAccountSubtrees(dst ethdb.KeyValueWriter, scheme string, path []byte, b
 		if err != nil {
 			return nil, err
 		}
-		if !folded {
-			c.writeAccountNode(dst, scheme, append(path, byte(last)), crypto.Keccak256Hash(child), child)
+		if !folded && len(child) >= common.HashLength {
+			write(append(path, byte(last)), crypto.Keccak256Hash(child), child)
 		}
 		return root, nil
 	}
 	var children [17][]byte
 	for i, blob := range blobs {
 		if blob != nil {
+			if len(blob) < common.HashLength {
+				children[i] = blob
+				continue
+			}
 			hash := crypto.Keccak256Hash(blob)
-			c.writeAccountNode(dst, scheme, append(path, byte(i)), hash, blob)
+			write(append(path, byte(i)), hash, blob)
 			children[i] = hash[:]
 		}
 	}

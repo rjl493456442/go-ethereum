@@ -156,6 +156,103 @@ func TestGenerateTrieTo(t *testing.T) {
 	}
 }
 
+func TestStorageJobCount(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		slot common.Hash
+		want int
+	}{
+		{"just below split", common.Hash{0x00, 0x40}, 1},
+		{"at split", common.Hash{0x00, 0x3f, 0xff, 0xff}, 4},
+		{"eight jobs", common.Hash{0x00, 0x1f, 0xff, 0xff}, 8},
+		{"capped", common.Hash{}, 64},
+	} {
+		if got := storageJobCount(tc.slot[:], false); got != tc.want {
+			t.Errorf("%s (ascending): got %d jobs, want %d", tc.name, got, tc.want)
+		}
+		reverse := tc.slot
+		for i := range reverse {
+			reverse[i] = ^reverse[i]
+		}
+		if got := storageJobCount(reverse[:], true); got != tc.want {
+			t.Errorf("%s (descending): got %d jobs, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestGenerateTrieSplitStorage(t *testing.T) {
+	var accounts []testAccount
+	for _, owner := range []common.Hash{{}, {0x41}, {0x41, 1}, {0x41, 2}, common.MaxHash} {
+		a := testAccount{hash: owner, account: *types.NewEmptyStateAccount()}
+		// Dense edges trigger a split in both scan directions without needing
+		// to materialize hundreds of thousands of slots in the test.
+		for i := range storageProbeSlots {
+			low, high := common.Hash{}, common.MaxHash
+			low[30], low[31] = byte(i>>8), byte(i)
+			high[30], high[31] = byte(i>>8), byte(i)
+			if owner == (common.Hash{0x41, 1}) {
+				a.storage = append(a.storage, testSlot{low, []byte{1}})
+				continue
+			}
+			a.storage = append(a.storage, testSlot{low, []byte{1}}, testSlot{high, []byte{1}})
+		}
+		if owner != (common.Hash{0x41, 1}) {
+			// The 4097th slot in either direction is still at the dense edge.
+			low, high := common.Hash{29: 1}, common.MaxHash
+			high[29]--
+			a.storage = append(a.storage, testSlot{low, []byte{1}}, testSlot{high, []byte{1}}, testSlot{common.Hash{0x13, 0x97}, []byte{1}})
+		}
+		a.account.Root = computeStorageRootFromSlots(a.storage)
+		accounts = append(accounts, a)
+	}
+	root := buildExpectedRoot(t, accounts)
+	orphan := common.Hash{0x41, 1, 1}
+	for _, mode := range []string{"ingest", "batch", "in-place"} {
+		t.Run(mode, func(t *testing.T) {
+			kv, err := pebble.New(t.TempDir(), 16, 16, "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			src := rawdb.NewDatabase(kv)
+			defer src.Close()
+			for _, a := range accounts {
+				flat := a.account
+				flat.Root = types.EmptyRootHash
+				rawdb.WriteAccountSnapshot(src, a.hash, types.SlimAccountRLP(flat))
+				for _, slot := range a.storage {
+					rawdb.WriteStorageSnapshot(src, a.hash, slot.hash, slot.value)
+				}
+			}
+			rawdb.WriteStorageSnapshot(src, orphan, common.Hash{}, []byte{1})
+			dst := src
+			var stats GenerateStats
+			if mode == "in-place" {
+				stats, err = GenerateTrie(src, rawdb.PathScheme, root, nil)
+				if err == nil && (stats.Updated != int64(len(accounts)) || stats.Deleted != 1) {
+					t.Fatalf("unexpected repair counters: %+v", stats)
+				}
+			} else {
+				kv, err := pebble.New(t.TempDir(), 16, 16, "", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dst = rawdb.NewDatabase(kv)
+				defer dst.Close()
+				stats, err = GenerateTrieTo(src, dst, rawdb.PathScheme, root, nil, mode == "batch")
+			}
+			if err != nil || stats.Scanned != int64(len(accounts)) {
+				t.Fatalf("scanned %d accounts, want %d, err %v", stats.Scanned, len(accounts), err)
+			}
+			assertCanonicalNodes(t, dst, accounts)
+			for _, a := range accounts {
+				if hash := crypto.Keccak256Hash(rawdb.ReadStorageTrieNode(dst, a.hash, nil)); hash != a.account.Root {
+					t.Fatalf("account %x has persisted storage root %x, want %x", a.hash, hash, a.account.Root)
+				}
+			}
+		})
+	}
+}
+
 type syncFailingStore struct {
 	*pebble.Database
 	syncCalls int
@@ -842,7 +939,7 @@ func TestGenerateTrieBatchFlush(t *testing.T) {
 			gen := trieGenerator{dst: peakBatchDB{Database: db, peak: &peak}, newIterator: db.NewIterator, inPlace: true}
 			batches := newPartitionBatches(gen.dst, nil, nil)
 			defer batches.close()
-			if _, err := gen.generatePartition(context.Background(), nil, rawdb.HashScheme, 0, &c, batches, nil); err != nil {
+			if _, err := gen.generatePartition(context.Background(), nil, rawdb.HashScheme, 0, &c, &generationWorker{batches: batches}); err != nil {
 				t.Fatalf("generatePartition: %v", err)
 			}
 			if _, err := batches.flush(true); err != nil {
