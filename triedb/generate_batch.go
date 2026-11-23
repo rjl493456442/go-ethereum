@@ -23,7 +23,7 @@ const (
 )
 
 // partitionBatches keeps separate SSTs for the A and O keyspaces. Each
-// stream receives strictly decreasing keys across consecutive windows. Flat
+// stream receives strictly decreasing keys within a contiguous run of partitions. Flat
 // repairs use an ordinary batch, which also handles all writes on backends
 // without native ingestion.
 type partitionBatches struct {
@@ -56,12 +56,12 @@ func (b *partitionBatches) close() {
 	b.flat.Close()
 }
 
-// flush installs full windows immediately. On the last call it also installs
-// the short tails before the generator returns its partition root.
-func (b *partitionBatches) flush(final bool) (bool, error) {
+// flush installs full windows. Force it to install short tails as well when
+// the worker finishes a contiguous range.
+func (b *partitionBatches) flush(force bool) (bool, error) {
 	var flushed bool
 	for _, window := range b.windows {
-		if size := window.ValueSize(); size == 0 || (!final && size < trieIngestWindow) {
+		if size := window.ValueSize(); size == 0 || (!force && size < trieIngestWindow) {
 			continue
 		}
 		if err := window.Write(); err != nil {
@@ -70,7 +70,7 @@ func (b *partitionBatches) flush(final bool) (bool, error) {
 		window.Reset()
 		flushed = true
 	}
-	if size := b.flat.ValueSize(); size > ethdb.IdealBatchSize || (final && size > 0) {
+	if size := b.flat.ValueSize(); size > ethdb.IdealBatchSize || (force && size > 0) {
 		if err := b.flat.Write(); err != nil {
 			return false, err
 		}

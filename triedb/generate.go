@@ -21,7 +21,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math/big"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,14 +54,50 @@ type GenerateStats struct {
 	Timings *GenerateTimings // populated by GenerateTrieTo
 }
 
-// numPartitions is the number of slices the account hash space is divided
-// into by GenerateTrie.
-const numPartitions = 16
+// Each partition covers one leading byte. Within it, the next seven bytes
+// give the position used by the progress meter.
+const numPartitions = 256
+const partitionRangeSize = uint64(1) << 56
 
-// Each partition covers 1/16 of the account hash space. We track progress
-// by interpreting the top 8 bytes of an account hash as a uint64, so each
-// partition spans 2^64 / 16 = 2^60.
-const partitionRangeSize = uint64(1) << 60
+// Each worker drains a contiguous range in descending order. An idle worker
+// takes the low half of the largest remaining range, leaving the donor's next
+// partition adjacent to the one it is processing.
+type partitionScheduler struct {
+	mu     sync.Mutex
+	ranges []struct{ lo, hi int } // unclaimed partitions in [lo, hi)
+}
+
+func newPartitionScheduler(workers int) *partitionScheduler {
+	s := &partitionScheduler{ranges: make([]struct{ lo, hi int }, workers)}
+	for i := range s.ranges {
+		s.ranges[i].lo = i * numPartitions / workers
+		s.ranges[i].hi = (i + 1) * numPartitions / workers
+	}
+	return s
+}
+
+func (s *partitionScheduler) next(worker int) (int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := &s.ranges[worker]
+	if r.lo == r.hi {
+		donor := r
+		for i := range s.ranges {
+			other := &s.ranges[i]
+			if other.hi-other.lo > donor.hi-donor.lo {
+				donor = other
+			}
+		}
+		if donor == r {
+			return 0, false
+		}
+		r.lo = donor.lo
+		r.hi = donor.lo + (donor.hi-donor.lo+1)/2
+		donor.lo = r.hi
+	}
+	r.hi--
+	return r.hi, true
+}
 
 // genCounters bundles the progress counters threaded through a GenerateTrie run.
 type genCounters struct {
@@ -95,7 +132,7 @@ type trieGenerator struct {
 	inPlace     bool
 }
 
-func (g *trieGenerator) openRangeIterators(start, end common.Hash, timer *partitionTimer) *rangeIterators {
+func (g *trieGenerator) openRangeIterators(partition byte, timer *partitionTimer) *rangeIterators {
 	r := &rangeIterators{
 		newIterator:    g.newIterator,
 		refreshOnFlush: g.inPlace,
@@ -108,9 +145,12 @@ func (g *trieGenerator) openRangeIterators(start, end common.Hash, timer *partit
 			return &timedFlatIterator{Iterator: it, timer: timer}
 		}
 	}
+	start := common.Hash{partition}
 	accountStart, storageStart := start[:], start[:]
 
 	if g.ingester != nil {
+		end := common.MaxHash
+		end[0] = partition
 		accountStart = end[:]
 		storageStart = append(end[:], common.MaxHash[:]...)
 	}
@@ -160,52 +200,29 @@ func (r *rangeIterators) reopen(old *internal.HoldableIterator, prefix []byte, s
 	return r.open(prefix, next, suffixLen), nil
 }
 
-// generatePartition walks accounts whose first nibble equals `partition`,
+// generatePartition walks accounts whose first byte equals partition,
 // reconciling each account's Root with its flat storage and building
 // both per-account storage subtries and the partition's slice of the
 // account trie. Returns the partition's stripped subtree root blob, or
 // nil if the partition had no accounts at all.
-func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan struct{}, scheme string, partition byte, rangeStart, rangeEnd common.Hash, c *genCounters) ([]byte, error) {
-	var timer *partitionTimer
-	if c.timers != nil {
-		timer = &partitionTimer{all: c.timers, start: time.Now()}
-		defer timer.publish()
-	}
-	iters := g.openRangeIterators(rangeStart, rangeEnd, timer)
+func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan struct{}, scheme string, partition byte, c *genCounters, batches *partitionBatches, timer *partitionTimer) ([]byte, error) {
+	start := time.Now()
+	iters := g.openRangeIterators(partition, timer)
 	defer iters.release()
 
-	batches := newPartitionBatches(g.dst, g.ingester, timer)
-	defer batches.close()
-
-	newAccountTrie := trie.NewPartialStackTrie
-	if g.ingester != nil {
-		newAccountTrie = trie.NewReversePartialStackTrie
-	}
-	// Account-trie builder for this partition. It is fed account keys with
-	// their leading nibble stripped and emits nodes at their absolute path
-	// (prefixed with the partition nibble), so they line up with the full
-	// trie without any post-hoc surgery.
-	//
-	// The subtree root is the only node emitted at path [partition]; we both
-	// persist it (so the top-level branch can reference it) and capture its
-	// bytes for assembleRoot, which needs them to either reference it or,
-	// in the single-partition case, fold the leading nibble back in.
+	// Keep the subtree root until assembly determines whether to reference it
+	// or fold it into a short node. All deeper nodes have canonical paths.
 	var root []byte
-	acctTrie := newAccountTrie(partition, func(path []byte, hash common.Hash, blob []byte) {
-		if len(path) == 1 {
+	acctTrie := trie.NewBytePartitionStackTrie(partition, g.ingester != nil, func(path []byte, hash common.Hash, blob []byte) {
+		if len(path) == 2 {
 			root = common.CopyBytes(blob)
+			return
 		}
-		c.accountTrieNodes.Add(1)
-
-		if scheme == rawdb.PathScheme {
-			c.accountTrieBytes.Add(int64(len(path) + len(blob)))
-		} else {
-			c.accountTrieBytes.Add(int64(common.HashLength + len(blob)))
-		}
-		rawdb.WriteTrieNode(batches.accounts, common.Hash{}, path, hash, blob, scheme)
+		c.writeAccountNode(batches.accounts, scheme, path, hash, blob)
 	})
 
 	// Iterate through all the accounts.
+	var accounts, slots, maxAccountSlots int64
 	for iters.acct.Next() {
 		select {
 		case <-cancel:
@@ -217,9 +234,10 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		key := iters.acct.Key()
 		var accountHash common.Hash
 		copy(accountHash[:], key[len(rawdb.SnapshotAccountPrefix):])
-		if accountHash[0]>>4 != partition {
+		if accountHash[0] != partition {
 			break
 		}
+		accounts++
 		c.accounts.Add(1)
 		position := binary.BigEndian.Uint64(accountHash[:8]) % partitionRangeSize
 		if g.ingester != nil {
@@ -251,6 +269,7 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		// shared storage iterator. The inner loop terminates on Hold()
 		// (slot belongs to a later account) or exhaustion.
 		lastDanglingAccount := make([]byte, common.HashLength)
+		slotStart := slots
 		for iters.stor.Next() {
 			// Re-check cancel.
 			select {
@@ -303,6 +322,7 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 				return nil, fmt.Errorf("storage stack trie update for %x: %w", accountHash, err)
 			}
 			c.slots.Add(1)
+			slots++
 			if err := iters.refresh(batches.flush(false)); err != nil {
 				return nil, fmt.Errorf("flush batch (storage): %w", err)
 			}
@@ -311,6 +331,7 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 			return nil, fmt.Errorf("storage iterator: %w", err)
 		}
 		computed := storageTrie.Hash()
+		maxAccountSlots = max(maxAccountSlots, slots-slotStart)
 
 		// Reconcile the root before encoding the account into the trie.
 		// In-place generation also repairs the account's flat-state entry.
@@ -351,7 +372,7 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		}
 		sk := iters.stor.Key()
 		acct := sk[len(rawdb.SnapshotStoragePrefix) : len(rawdb.SnapshotStoragePrefix)+common.HashLength]
-		if acct[0]>>4 != partition {
+		if acct[0] != partition {
 			break
 		}
 		if !bytes.Equal(lastDanglingTail, acct) {
@@ -369,49 +390,18 @@ func (g *trieGenerator) generatePartition(ctx context.Context, cancel <-chan str
 		return nil, fmt.Errorf("storage iterator (dangling): %w", err)
 	}
 
-	// Finalize the partition's account trie. For a non-empty partition this
-	// emits the subtree root at path [partition], populating rootBlob. An empty
-	// partition never emits any node and leaves rootBlob at nil.
+	// An empty partition never emits a root.
 	acctTrie.Hash()
 
-	if _, err := batches.flush(true); err != nil {
-		return nil, fmt.Errorf("final partition batch write: %w", err)
-	}
+	log.Info("Partition done", "partition", partition, "accounts", accounts, "slots", slots,
+		"largest-account-slots", maxAccountSlots, "elapsed", common.PrettyDuration(time.Since(start)))
 	return root, nil
 }
 
-// hashRanges returns hash pairs [start, end] that evenly partition the
-// 256-bit hash space. The last partition absorbs the remainder so rounding
-// doesn't leave hashes uncovered.
-func hashRanges(total int) [][2]common.Hash {
-	step := new(big.Int).Sub(
-		new(big.Int).Div(
-			new(big.Int).Exp(common.Big2, common.Big256, nil),
-			big.NewInt(int64(total)),
-		),
-		common.Big1,
-	)
-	ranges := make([][2]common.Hash, total)
-	var next common.Hash
-	for i := range total {
-		last := common.BigToHash(new(big.Int).Add(next.Big(), step))
-		if i == total-1 {
-			last = common.MaxHash
-		}
-		ranges[i] = [2]common.Hash{next, last}
-		next = common.BigToHash(new(big.Int).Add(last.Big(), common.Big1))
-	}
-	return ranges
-}
-
 // GenerateTrie builds all tries (storage + account) from flat snapshot
-// data in the database. The account hash space is partitioned into 16
-// slices aligned with the first-nibble branching of the MPT root. Each
-// partition is processed by its own goroutine, which walks its slice,
-// reconciles stale account.Root fields with flat storage, builds the
-// per-account storage tries and the partition's slice of the account
-// trie. Once every partition has produced its subtree root, the top-level
-// branch is assembled and its hash verified against the expected root.
+// data in the database. Workers take byte-prefix partitions, reconcile
+// account.Root with flat storage and build storage and account subtrees.
+// The top two levels are assembled after all partitions finish.
 //
 // Nodes become visible as their windows are written. An interrupted run
 // leaves no resume state and the next run rebuilds every partition.
@@ -480,26 +470,49 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 			return GenerateStats{}, fmt.Errorf("sync before trie ingestion: %w", err)
 		}
 	}
-	// Run every partition concurrently, each producing the subtree root
-	// blob that assembleRoot needs.
 	var (
-		ranges  = hashRanges(numPartitions)
+		workers = min(runtime.GOMAXPROCS(0), numPartitions)
+		queue   = newPartitionScheduler(workers)
 		eg, ctx = errgroup.WithContext(context.Background())
 	)
-	for i, r := range ranges {
-		partition := byte(i)
-		rangeStart, rangeEnd := r[0], r[1]
+	log.Info("Scheduling trie generation", "partitions", numPartitions, "workers", workers)
+	for worker := range workers {
 		eg.Go(func() error {
-			start := time.Now()
-			blob, err := g.generatePartition(ctx, cancel, scheme, partition, rangeStart, rangeEnd, &c)
-			if err != nil {
-				return err
+			var timer *partitionTimer
+			if c.timers != nil {
+				timer = &partitionTimer{all: c.timers, start: time.Now()}
+				defer timer.publish()
 			}
-			log.Info("Partition done", "partition", partition, "elapsed", common.PrettyDuration(time.Since(start)))
-
-			c.progress[partition].Store(partitionRangeSize)
-			partitionBlobs[partition] = blob
-			return nil
+			batches := newPartitionBatches(g.dst, g.ingester, timer)
+			defer batches.close()
+			previous := -1
+			for {
+				select {
+				case <-cancel:
+					return ErrCancelled
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+				i, ok := queue.next(worker)
+				// A window may span adjacent descending prefixes, but never a
+				// gap that could contain another worker's SSTs.
+				if !ok || (previous >= 0 && i+1 != previous) {
+					if _, err := batches.flush(true); err != nil {
+						return fmt.Errorf("flush partition range: %w", err)
+					}
+				}
+				if !ok {
+					return nil
+				}
+				blob, err := g.generatePartition(ctx, cancel, scheme, byte(i), &c, batches, timer)
+				if err != nil {
+					return err
+				}
+				c.progress[i].Store(partitionRangeSize)
+				partitionBlobs[i] = blob
+				previous = i
+			}
 		})
 	}
 
@@ -513,7 +526,7 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 	// Assemble the top-level root from the partition blobs and verify it
 	// matches the expected root.
 	finalizeStart := time.Now()
-	got, err := assembleRoot(g.dst, scheme, partitionBlobs)
+	got, err := assembleRoot(g.dst, scheme, &partitionBlobs, &c)
 	if err != nil {
 		return GenerateStats{}, fmt.Errorf("assemble root: %w", err)
 	}
@@ -521,8 +534,7 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 		return GenerateStats{}, fmt.Errorf("state root mismatch: got %x, want %x", got, root)
 	}
 	if !g.inPlace || g.ingester != nil {
-		// Include ordinary writes such as the top-level root and any
-		// single-partition root cleanup in the durability guarantee.
+		// Include the ordinary writes from assembling the top two levels.
 		if err := g.dst.SyncKeyValue(); err != nil {
 			return GenerateStats{}, err
 		}
@@ -550,76 +562,78 @@ func (g *trieGenerator) generate(scheme string, root common.Hash, cancel <-chan 
 	}, nil
 }
 
-// assembleRoot computes the canonical state root from the 16 partition subtree
-// root blobs and persists the top-level node. Each partition was built with its
-// leading nibble stripped, so its root blob is already the exact node the parent
-// branch mounts in that slot, and the partition has already written it (and all
-// its descendants) at their absolute paths. What's left depends on how many
-// partitions ended up populated:
-//
-//   - 0 populated: the state is empty, the root is types.EmptyRootHash and
-//     nothing is written.
-//
-//   - 1 populated: there is no top-level branch; the canonical root is that
-//     lone partition's subtree with its leading nibble folded back in (see
-//     trie.MountPartitionRoot). The new root node is written. If the fold
-//     orphaned the old subtree root the partition left at [n], that node is
-//     also deleted.
-//
-//   - 2+ populated: the canonical root is a 17-slot branch mounting each
-//     partition's subtree root by hash. The subtree roots are already on disk,
-//     so we only encode, hash, and persist the branch itself.
-func assembleRoot(db ethdb.Database, scheme string, partitionBlobs [numPartitions][]byte) (common.Hash, error) {
-	var (
-		populated int
-		partition int // last populated index, read only when populated == 1
-		children  [17][]byte
-	)
-
-	// Loop through all partitions and count how many are populated, while
-	// pre-filling the branch children array for the common 2+ case.
-	for i := range numPartitions {
-		if partitionBlobs[i] != nil {
-			populated++
-			partition = i
-			children[i] = crypto.Keccak256(partitionBlobs[i])
-		}
+// writeAccountNode tracks the canonical nodes written by both workers and assembly.
+func (c *genCounters) writeAccountNode(dst ethdb.KeyValueWriter, scheme string, path []byte, hash common.Hash, blob []byte) {
+	c.accountTrieNodes.Add(1)
+	keySize := len(path)
+	if scheme == rawdb.HashScheme {
+		keySize = common.HashLength
 	}
+	c.accountTrieBytes.Add(int64(keySize + len(blob)))
+	rawdb.WriteTrieNode(dst, common.Hash{}, path, hash, blob, scheme)
+}
 
-	// No populated partitions: the state is empty.
-	if populated == 0 {
-		return types.EmptyRootHash, nil
-	}
-
-	// One populated partition: no top-level branch, so fold its leading nibble
-	// back into the subtree root.
-	if populated == 1 {
-		rootHash, rootBlob, isOrphaned, err := trie.MountPartitionRoot(partitionBlobs[partition], byte(partition))
+// assembleRoot joins the byte-prefix subtrees one nibble at a time. Defer
+// writing each group root until its parent decides whether it survives path
+// compression. Only canonical nodes enter the final batch.
+func assembleRoot(db ethdb.Database, scheme string, partitions *[numPartitions][]byte, c *genCounters) (common.Hash, error) {
+	batch := db.NewBatch()
+	defer batch.Close()
+	var groups [16][]byte
+	for i := range groups {
+		blob, err := joinAccountSubtrees(batch, scheme, []byte{byte(i)}, partitions[i*16:(i+1)*16], c)
 		if err != nil {
-			return common.Hash{}, fmt.Errorf("mount partition %d: %w", partition, err)
+			return common.Hash{}, err
 		}
-		batch := db.NewBatch()
-		rawdb.WriteTrieNode(batch, common.Hash{}, nil, rootHash, rootBlob, scheme)
-		if isOrphaned {
-			// The folded root at nil does not reference [partition], so the copy
-			// generatePartition wrote there is now unreferenced. Delete it so the
-			// on-disk node set matches the canonical trie.
-			staleHash := crypto.Keccak256Hash(partitionBlobs[partition])
-			rawdb.DeleteTrieNode(batch, common.Hash{}, []byte{byte(partition)}, staleHash, scheme)
-		}
-		return rootHash, batch.Write()
+		groups[i] = blob
 	}
-
-	// populated >= 2: mount each partition's subtree root (already persisted at
-	// path [i]) into a 17-slot branch by hash, using the children array filled
-	// above. Those hash references are valid because account-trie subtree roots
-	// are always >= 32 bytes.
-	rootBlob, rootHash, err := trie.AssembleBranch(children)
+	root, err := joinAccountSubtrees(batch, scheme, nil, groups[:], c)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	rawdb.WriteTrieNode(db, common.Hash{}, nil, rootHash, rootBlob, scheme)
-	return rootHash, nil
+	if root == nil {
+		return types.EmptyRootHash, nil
+	}
+	hash := crypto.Keccak256Hash(root)
+	c.writeAccountNode(batch, scheme, nil, hash, root)
+	return hash, batch.Write()
+}
+
+// joinAccountSubtrees returns the root at path, writing only the children
+// referenced by it. Account RLPs contain a storage root and code hash, so
+// every non-empty account subtree is large enough to be referenced by hash.
+func joinAccountSubtrees(dst ethdb.KeyValueWriter, scheme string, path []byte, blobs [][]byte, c *genCounters) ([]byte, error) {
+	var count, last int
+	for i, blob := range blobs {
+		if blob != nil {
+			count++
+			last = i
+		}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	if count == 1 {
+		child := blobs[last]
+		_, root, folded, err := trie.MountPartitionRoot(child, byte(last))
+		if err != nil {
+			return nil, err
+		}
+		if !folded {
+			c.writeAccountNode(dst, scheme, append(path, byte(last)), crypto.Keccak256Hash(child), child)
+		}
+		return root, nil
+	}
+	var children [17][]byte
+	for i, blob := range blobs {
+		if blob != nil {
+			hash := crypto.Keccak256Hash(blob)
+			c.writeAccountNode(dst, scheme, append(path, byte(i)), hash, blob)
+			children[i] = hash[:]
+		}
+	}
+	root, _, err := trie.AssembleBranch(children)
+	return root, err
 }
 
 // tickProgress logs an aggregate progress line every 30 seconds until done

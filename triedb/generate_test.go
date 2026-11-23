@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"math/big"
 	"sort"
 	"testing"
 
@@ -402,11 +401,11 @@ func TestGenerateTrieCancel(t *testing.T) {
 func TestGenerateTrieOrphanStorage(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 
-	// Two legitimate accounts in the same partition (first nibble 0x5) so
+	// Two legitimate accounts in the same partition (first byte 0x50) so
 	// orphans can be placed before, between, and after them in the shared
 	// per-partition storage iterator.
-	liveA := common.HexToHash("0x5300000000000000000000000000000000000000000000000000000000000000")
-	liveB := common.HexToHash("0x5900000000000000000000000000000000000000000000000000000000000000")
+	liveA := common.HexToHash("0x5030000000000000000000000000000000000000000000000000000000000000")
+	liveB := common.HexToHash("0x5090000000000000000000000000000000000000000000000000000000000000")
 	slotsA := []testSlot{{hash: common.HexToHash("0xaa"), value: []byte{0xa1}}}
 	slotsB := []testSlot{{hash: common.HexToHash("0xbb"), value: []byte{0xb1}}}
 
@@ -439,7 +438,7 @@ func TestGenerateTrieOrphanStorage(t *testing.T) {
 		}
 	}
 
-	// Dangling slots at three positions within partition 5:
+	// Dangling slots at three positions within partition 0x50:
 	//   before liveA, between liveA and liveB, after liveB.
 	orphans := []struct {
 		account common.Hash
@@ -453,11 +452,11 @@ func TestGenerateTrieOrphanStorage(t *testing.T) {
 			},
 		},
 		{
-			account: common.HexToHash("0x5600000000000000000000000000000000000000000000000000000000000000"),
+			account: common.HexToHash("0x5060000000000000000000000000000000000000000000000000000000000000"),
 			slots:   []testSlot{{hash: common.HexToHash("0x33"), value: []byte{0x03}}},
 		},
 		{
-			account: common.HexToHash("0x5d00000000000000000000000000000000000000000000000000000000000000"),
+			account: common.HexToHash("0x50d0000000000000000000000000000000000000000000000000000000000000"),
 			slots: []testSlot{
 				{hash: common.HexToHash("0x44"), value: []byte{0x04}},
 				{hash: common.HexToHash("0x55"), value: []byte{0x05}},
@@ -490,38 +489,80 @@ func TestGenerateTrieOrphanStorage(t *testing.T) {
 	}
 }
 
-// TestHashRanges checks that hashRanges fully and contiguously covers the
-// 256-bit hash space, with the last range absorbing the rounding remainder.
-func TestHashRanges(t *testing.T) {
-	for _, total := range []int{1, 2, 16, 256} {
-		ranges := hashRanges(total)
-		if len(ranges) != total {
-			t.Fatalf("total=%d: got %d ranges, want %d", total, len(ranges), total)
+func TestPartitionSchedulerSteal(t *testing.T) {
+	q := newPartitionScheduler(2)
+	var seen [numPartitions]bool
+	count := 0
+	take := func(worker int) int {
+		t.Helper()
+		i, ok := q.next(worker)
+		if !ok || seen[i] {
+			t.Fatalf("worker %d claimed partition %d, ok=%v", worker, i, ok)
 		}
-		if ranges[0][0] != (common.Hash{}) {
-			t.Errorf("total=%d: first range starts at %x, want zero", total, ranges[0][0])
+		seen[i] = true
+		count++
+		return i
+	}
+	take(1) // Worker 1 is still processing ff when worker 0 runs out of work.
+	for i := 127; i >= 0; i-- {
+		if got := take(0); got != i {
+			t.Fatalf("got %x, want %x", got, i)
 		}
-		if ranges[total-1][1] != common.MaxHash {
-			t.Errorf("total=%d: last range ends at %x, want MaxHash", total, ranges[total-1][1])
+	}
+	take(0)
+	if got := take(1); got != 0xfe {
+		t.Fatalf("donor lost its adjacent prefix, got %x", got)
+	}
+	for count < len(seen) {
+		take(0)
+	}
+	for worker := range 2 {
+		if i, ok := q.next(worker); ok {
+			t.Fatalf("worker %d claimed extra partition %d", worker, i)
 		}
-		for i, r := range ranges {
-			if r[0].Big().Cmp(r[1].Big()) > 0 {
-				t.Errorf("total=%d: range %d malformed: start %x > end %x", total, i, r[0], r[1])
+	}
+}
+
+// Both ends of every byte range must be visited exactly once in each direction.
+func TestBytePartitionBoundaries(t *testing.T) {
+	src, err := pebble.New(t.TempDir(), 16, 16, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	var accounts []testAccount
+	for i := range numPartitions {
+		for _, owner := range []common.Hash{{}, common.MaxHash} {
+			owner[0] = byte(i)
+			slot := testSlot{hash: common.MaxHash, value: []byte{1}}
+			a := testAccount{hash: owner, account: *types.NewEmptyStateAccount(), storage: []testSlot{slot}}
+			a.account.Root = computeStorageRootFromSlots(a.storage)
+			rawdb.WriteAccountSnapshot(src, owner, types.SlimAccountRLP(a.account))
+			rawdb.WriteStorageSnapshot(src, owner, slot.hash, slot.value)
+			accounts = append(accounts, a)
+		}
+	}
+	root := buildExpectedRoot(t, accounts)
+	for name, batch := range map[string]bool{"ingest": false, "batch": true} {
+		t.Run(name, func(t *testing.T) {
+			kv, err := pebble.New(t.TempDir(), 16, 16, "", false)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if i == 0 {
-				continue
+			dst := rawdb.NewDatabase(kv)
+			defer dst.Close()
+			stats, err := GenerateTrieTo(src, dst, rawdb.PathScheme, root, nil, batch)
+			if err != nil || stats.Scanned != int64(len(accounts)) {
+				t.Fatalf("scanned %d accounts, want %d, err %v", stats.Scanned, len(accounts), err)
 			}
-			gap := new(big.Int).Sub(r[0].Big(), ranges[i-1][1].Big())
-			if gap.Cmp(common.Big1) != 0 {
-				t.Errorf("total=%d: range %d not contiguous with %d (gap=%s)", total, i, i-1, gap)
-			}
-		}
+			assertCanonicalNodes(t, dst, accounts)
+		})
 	}
 }
 
 // TestGenerateTriePathSchemeNodeSet runs GenerateTrie on the path scheme and
 // checks the persisted account-trie node set against a canonical StackTrie. A
-// root-only check can't see the single-partition orphan, but a node-set diff can.
+// root-only check cannot detect an extra intermediate node after path compression.
 func TestGenerateTriePathSchemeNodeSet(t *testing.T) {
 	mkAccount := func(hashHex string) testAccount {
 		// Empty storage and no code, so the account trie is the only trie built
@@ -542,15 +583,12 @@ func TestGenerateTriePathSchemeNodeSet(t *testing.T) {
 		accounts []testAccount
 	}{
 		{
-			// One populated partition whose subtree root is a leaf. The node the
-			// partition wrote at [5] is left unreferenced, so GenerateTrie has to
-			// delete it.
+			// A single leaf absorbs both partition nibbles.
 			name:     "single account, leaf root",
 			accounts: []testAccount{mkAccount("0x5a00000000000000000000000000000000000000000000000000000000000000")},
 		},
 		{
-			// One populated partition whose subtree root is an extension. Like the
-			// leaf case, the node at [5] is left unreferenced and must be deleted.
+			// The branch stays at [5,3], referenced by a two-nibble extension.
 			name: "two accounts sharing two nibbles, extension root",
 			accounts: []testAccount{
 				mkAccount("0x5300000000000000000000000000000000000000000000000000000000000000"),
@@ -558,8 +596,15 @@ func TestGenerateTriePathSchemeNodeSet(t *testing.T) {
 			},
 		},
 		{
-			// One populated partition whose subtree root is a branch. Here [5] stays
-			// referenced by the new root, so nothing is orphaned.
+			// Fold two nibbles into an existing extension and retain the deeper branch.
+			name: "single partition with an extension",
+			accounts: []testAccount{
+				mkAccount("0x5301000000000000000000000000000000000000000000000000000000000000"),
+				mkAccount("0x5302000000000000000000000000000000000000000000000000000000000000"),
+			},
+		},
+		{
+			// Two byte partitions produce a branch at [5].
 			name: "two accounts diverging at second nibble, branch root",
 			accounts: []testAccount{
 				mkAccount("0x5a00000000000000000000000000000000000000000000000000000000000000"),
@@ -567,8 +612,7 @@ func TestGenerateTriePathSchemeNodeSet(t *testing.T) {
 			},
 		},
 		{
-			// Several populated partitions. Every [i] stays referenced by the top
-			// branch, so nothing is orphaned.
+			// A top-level branch with both folded leaves and an intermediate branch.
 			name: "accounts across multiple partitions",
 			accounts: []testAccount{
 				mkAccount("0x1000000000000000000000000000000000000000000000000000000000000000"),
@@ -712,7 +756,7 @@ func (d peakBatchDB) NewBatchWithSize(size int) ethdb.Batch {
 // sites past IdealBatchSize and checks the write batch stays bounded (so the
 // flush fired) without dropping or skipping any entry.
 func TestGenerateTrieBatchFlush(t *testing.T) {
-	// h builds a unique partition-0 hash (leading nibble 0) from an int, used
+	// h builds a unique partition-0 hash (leading byte 0) from an int, used
 	// for both account hashes and storage slot hashes.
 	h := func(i int) common.Hash {
 		return common.BytesToHash([]byte{0x00, byte(i >> 16), byte(i >> 8), byte(i)})
@@ -795,10 +839,14 @@ func TestGenerateTrieBatchFlush(t *testing.T) {
 
 			peak := 0
 			var c genCounters
-			ranges := hashRanges(numPartitions)
 			gen := trieGenerator{dst: peakBatchDB{Database: db, peak: &peak}, newIterator: db.NewIterator, inPlace: true}
-			if _, err := gen.generatePartition(context.Background(), nil, rawdb.HashScheme, 0, ranges[0][0], ranges[0][1], &c); err != nil {
+			batches := newPartitionBatches(gen.dst, nil, nil)
+			defer batches.close()
+			if _, err := gen.generatePartition(context.Background(), nil, rawdb.HashScheme, 0, &c, batches, nil); err != nil {
 				t.Fatalf("generatePartition: %v", err)
+			}
+			if _, err := batches.flush(true); err != nil {
+				t.Fatal(err)
 			}
 
 			if c.accounts.Load() != tc.wantScanned {

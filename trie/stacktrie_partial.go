@@ -17,63 +17,55 @@
 package trie
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// PartialStackTrie builds the subtrie of a single first-nibble partition of a
-// larger trie on top of a StackTrie. It is used for parallel trie generation,
-// where the key space is split into 16 partitions by the first nibble and each
-// partition is built independently before being mounted under a common root.
-//
-// Two adjustments make the produced subtrie line up with its position in the
-// full trie:
-//
-//   - Keys are inserted with their leading nibble stripped. That nibble is
-//     implied by the partition's slot in the parent branch, so duplicating it
-//     inside the keys would corrupt every node hash below the root.
-//
-//   - Paths reported to onTrieNode are prefixed with the partition nibble, so
-//     a node's path matches its absolute position in the full trie. This is
-//     required by the path-based storage scheme, which keys nodes by path.
-//
-// The hashes themselves are independent of the absolute path, so prefixing the
-// path does not change any node hash.
-//
-// All inserted keys must share the same leading nibble equal to `nibble`; the
-// caller guarantees this by construction (e.g. by partitioning a hash range).
+// PartialStackTrie builds the subtree below a fixed nibble prefix. It strips
+// that prefix from inserted keys and restores it on emitted node paths so
+// nodes can be persisted at their absolute positions in the full trie.
 type PartialStackTrie struct {
-	nibble  byte
+	prefix  []byte
 	inner   *StackTrie
-	pathBuf []byte // reusable buffer for the nibble-prefixed path
+	pathBuf []byte // reusable buffer for the absolute path
 }
 
 // NewPartialStackTrie creates a partition builder for the given leading nibble.
 // The onTrieNode callback, if non-nil, is invoked for every committed node with
 // its absolute path already prefixed with the partition nibble.
 func NewPartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
-	p := &PartialStackTrie{nibble: nibble}
+	return newPartialStackTrie([]byte{nibble}, false, onTrieNode)
+}
+
+// NewBytePartitionStackTrie builds the account subtree for one full leading
+// byte. Reverse selects descending key and callback order.
+func NewBytePartitionStackTrie(partition byte, reverse bool, onTrieNode OnTrieNode) *PartialStackTrie {
+	return newPartialStackTrie([]byte{partition >> 4, partition & 0xf}, reverse, onTrieNode)
+}
+
+func newPartialStackTrie(prefix []byte, reverse bool, onTrieNode OnTrieNode) *PartialStackTrie {
+	p := &PartialStackTrie{prefix: prefix}
 	p.inner = newStackTrie(func(path []byte, hash common.Hash, blob []byte) {
 		if onTrieNode == nil {
 			return
 		}
 		// Prefix the path with the partition nibble. The buffer is reused across
 		// calls, so the callback must consume it synchronously.
-		p.pathBuf = append(p.pathBuf[:0], nibble)
+		p.pathBuf = append(p.pathBuf[:0], prefix...)
 		p.pathBuf = append(p.pathBuf, path...)
 		onTrieNode(p.pathBuf, hash, blob)
 	}, newUnsafeBytesPool(common.HashLength, stackTrieHashPoolSize))
+	p.inner.reverse = reverse
 	return p
 }
 
 // NewReversePartialStackTrie builds the partition from descending keys and
 // emits nodes in strictly descending order of their nibble-prefixed paths.
 func NewReversePartialStackTrie(nibble byte, onTrieNode OnTrieNode) *PartialStackTrie {
-	p := NewPartialStackTrie(nibble, onTrieNode)
-	p.inner.reverse = true
-	return p
+	return newPartialStackTrie([]byte{nibble}, true, onTrieNode)
 }
 
 // NewStorageTrie creates a full trie with the partition's insertion order and
@@ -85,8 +77,7 @@ func (p *PartialStackTrie) NewStorageTrie(onTrieNode OnTrieNode) *StackTrie {
 	return t
 }
 
-// Update inserts a (key, value) pair, stripping the key's leading nibble, which
-// is implied by the partition. The key must begin with the partition nibble.
+// Update inserts a (key, value) pair, stripping the partition prefix.
 func (p *PartialStackTrie) Update(key, value []byte) error {
 	if len(value) == 0 {
 		return errors.New("trying to insert empty (deletion)")
@@ -95,14 +86,13 @@ func (p *PartialStackTrie) Update(key, value []byte) error {
 	t.grow(key)
 	k := writeHexKey(t.kBuf, key)
 
-	if k[0] != p.nibble {
-		return fmt.Errorf("unexpected nibble %v, expected %x", k[0], p.nibble)
+	if !bytes.HasPrefix(k, p.prefix) {
+		return fmt.Errorf("key %x outside partition %x", key, p.prefix)
 	}
-	return t.update(k[1:], value)
+	return t.update(k[len(p.prefix):], value)
 }
 
-// Hash returns the root hash of the partition subtrie (built with the leading
-// nibble stripped). It is the reference the parent branch mounts in slot `nibble`.
+// Hash returns the root hash of the subtree below the partition prefix.
 func (p *PartialStackTrie) Hash() common.Hash {
 	return p.inner.Hash()
 }
